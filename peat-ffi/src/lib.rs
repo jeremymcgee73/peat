@@ -398,6 +398,14 @@ pub struct PeatNode {
     /// Note: This is the SAME backend instance used by sync_backend to ensure
     /// sync coordinator state is shared. Do NOT create a separate backend.
     storage_backend: Arc<AutomergeBackend>,
+    /// Generic application-level mesh document layer wrapping `sync_backend`.
+    /// Composed alongside the existing typed surface (platforms, cells,
+    /// tracks, …) so callers can reach generic publish/get/query/observe
+    /// without going through type-specific JNI methods. Foundation step 3 of
+    /// the peat-mesh-completion / peat-btle-reduction work — see
+    /// `PEAT-MESH-COMPLETION-0.9.0.md`.
+    #[cfg(feature = "sync")]
+    node: Arc<peat_mesh::Node>,
     /// Transport manager for multi-transport coordination (ADR-032)
     /// Enables PACE policy-based transport selection and future BLE integration
     transport_manager: TransportManager,
@@ -1289,9 +1297,23 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     #[cfg(not(target_os = "android"))]
     eprintln!("[Peat TIMING] === TOTAL create_node: {}ms ===", total_ms);
 
+    // Compose `peat_mesh::Node` over the same `AutomergeIrohBackend` the
+    // existing typed surface uses. Both layers see the same underlying
+    // doc store; the Node adds a generic publish/observe surface for
+    // doc-type-agnostic callers (PR #802 BleGateway, future per-doc-type
+    // typed wrappers).
+    #[cfg(feature = "sync")]
+    let node = {
+        use peat_mesh::sync::traits::DataSyncBackend;
+        let backend_dyn: Arc<dyn DataSyncBackend> = sync_backend.clone();
+        Arc::new(peat_mesh::Node::new(backend_dyn))
+    };
+
     Ok(Arc::new(PeatNode {
         sync_backend,
         storage_backend,
+        #[cfg(feature = "sync")]
+        node,
         transport_manager,
         iroh_transport: transport,
         store,
@@ -2228,6 +2250,137 @@ mod tests {
         let vel = create_velocity(45.0, 15.0);
         assert_eq!(vel.bearing, 45.0);
         assert_eq!(vel.speed_mps, 15.0);
+    }
+
+    /// Tests for the generic `publish_document_into_node` helper that backs
+    /// `Java_..._publishDocumentJni`. Foundation step 3 of the
+    /// peat-mesh-completion / peat-btle-reduction work — see
+    /// `PEAT-MESH-COMPLETION-0.9.0.md`.
+    ///
+    /// Running through `tokio::runtime::Runtime::block_on` rather than a
+    /// `#[tokio::test]` attribute matches the rest of peat-ffi (which doesn't
+    /// pull tokio macros into dev-dependencies just for tests) and exercises
+    /// the same `runtime.block_on(...)` shape the JNI wrapper itself uses.
+    #[cfg(feature = "sync")]
+    mod publish_document_tests {
+        use super::*;
+        use peat_mesh::sync::traits::DataSyncBackend;
+        use peat_mesh::sync::InMemoryBackend;
+
+        fn fresh_node() -> peat_mesh::Node {
+            let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
+            peat_mesh::Node::new(backend)
+        }
+
+        fn rt() -> tokio::runtime::Runtime {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+        }
+
+        /// Publishing a JSON object with an explicit `"id"` field round-trips
+        /// through the node: the returned id matches, and `node.get(...)`
+        /// yields a Document carrying the body fields verbatim.
+        #[test]
+        fn round_trip_with_explicit_id() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let json = r#"{
+                    "id": "chat-001",
+                    "sender": "ALPHA-1",
+                    "text": "hello",
+                    "timestamp": 1700000000000
+                }"#;
+                let id = publish_document_into_node(&node, "chats", json)
+                    .await
+                    .expect("publish");
+                assert_eq!(id, "chat-001");
+
+                let got = node
+                    .get("chats", &"chat-001".to_string())
+                    .await
+                    .expect("get")
+                    .expect("found");
+                assert_eq!(
+                    got.fields.get("sender").and_then(|v| v.as_str()),
+                    Some("ALPHA-1")
+                );
+                assert_eq!(
+                    got.fields.get("text").and_then(|v| v.as_str()),
+                    Some("hello")
+                );
+                assert!(
+                    !got.fields.contains_key("id"),
+                    "id is hoisted to Document::id, not duplicated in fields"
+                );
+            });
+        }
+
+        /// JSON without an `"id"` field still publishes; the backend assigns
+        /// one (UUID under `InMemoryBackend`). The returned id is non-empty
+        /// and the doc is retrievable by it.
+        #[test]
+        fn id_assignment_when_absent() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let json = r#"{"text":"orphan","sender":"BRAVO-2"}"#;
+                let id = publish_document_into_node(&node, "chats", json)
+                    .await
+                    .expect("publish");
+                assert!(!id.is_empty(), "backend must assign an id");
+
+                let got = node.get("chats", &id).await.expect("get").expect("found");
+                assert_eq!(
+                    got.fields.get("text").and_then(|v| v.as_str()),
+                    Some("orphan")
+                );
+            });
+        }
+
+        /// Malformed JSON returns Err — the JNI wrapper translates this into
+        /// an empty-string return to the Java caller.
+        #[test]
+        fn malformed_json_errors() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let result = publish_document_into_node(&node, "chats", "not-json").await;
+                assert!(result.is_err());
+            });
+        }
+
+        /// Non-object JSON (array, string, number) returns Err — the
+        /// document model requires an object at the top level.
+        #[test]
+        fn non_object_json_errors() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let result = publish_document_into_node(&node, "chats", "[1, 2, 3]").await;
+                assert!(result.is_err());
+            });
+        }
+
+        /// Non-string id (e.g. integer) is treated as id-absent — the backend
+        /// assigns one rather than coercing the integer. Aligns with
+        /// peat-protocol's `BleGateway::value_to_document`, which made the
+        /// same decision in PR #802 round-1 review.
+        #[test]
+        fn non_string_id_falls_back_to_assigned() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let json = r#"{"id":42,"text":"weird"}"#;
+                let id = publish_document_into_node(&node, "chats", json)
+                    .await
+                    .expect("publish");
+                assert_ne!(id, "42", "non-string id must be discarded, not coerced");
+                assert!(!id.is_empty());
+            });
+        }
     }
 
     #[cfg(feature = "sync")]
@@ -3574,6 +3727,120 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatfor
     result
 }
 
+/// Publish a generic document into a named collection via `peat_mesh::Node`.
+///
+/// JNI wrapper around [`publish_document_into_node`]. The Kotlin caller passes
+/// a JSON object; top-level keys become the document body. The `"id"` field
+/// is optional — when present and a string, it becomes the document's id;
+/// when absent or non-string, the backend assigns one (and returns it). The
+/// returned Java string is the id that was actually used (caller-supplied or
+/// backend-assigned), so callers needing a stable id must capture the return
+/// value rather than assuming the input `"id"` won.
+///
+/// Returns an empty Java string on failure: handle invalid, JSON malformed,
+/// JSON not an object, or backend publish error. Foundation step 3 of the
+/// peat-mesh-completion work.
+///
+/// Kotlin signature: `external fun publishDocumentJni(handle: Long, collection: String, json: String): String`
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    collection: JString,
+    json: JString,
+) -> jstring {
+    // Track the result string we want to return; build the jstring at the
+    // single env.new_string() call site at the end. Avoids the tangle of
+    // borrowing `env` multiple times across short-circuit error returns.
+    let result_str: String = if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("publishDocumentJni: Invalid handle (0)");
+        String::new()
+    } else {
+        match (env.get_string(&collection), env.get_string(&json)) {
+            (Ok(c), Ok(j)) => {
+                let collection_str: String = c.into();
+                let json_str: String = j.into();
+                // Borrow the node Arc without taking ownership — same
+                // pattern as the other ..._Jni functions in this file.
+                let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+                let mesh_node = Arc::clone(&node_owner.node);
+                let runtime = Arc::clone(&node_owner.runtime);
+                std::mem::forget(node_owner);
+
+                match runtime.block_on(publish_document_into_node(
+                    &mesh_node,
+                    &collection_str,
+                    &json_str,
+                )) {
+                    Ok(id) => id,
+                    Err(_e) => {
+                        #[cfg(target_os = "android")]
+                        android_log(&format!("publishDocumentJni: publish failed: {}", _e));
+                        String::new()
+                    }
+                }
+            }
+            (Err(_e), _) | (_, Err(_e)) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!(
+                    "publishDocumentJni: failed to read args: {:?}",
+                    _e
+                ));
+                String::new()
+            }
+        }
+    };
+
+    env.new_string(result_str)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Pure-Rust helper backing [`Java_..._publishDocumentJni`]. Parses a JSON
+/// object into a [`peat_mesh::sync::types::Document`] (the `"id"` string
+/// field, if present, becomes [`Document::id`]; remaining keys land in
+/// [`Document::fields`]) and publishes it into the given collection on the
+/// node. Exposed for unit tests so the conversion + publish path can be
+/// exercised without spinning up a JVM.
+#[cfg(feature = "sync")]
+async fn publish_document_into_node(
+    node: &peat_mesh::Node,
+    collection: &str,
+    json: &str,
+) -> anyhow::Result<String> {
+    use peat_mesh::sync::types::Document;
+    use serde_json::Value;
+
+    let value: Value =
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("invalid JSON: {}", e))?;
+
+    let mut obj = match value {
+        Value::Object(map) => map,
+        other => {
+            return Err(anyhow::anyhow!(
+                "document JSON must be an object, got {:?}",
+                other
+            ))
+        }
+    };
+
+    let id = obj.remove("id").and_then(|v| match v {
+        Value::String(s) => Some(s),
+        _ => None,
+    });
+
+    let fields = obj.into_iter().collect();
+    let document = match id {
+        Some(id) => Document::with_id(id, fields),
+        None => Document::new(fields),
+    };
+
+    node.publish(collection, document).await
+}
+
 /// Connect to a known peer by node ID and address (bypasses mDNS).
 ///
 /// Kotlin signature: external fun connectPeerJni(handle: Long, nodeId: String, address: String): Boolean
@@ -4222,6 +4489,12 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
+            name: "publishDocumentJni".into(),
+            sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
             name: "connectPeerJni".into(),
             sig: "(JLjava/lang/String;Ljava/lang/String;)Z".into(),
             fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_connectPeerJni as *mut c_void,
@@ -4507,6 +4780,13 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "publishPlatformJni".into(),
                     sig: "(JLjava/lang/String;)Z".into(),
                     fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatformJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "publishDocumentJni".into(),
+                    sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]

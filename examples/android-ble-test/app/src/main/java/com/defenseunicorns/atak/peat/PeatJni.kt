@@ -186,6 +186,35 @@ object PeatJni {
     external fun publishPlatformJni(handle: Long, platformJson: String): Boolean
 
     /**
+     * Publish a generic document to a named collection on this node.
+     *
+     * Backed by `peat_mesh::Node::publish` — works for any collection
+     * (chats, markers, alerts, custom doc types). Use the typed
+     * `publish<Type>Jni` methods (e.g. `publishPlatformJni`) when they
+     * exist; this is the generic escape hatch.
+     *
+     * The JSON must be an object. Top-level keys become the document
+     * body. The `"id"` field is **optional**:
+     * - If present and a string, it becomes the document's id.
+     * - If absent, or present but not a string, the backend assigns an
+     *   id (UUID under the in-memory backend; backend-defined elsewhere).
+     *
+     * The returned String is the document id that was actually used —
+     * either the one the caller supplied or the backend-assigned one.
+     * Callers needing a stable id MUST capture the return value rather
+     * than assuming the JSON's `"id"` won.
+     *
+     * @param handle Node handle from createNodeJni.
+     * @param collection Collection name (e.g. "chats", "markers").
+     * @param json JSON object as a string. `"id"` is optional.
+     * @return The document id on success (caller-supplied or
+     *         backend-assigned), or empty string on failure (handle
+     *         invalid, JSON malformed, JSON not an object, publish error).
+     */
+    @JvmStatic
+    external fun publishDocumentJni(handle: Long, collection: String, json: String): String
+
+    /**
      * Connect to a known peer by node ID and socket address (bypasses mDNS).
      * @param handle Node handle from createNodeJni
      * @param nodeId Hex-encoded Iroh node ID of the peer
@@ -436,6 +465,16 @@ class PeatNodeJni private constructor(private val handle: Long) : AutoCloseable 
      * @return true if published successfully
      */
     fun publishPlatform(platformJson: String): Boolean = PeatJni.publishPlatformJni(handle, platformJson)
+
+    /**
+     * Publish a generic document into a named collection. The JSON's
+     * `"id"` field is optional; when absent (or non-string) the backend
+     * assigns one. Returns the document id actually used — caller-
+     * supplied or backend-assigned — or empty string on failure. See
+     * [PeatJni.publishDocumentJni] for full contract.
+     */
+    fun publishDocument(collection: String, json: String): String =
+        PeatJni.publishDocumentJni(handle, collection, json)
 
     /**
      * Connect to a known peer by node ID and address (bypasses mDNS).
