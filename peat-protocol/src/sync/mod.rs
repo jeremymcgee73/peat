@@ -82,6 +82,11 @@ pub mod automerge; // Automerge CRDT backend (E8 evaluation)
 #[cfg(feature = "bluetooth")]
 pub mod ble_translation;
 
+// BLE gateway: composes peat_mesh::Node + BleTranslator for cross-transport
+// document bridging. See `PEAT-MESH-COMPLETION-0.9.0.md`.
+#[cfg(feature = "bluetooth")]
+pub mod ble_gateway;
+
 // Re-export core types and traits for convenience
 pub use traits::*;
 pub use types::*;
