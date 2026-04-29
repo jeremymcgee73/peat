@@ -215,6 +215,49 @@ object PeatJni {
     external fun publishDocumentJni(handle: Long, collection: String, json: String): String
 
     /**
+     * Ingest a peat-btle BLE position from a peer through the cross-transport
+     * BLE gateway. Translated to a track document via `BleTranslator` and
+     * published into the underlying mesh `Node`; iroh-bound peers receive
+     * it through Automerge sync. This is the BLE → Node → iroh half of the
+     * cross-transport bridge.
+     *
+     * The `json` envelope mirrors `peat_btle::Position` plus surrounding
+     * ingest metadata:
+     * ```json
+     * {
+     *   "lat": 40.7,
+     *   "lon": -74.0,
+     *   "altitude": 100.0,        // optional
+     *   "accuracy": 5.0,          // optional
+     *   "peripheral_id": 3405643777,
+     *   "callsign": "SCOUT-CAFE", // optional
+     *   "mesh_id": "29C916FA"     // optional
+     * }
+     * ```
+     *
+     * Required fields: `lat`, `lon`, `peripheral_id`.
+     *
+     * `peripheral_id` accepts the full u32 range expressed either as a
+     * non-negative integer (Kotlin `Long` or `UInt.toLong()`) or as a
+     * sign-extended negative integer (Kotlin `Int.toLong()` of a value with
+     * the high bit set — e.g. `0xCAFE_0001` reads as `-889323519`). Both
+     * round-trip to the same internal u32; values outside
+     * `[Int.MIN_VALUE, UInt.MAX_VALUE.toLong()]` are rejected rather than
+     * silently truncated. Prefer `Long` or `UInt` at the call site to avoid
+     * the sign-extension question entirely.
+     *
+     * @param handle Node handle from createNodeJni.
+     * @param json BLE position envelope as a JSON string.
+     * @return Track document id on success (the translator's
+     *         `ble-<UPPERCASE-8-HEX>` form), or empty string on failure
+     *         (handle invalid, JSON malformed, missing required field,
+     *         peripheral_id out of range, publish error, or peat-ffi not
+     *         built with the bluetooth feature).
+     */
+    @JvmStatic
+    external fun ingestPositionJni(handle: Long, json: String): String
+
+    /**
      * Connect to a known peer by node ID and socket address (bypasses mDNS).
      * @param handle Node handle from createNodeJni
      * @param nodeId Hex-encoded Iroh node ID of the peer
@@ -475,6 +518,16 @@ class PeatNodeJni private constructor(private val handle: Long) : AutoCloseable 
      */
     fun publishDocument(collection: String, json: String): String =
         PeatJni.publishDocumentJni(handle, collection, json)
+
+    /**
+     * Ingest a peat-btle BLE position envelope through the cross-transport
+     * BLE gateway. Translated to a track document and published; iroh-bound
+     * peers receive it via Automerge sync. Returns the track document id on
+     * success, or empty string on failure. See [PeatJni.ingestPositionJni]
+     * for full envelope shape and failure modes.
+     */
+    fun ingestPosition(json: String): String =
+        PeatJni.ingestPositionJni(handle, json)
 
     /**
      * Connect to a known peer by node ID and address (bypasses mDNS).
