@@ -1546,6 +1546,18 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Drive the peat-btle periodic maintenance: stale-peer eviction
+        // (peer_timeout_ms = 45s by default) and any due sync broadcast.
+        // Without this, peer_manager.peers grows monotonically across the
+        // session — every BLE-Peat device the M5Stack ever sees stays in
+        // get_peers() until power-cycle, and the displayed peer list
+        // accumulates ghosts from past sessions.
+        if let Some(out) = mesh.tick(now_ms()) {
+            if connected {
+                nimble::gossip_document(&out);
+            }
+        }
+
         FreeRtos::delay_ms(50);
         loop_count = loop_count.wrapping_add(1);
     }
