@@ -406,6 +406,15 @@ pub struct PeatNode {
     /// `PEAT-MESH-COMPLETION-0.9.0.md`.
     #[cfg(feature = "sync")]
     node: Arc<peat_mesh::Node>,
+    /// Cross-transport document bridge composing `node` with peat-protocol's
+    /// `BleTranslator` (ADR-041). Built only when the `bluetooth` feature is
+    /// enabled — the gateway needs the translator types from
+    /// `peat-protocol/src/sync/ble_gateway.rs`, which are themselves
+    /// `bluetooth`-gated. Used by the `ingest*Jni` family of methods to
+    /// route BLE-decoded payloads from a peat-btle peer through the gateway
+    /// into `node`, where iroh sync propagates them to non-BLE peers.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    ble_gateway: Arc<peat_protocol::sync::ble_gateway::BleGateway>,
     /// Transport manager for multi-transport coordination (ADR-032)
     /// Enables PACE policy-based transport selection and future BLE integration
     transport_manager: TransportManager,
@@ -1234,6 +1243,10 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
                     // them, which can cause the GATT ApplicationHandle's D-Bus registration
                     // to be dropped before advertising starts — making the GATT service
                     // intermittently invisible to remote devices.
+                    //
+                    // Brings `MeshTransport` into scope so `ble_transport.start()` resolves;
+                    // mirrors the import at the other start() call site (line ~3259).
+                    use peat_protocol::transport::MeshTransport;
                     match runtime_arc.block_on(async {
                         let mut adapter = BluerAdapter::new().await?;
 
@@ -1309,11 +1322,26 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         Arc::new(peat_mesh::Node::new(backend_dyn))
     };
 
+    // BleGateway: BLE-typed structs ↔ Automerge documents over `node`,
+    // backed by peat-protocol's BleTranslator (ADR-041). Only constructed
+    // when the bluetooth feature is enabled.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    let ble_gateway = {
+        use peat_protocol::sync::ble_gateway::BleGateway;
+        use peat_protocol::sync::ble_translation::BleTranslator;
+        Arc::new(BleGateway::new(
+            Arc::clone(&node),
+            BleTranslator::with_defaults(),
+        ))
+    };
+
     Ok(Arc::new(PeatNode {
         sync_backend,
         storage_backend,
         #[cfg(feature = "sync")]
         node,
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        ble_gateway,
         transport_manager,
         iroh_transport: transport,
         store,
@@ -2379,6 +2407,212 @@ mod tests {
                     .expect("publish");
                 assert_ne!(id, "42", "non-string id must be discarded, not coerced");
                 assert!(!id.is_empty());
+            });
+        }
+    }
+
+    /// Tests for the BLE-gateway helpers backing the `ingest*Jni` family.
+    /// Foundation step 3 (BleGateway-shaped JNI) of the
+    /// peat-mesh-completion / peat-btle-reduction work — see
+    /// `PEAT-MESH-COMPLETION-0.9.0.md`.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    mod ingest_position_tests {
+        use super::*;
+        use peat_mesh::sync::traits::DataSyncBackend;
+        use peat_mesh::sync::InMemoryBackend;
+        use peat_protocol::sync::ble_gateway::BleGateway;
+        use peat_protocol::sync::ble_translation::BleTranslator;
+
+        fn fresh_gateway() -> BleGateway {
+            let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
+            let node = Arc::new(peat_mesh::Node::new(backend));
+            BleGateway::new(node, BleTranslator::with_defaults())
+        }
+
+        fn rt() -> tokio::runtime::Runtime {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+        }
+
+        /// Happy path: a fully-populated JSON envelope ingests into the
+        /// tracks collection, the returned id is the translator's
+        /// BLE-prefixed track id (`ble-` + uppercase 8-hex peripheral id),
+        /// and the resulting Document carries the position fields plus
+        /// `ble_origin: true` so the gateway's outbound surface will
+        /// suppress it (loop-break check from PR #802).
+        #[test]
+        fn round_trip_full_envelope() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+                // peripheral_id 0xCAFE0001 = 3_405_643_777 — sanity-check the
+                // hex form by using a constant rather than hand-converting.
+                const PERIPHERAL: u32 = 0xCAFE_0001;
+                let json = format!(
+                    r#"{{
+                        "lat": 40.7128,
+                        "lon": -74.0060,
+                        "altitude": 100.0,
+                        "accuracy": 5.0,
+                        "peripheral_id": {},
+                        "callsign": "SCOUT-CAFE",
+                        "mesh_id": "29C916FA"
+                    }}"#,
+                    PERIPHERAL
+                );
+                let id = ingest_position_into_gateway(&gw, &json)
+                    .await
+                    .expect("ingest");
+                // Translator format: ble_id_prefix ("ble-") + uppercase 8-hex.
+                assert_eq!(id, format!("ble-{:08X}", PERIPHERAL));
+
+                let doc = gw
+                    .node()
+                    .get(gw.translator().tracks_collection(), &id)
+                    .await
+                    .expect("get")
+                    .expect("found");
+                assert_eq!(
+                    doc.fields.get("ble_origin"),
+                    Some(&serde_json::Value::Bool(true)),
+                    "ble_origin marker required for outbound loop suppression"
+                );
+            });
+        }
+
+        /// Optional fields can be omitted: altitude, accuracy, callsign,
+        /// mesh_id all default to None and the ingest still succeeds.
+        #[test]
+        fn omits_optional_fields() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+                let json = r#"{
+                    "lat": 40.7128,
+                    "lon": -74.0060,
+                    "peripheral_id": 1
+                }"#;
+                let id = ingest_position_into_gateway(&gw, json)
+                    .await
+                    .expect("ingest");
+                assert_eq!(id, "ble-00000001");
+            });
+        }
+
+        /// Missing required fields (lat/lon/peripheral_id) error rather
+        /// than silently defaulting. The JNI wrapper translates the Err
+        /// into an empty-string Java return.
+        #[test]
+        fn missing_required_fields_errors() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+                let json_no_lat = r#"{"lon": -74.0, "peripheral_id": 1}"#;
+                assert!(ingest_position_into_gateway(&gw, json_no_lat)
+                    .await
+                    .is_err());
+
+                let json_no_id = r#"{"lat": 40.0, "lon": -74.0}"#;
+                assert!(ingest_position_into_gateway(&gw, json_no_id).await.is_err());
+            });
+        }
+
+        /// Malformed JSON errors (matches the contract of the JNI wrapper).
+        #[test]
+        fn malformed_json_errors() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+                let result = ingest_position_into_gateway(&gw, "not-json").await;
+                assert!(result.is_err());
+            });
+        }
+
+        /// Regression for PR #804 round-1 [WARNING]: a Kotlin caller that
+        /// serializes peripheral_id from a signed `Int` field (rather than
+        /// `Long`/`UInt`) emits a negative JSON literal for any u32 with
+        /// the high bit set. The parser must reinterpret-cast through i32
+        /// to recover the original u32; the resulting track id must match
+        /// what the same u32 written as a positive literal produced.
+        #[test]
+        fn peripheral_id_negative_int_form_recovers_to_same_u32() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+                // 0xCAFE_0001 = 3_405_643_777 as u32; -889_323_519 is the
+                // sign-extended Int form (verified: (3_405_643_777_i64 -
+                // 4_294_967_296) == -889_323_519).
+                const POSITIVE: i64 = 3_405_643_777;
+                const NEGATIVE: i64 = -889_323_519;
+                let expected_id = "ble-CAFE0001";
+
+                let positive_json = format!(
+                    r#"{{ "lat": 40.0, "lon": -74.0, "peripheral_id": {} }}"#,
+                    POSITIVE
+                );
+                let negative_json = format!(
+                    r#"{{ "lat": 40.0, "lon": -74.0, "peripheral_id": {} }}"#,
+                    NEGATIVE
+                );
+
+                let id_pos = ingest_position_into_gateway(&gw, &positive_json)
+                    .await
+                    .expect("positive form ingests");
+                assert_eq!(id_pos, expected_id);
+
+                let id_neg = ingest_position_into_gateway(&gw, &negative_json)
+                    .await
+                    .expect("negative (Kotlin Int) form ingests");
+                assert_eq!(
+                    id_neg, expected_id,
+                    "both forms must yield the same track id"
+                );
+            });
+        }
+
+        /// Out-of-range values reject rather than silently truncate.
+        /// Without bounds-checking, a >u32::MAX value would `as u32`
+        /// truncate and collide distinct logical IDs onto the same
+        /// translator-emitted track id, mis-attributing positions.
+        #[test]
+        fn peripheral_id_out_of_range_errors() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+
+                // u32::MAX + 1
+                let too_big = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": 4294967296 }"#;
+                assert!(ingest_position_into_gateway(&gw, too_big).await.is_err());
+
+                // i32::MIN - 1
+                let too_small = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": -2147483649 }"#;
+                assert!(ingest_position_into_gateway(&gw, too_small).await.is_err());
+            });
+        }
+
+        /// u32::MAX and i32::MIN are valid boundaries. u32::MAX exercises
+        /// the top of the positive form; i32::MIN exercises the top of the
+        /// negative-Int form (a u32 with `high_bit=1, rest=0` =
+        /// `0x8000_0000` = `-2_147_483_648` as Int).
+        #[test]
+        fn peripheral_id_boundaries_accepted() {
+            let rt = rt();
+            rt.block_on(async {
+                let gw = fresh_gateway();
+
+                let max_json = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": 4294967295 }"#;
+                let id = ingest_position_into_gateway(&gw, max_json)
+                    .await
+                    .expect("u32::MAX");
+                assert_eq!(id, "ble-FFFFFFFF");
+
+                let min_int_json = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": -2147483648 }"#;
+                let id = ingest_position_into_gateway(&gw, min_int_json)
+                    .await
+                    .expect("i32::MIN as Int form");
+                assert_eq!(id, "ble-80000000");
             });
         }
     }
@@ -3841,6 +4075,190 @@ async fn publish_document_into_node(
     node.publish(collection, document).await
 }
 
+/// Ingest a peat-btle [`BlePosition`]-shaped JSON envelope into the BLE
+/// gateway, which translates it to an Automerge track document and publishes
+/// it via [`peat_mesh::Node`]. From there iroh-bound peers receive the doc
+/// through Automerge sync — this is the BLE→Node→iroh half of the
+/// cross-transport bridge that step 4 of the foundation work validates.
+///
+/// JSON envelope (matches the `BlePosition` field shape plus the surrounding
+/// metadata `BleGateway::ingest_position` needs):
+/// ```json
+/// {
+///   "lat": 40.7,
+///   "lon": -74.0,
+///   "altitude": 100.0,        // optional
+///   "accuracy": 5.0,          // optional
+///   "peripheral_id": 3405643777,
+///   "callsign": "SCOUT-CAFE", // optional
+///   "mesh_id": "29C916FA"     // optional
+/// }
+/// ```
+///
+/// `peripheral_id` accepts the full u32 range expressed two ways: as a
+/// non-negative integer (Kotlin `Long`/`UInt` paths) or as a sign-extended
+/// negative integer (Kotlin `Int.toLong()` of a u32 with the high bit set —
+/// e.g. `0xCAFE_0001` reads as `-889323519` through a signed Int). Both forms
+/// recover the same u32 internally; values above `u32::MAX` or below
+/// `i32::MIN` are rejected rather than silently truncated. See
+/// [`parse_peripheral_id`].
+///
+/// Kotlin signature: `external fun ingestPositionJni(handle: Long, json: String): String`
+///
+/// Returns the assigned track-document id on success, or empty string on any
+/// failure (handle invalid, bluetooth feature not built, JSON malformed, missing
+/// required fields, peripheral_id out of range, gateway publish error).
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    json: JString,
+) -> jstring {
+    let result_str: String = if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("ingestPositionJni: Invalid handle (0)");
+        String::new()
+    } else {
+        match env.get_string(&json) {
+            Ok(j) => {
+                let json_str: String = j.into();
+                let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+                let gateway = Arc::clone(&node_owner.ble_gateway);
+                let runtime = Arc::clone(&node_owner.runtime);
+                std::mem::forget(node_owner);
+
+                match runtime.block_on(ingest_position_into_gateway(&gateway, &json_str)) {
+                    Ok(id) => id,
+                    Err(_e) => {
+                        #[cfg(target_os = "android")]
+                        android_log(&format!("ingestPositionJni: ingest failed: {}", _e));
+                        String::new()
+                    }
+                }
+            }
+            Err(_e) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!("ingestPositionJni: failed to read json: {:?}", _e));
+                String::new()
+            }
+        }
+    };
+
+    env.new_string(result_str)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Pure-Rust helper backing [`Java_..._ingestPositionJni`]. Parses the JSON
+/// envelope into a [`BlePosition`] plus the surrounding ingest metadata,
+/// then calls [`BleGateway::ingest_position`]. Exposed for unit tests so
+/// the parse + ingest path can be exercised without spinning up a JVM.
+///
+/// Hand-rolled JSON parsing rather than `#[derive(Deserialize)]` because
+/// peat-ffi does not currently depend on `serde` directly (only
+/// `serde_json`); adding it just for one private marshaling struct isn't
+/// worth a Cargo.toml change and a fresh transitive footprint.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+async fn ingest_position_into_gateway(
+    gateway: &peat_protocol::sync::ble_gateway::BleGateway,
+    json: &str,
+) -> anyhow::Result<String> {
+    use peat_protocol::sync::ble_translation::BlePosition;
+    use serde_json::Value;
+
+    let value: Value = serde_json::from_str(json)
+        .map_err(|e| anyhow::anyhow!("invalid ingest-position JSON: {}", e))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("ingest-position JSON must be an object"))?;
+
+    let lat = obj
+        .get("lat")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("ingest-position: missing or non-numeric `lat`"))?
+        as f32;
+    let lon = obj
+        .get("lon")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("ingest-position: missing or non-numeric `lon`"))?
+        as f32;
+    let peripheral_id = parse_peripheral_id(obj.get("peripheral_id"))?;
+
+    let altitude = obj
+        .get("altitude")
+        .and_then(Value::as_f64)
+        .map(|v| v as f32);
+    let accuracy = obj
+        .get("accuracy")
+        .and_then(Value::as_f64)
+        .map(|v| v as f32);
+    let callsign = obj
+        .get("callsign")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mesh_id = obj
+        .get("mesh_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let position = BlePosition {
+        latitude: lat,
+        longitude: lon,
+        altitude,
+        accuracy,
+    };
+
+    gateway
+        .ingest_position(
+            &position,
+            peripheral_id,
+            callsign.as_deref(),
+            mesh_id.as_deref(),
+        )
+        .await
+}
+
+/// Parse a `peripheral_id` JSON value into a `u32`, accepting both the
+/// positive form (Kotlin `Long` / `UInt`) and the sign-extended-Int form
+/// (Kotlin `Int.toLong()` of a value with the high bit set, which serializes
+/// as a negative JSON literal). Reinterprets the bits via `i32 as u32` for
+/// the negative case so a watch with peripheral_id `0xCAFE_0001` round-trips
+/// the same regardless of which Kotlin numeric type the caller used.
+///
+/// Rejects missing values, non-integer values, and values outside
+/// `[i32::MIN, u32::MAX]` (above-u32::MAX would otherwise silently truncate
+/// and collide distinct logical IDs onto the same translator-emitted track
+/// id `ble-XXXXXXXX`, mis-attributing positions to peers — caught by PR
+/// #804 round-1 review).
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+fn parse_peripheral_id(value: Option<&serde_json::Value>) -> anyhow::Result<u32> {
+    let raw = value.and_then(serde_json::Value::as_i64).ok_or_else(|| {
+        anyhow::anyhow!("ingest-position: missing or non-integer `peripheral_id`")
+    })?;
+
+    if (0..=u32::MAX as i64).contains(&raw) {
+        // Positive: Kotlin Long, UInt, or any numeric type that produced a
+        // non-negative JSON literal. Direct cast — no truncation since we
+        // bounded above.
+        Ok(raw as u32)
+    } else if (i32::MIN as i64..=-1).contains(&raw) {
+        // Negative: Kotlin Int.toLong() of a u32 with the high bit set
+        // (e.g. 0xCAFE_0001 = 3_405_643_777 stored in a signed Int reads as
+        // -889_323_519). `as i32` preserves the bit pattern, then
+        // `as u32` reinterprets — so the recovered u32 matches what the
+        // caller's u32 originally was, before Kotlin's signed-Int coercion.
+        Ok((raw as i32) as u32)
+    } else {
+        Err(anyhow::anyhow!(
+            "ingest-position: `peripheral_id` {} out of u32 range \
+             (accepts [i32::MIN, u32::MAX] to handle both Kotlin Int and Long callers)",
+            raw
+        ))
+    }
+}
+
 /// Connect to a known peer by node ID and address (bypasses mDNS).
 ///
 /// Kotlin signature: external fun connectPeerJni(handle: Long, nodeId: String, address: String): Boolean
@@ -4493,6 +4911,12 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
             sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
             fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni as *mut c_void,
         },
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "ingestPositionJni".into(),
+            sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni as *mut c_void,
+        },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "connectPeerJni".into(),
@@ -4787,6 +5211,13 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "publishDocumentJni".into(),
                     sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth"))]
+                NativeMethod {
+                    name: "ingestPositionJni".into(),
+                    sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
