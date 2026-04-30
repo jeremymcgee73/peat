@@ -28,6 +28,16 @@ mod metrics;
 mod queue;
 mod reconnect;
 mod traits;
+// ADR-059 Slice 1.5: Cursor-on-Target [`Translator`] impl wired against
+// the peat-mesh Slice 1 trait. Codec-only — does not own the radio
+// (that stays in the `server` / `mesh` transports). Gated behind the
+// `mesh-translator` Cargo feature so consumers without peat-mesh in
+// their dep graph (radio-only TAK clients) can still use this crate.
+// See `cot_translator.rs` module docs for trait-stability findings.
+//
+// [`Translator`]: peat_mesh::transport::Translator
+#[cfg(feature = "mesh-translator")]
+mod cot_translator;
 
 pub mod bridge;
 pub mod mesh;
@@ -44,5 +54,7 @@ pub use queue::TakMessageQueue;
 pub use reconnect::ReconnectionManager;
 pub use traits::{CotEventStream, CotFilter, TakTransport};
 
+#[cfg(feature = "mesh-translator")]
+pub use cot_translator::{CotTranslator, CotTranslatorConfig};
 pub use mesh::MeshSaTransport;
 pub use server::TakServerTransport;

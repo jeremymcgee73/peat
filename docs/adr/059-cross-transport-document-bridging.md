@@ -380,6 +380,21 @@ A transport without a `Translator` implementation may participate as a transport
 
 **Automerge no-op-merge suppression.** The multi-hop loop-prevention story (gateway A publishes via BLE with `origin=Some("ble")` → Automerge syncs to gateway B over iroh → B fans out to its transports) depends on iroh's CRDT round-trip back to A *not* firing a `ChangeEvent` on A's idempotent merge of state A already has. If `Node` were to emit a `ChangeEvent` on no-op merges, A would re-observe its own doc with `event.origin = None` (no local publish_with_origin produced it) and re-fan-out to BLE — exactly the loop the per-event origin design exists to prevent. The orchestrator therefore relies on `Node`'s `ChangeEvent` stream suppressing no-op merges. peat-mesh ADR-0007 (Consumer Interface Adapters) and the existing `AutomergeIrohBackend` change-detection path in `peat-protocol/src/sync/automerge.rs` already implement this — events fire on actual state change, not on every sync round-trip. Slice 1 implementation **must include a regression test fixture exercising the A→B→A round-trip** to lock the contract; if a future backend change breaks no-op suppression, the orchestrator's fallback is a content-hash dedup at the fan-out boundary (compare event's resulting doc digest against a small per-`doc_id` recently-emitted set).
 
+### Codec placement (where each `Translator` lives)
+
+Each transport's `Translator` impl lives in **the same crate as that transport**, gated behind a `mesh-translator` Cargo feature so the transport crate can still be consumed standalone — without dragging `peat-mesh` into the dep graph — by callers that only need the radio side. This keeps the rule unambiguous as new transports land:
+
+- BLE codec → `peat-btle` (behind `peat-btle/mesh-translator`). Standalone Bitchat-style consumers compile peat-btle without the feature and never see peat-mesh.
+- TAK CoT codec → `peat-transport` (behind `peat-transport/mesh-translator`). Today's home, since the existing TAK Server / Mesh SA radio transports already live there.
+- Future LoRa / SBD / mavlink codecs → their own `peat-lora` / `peat-sbd` / `peat-mavlink` crates, each behind the same feature shape.
+
+Two consequences worth naming so future codec PRs don't re-litigate:
+
+1. **The transport crate must remain compilable without the feature.** This is a forcing function: it prevents the codec from leaking peat-mesh types into transport-side public APIs (radio code stays decoupled from CRDT machinery). CI runs both `--no-default-features` and `--features mesh-translator` builds.
+2. **Codec naming tracks the wire format, not the transport family.** TAK is an ecosystem with multiple wire formats (CoT XML, CoT protobuf, Mission Package); the codec is `CotTranslator` in `peat-transport/src/tak/cot_translator.rs`, not `TakTranslator`. The `transport_id()` returned to `TransportManager` still names the transport family (`"tak"`), since that's the unit `allowed_transports` filters on — finer-grained codecs within one family register under suffixed IDs (`"tak-mp"`, etc.) only if they need separate origin tagging.
+
+Slice 1.5 (TAK trait-stability gate) lands the rule for `peat-transport`. The `BleTranslator` migration from `peat-protocol` to `peat-btle` is a tracked follow-up — same shape, cross-repo move.
+
 ### Schema impact
 
 Only **one** new document field is introduced. Origin tagging for loop prevention rides on `ChangeEvent.origin` (a per-event API addition, not a document field) and `Node::publish_with_origin` (a publish-API addition); see fan-out orchestration above for the contract. Neither is in cap-schema or on the wire.
