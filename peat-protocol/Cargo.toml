@@ -32,6 +32,13 @@ chrono = { workspace = true }
 tempfile = "3.13"
 base64 = "0.22"
 prost = "0.13"
+# postcard: codec-internal binary serialization between Translator
+# (Rust) and OutboundSink (Kotlin/Swift via FFI). Per ADR-059 Slice 1.b
+# (peat-mesh ADR-0011); chosen over ciborium for active maintenance,
+# embedded-Rust ecosystem fit (embassy/esp-hal, peat-lite), and
+# documented frozen v1 wire format. See ADR-059 §"Per-transport
+# channel sizing" and Slice 1.b project-health audit notes.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 # Security/Crypto dependencies (ADR-006)
 ed25519-dalek = { version = "2", features = ["rand_core"] }

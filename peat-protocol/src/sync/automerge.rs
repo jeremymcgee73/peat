@@ -480,6 +480,14 @@ impl AutomergeBackend {
                     .unwrap_or(false);
                 Ok(is_deleted)
             }
+
+            // peat-mesh's `Query` is `#[non_exhaustive]` (peat-mesh
+            // 0.9.0-rc.3+), so this match must include a wildcard
+            // arm. New variants — like the Slice 2 `AllowedTransport`
+            // discussed in ADR-059 — are not understood by this
+            // backend until they're implemented; for now they don't
+            // match anything.
+            _ => Ok(false),
         }
     }
 
@@ -609,7 +617,12 @@ impl Default for AutomergeBackend {
 
 #[async_trait]
 impl DocumentStore for AutomergeBackend {
-    async fn upsert(&self, collection: &str, mut document: Document) -> anyhow::Result<DocumentId> {
+    async fn upsert_with_origin(
+        &self,
+        collection: &str,
+        mut document: Document,
+        origin: Option<String>,
+    ) -> anyhow::Result<DocumentId> {
         // Generate ID if not present
         let doc_id = document
             .id
@@ -644,6 +657,7 @@ impl DocumentStore for AutomergeBackend {
             let _ = observer.send(ChangeEvent::Updated {
                 collection: collection.to_string(),
                 document: document.clone(),
+                origin: origin.clone(),
             });
         }
         drop(observers);
@@ -708,6 +722,12 @@ impl DocumentStore for AutomergeBackend {
             let _ = observer.send(ChangeEvent::Removed {
                 collection: collection.to_string(),
                 doc_id: doc_id.clone(),
+                // No origin: this `remove()` path has no per-call
+                // origin hint surfaced. Slice 2 §Delete propagation
+                // will widen this to surface origin from a future
+                // `remove_with_origin()` (if a transport-side delete
+                // bridge needs to suppress its own echo).
+                origin: None,
             });
         }
         drop(observers);
@@ -762,6 +782,7 @@ impl DocumentStore for AutomergeBackend {
 
         // Send initial snapshot
         let _ = tx.send(ChangeEvent::Initial {
+            collection: collection.to_string(),
             documents: initial_docs,
         });
 
@@ -1757,8 +1778,34 @@ struct IrohDocumentStore {
 
 #[async_trait]
 impl DocumentStore for IrohDocumentStore {
-    async fn upsert(&self, collection: &str, document: Document) -> anyhow::Result<DocumentId> {
+    async fn upsert_with_origin(
+        &self,
+        collection: &str,
+        document: Document,
+        origin: Option<String>,
+    ) -> anyhow::Result<DocumentId> {
         use crate::storage::traits::StorageBackend;
+
+        // ADR-059 Slice 1.b.2.1 deferred-work marker: origin is NOT
+        // yet threaded into the broadcast-driven observer events this
+        // backend emits (see `observe()` ~line 2150). The observer
+        // task fetches docs from the store on backend-broadcast
+        // notifications, far removed in time + call stack from this
+        // upsert; threading origin requires an in-flight
+        // `(doc_key → origin)` map with TTL semantics, which is the
+        // shape Slice 1.b.2.2 needs to design alongside peat-ffi's
+        // `ingestPositionJni` rewire (the first real producer of
+        // `Some(origin)` calls into this method).
+        //
+        // Until then: locally-published documents with `Some(origin)`
+        // emit observer events with `origin: None`, which means the
+        // orchestrator's same-node echo-loop suppression is **not**
+        // enforced on iroh fan-out for this backend. This is safe in
+        // practice in Slice 1.b.2.1 because no caller passes
+        // `Some(origin)` to this method yet — `Node::publish` (the
+        // origin-less convenience) is the only producer. The
+        // `_origin = origin;` below is a placeholder until 1.b.2.2.
+        let _ = origin;
 
         // Generate ID if not provided
         let doc_id = document.id.clone().unwrap_or_else(|| {
@@ -2091,6 +2138,7 @@ impl DocumentStore for IrohDocumentStore {
 
         // Send initial snapshot
         let _ = tx.send(ChangeEvent::Initial {
+            collection: collection.to_string(),
             documents: initial_docs,
         });
 
@@ -2165,6 +2213,13 @@ impl DocumentStore for IrohDocumentStore {
                                     .send(ChangeEvent::Updated {
                                         collection: collection_name.clone(),
                                         document: doc,
+                                        // Sync-delivered events have no
+                                        // local-transport origin (per
+                                        // ADR-059): this node didn't
+                                        // ingest the doc via a local
+                                        // bridge, the change came from
+                                        // a remote peer's Automerge ops.
+                                        origin: None,
                                     })
                                     .is_err()
                                 {
@@ -2222,6 +2277,10 @@ impl DocumentStore for IrohDocumentStore {
                                             .send(ChangeEvent::Updated {
                                                 collection: collection_name.clone(),
                                                 document: doc,
+                                                // Sync-delivered observer event
+                                                // (per ADR-059): no local-transport
+                                                // origin.
+                                                origin: None,
                                             })
                                             .is_err()
                                         {
@@ -3946,6 +4005,11 @@ fn matches_query(doc: &Document, query: &Query) -> bool {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         }
+
+        // peat-mesh's `Query` is `#[non_exhaustive]`; new variants
+        // (e.g. Slice 2's `AllowedTransport`) are not yet meaningful
+        // here.
+        _ => false,
     }
 }
 

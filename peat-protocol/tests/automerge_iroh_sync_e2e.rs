@@ -568,7 +568,7 @@ async fn test_observer_notifications_on_remote_sync() {
         .expect("Channel closed before Initial event");
 
     match initial_event {
-        ChangeEvent::Initial { documents } => {
+        ChangeEvent::Initial { documents, .. } => {
             println!(
                 "  ✓ Received Initial event with {} documents",
                 documents.len()
@@ -628,6 +628,7 @@ async fn test_observer_notifications_on_remote_sync() {
         Ok(Some(ChangeEvent::Updated {
             collection,
             document,
+            ..
         })) => {
             println!("  ✓ Received Updated event!");
             println!("    Collection: {}", collection);
@@ -641,6 +642,11 @@ async fn test_observer_notifications_on_remote_sync() {
         }
         Ok(Some(ChangeEvent::Initial { .. })) => {
             panic!("Unexpected second Initial event");
+        }
+        Ok(Some(_)) => {
+            // ChangeEvent is non_exhaustive (peat-mesh 0.9.0-rc.3+);
+            // future variants are not yet meaningful for this test.
+            panic!("Unexpected non-exhaustive ChangeEvent variant");
         }
         Ok(None) => {
             panic!("Observer channel closed unexpectedly");

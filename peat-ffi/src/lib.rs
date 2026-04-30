@@ -4004,6 +4004,10 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumen
                 let runtime = Arc::clone(&node_owner.runtime);
                 std::mem::forget(node_owner);
 
+                // clippy suggests `.unwrap_or_default()` but the Err
+                // arm has a real side effect (android_log call) that
+                // would be lost.
+                #[allow(clippy::manual_unwrap_or_default)]
                 match runtime.block_on(publish_document_into_node(
                     &mesh_node,
                     &collection_str,

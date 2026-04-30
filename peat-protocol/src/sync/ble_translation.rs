@@ -739,6 +739,188 @@ impl BleTranslator {
 }
 
 // =============================================================================
+// peat-mesh `Translator` impl (ADR-059 Slice 1.b)
+// =============================================================================
+//
+// Bridges `BleTranslator`'s typed-struct surface (`BlePosition`,
+// `BlePeripheral`, `BleEmergencyEvent`, `BleCannedMessage`) to the
+// generic `peat_mesh::transport::Translator` contract. The orchestrator
+// (`TransportManager` fan-out) hands documents in via
+// `encode_outbound`; bytes-from-the-radio come back via
+// `decode_inbound`.
+//
+// Wire format: **postcard-encoded typed BLE struct.** Codec-internal,
+// crosses the FFI boundary between Rust orchestrator and Kotlin/Swift
+// `OutboundSink`. The Sink is responsible for the final transport-
+// specific framing (peat-btle's marker bytes, encryption envelope,
+// GATT write); the Translator's contract is just "a portable byte
+// representation of the doc, suitable for any sink that knows my
+// doc-type encoding." postcard chosen over ciborium for active
+// maintenance, no_std-first design matching peat-lite, and the
+// embedded-Rust ecosystem fit (embassy/esp-hal). See peat-mesh
+// ADR-0011 / peat ADR-059 §"Per-transport channel sizing" and the
+// Slice 1.b project-health audit.
+//
+// Dispatch: by `ctx.collection`. The orchestrator populates this
+// from `ChangeEvent.collection` (ADR-059 Slice 1.b.1, peat-mesh#88);
+// `BleTranslator` reads it to choose between `*_to_*` methods.
+// Documents in collections this translator doesn't carry — or
+// translation failures (e.g. malformed track) — return `None`
+// from `encode_outbound` (decline, not error).
+
+use async_trait::async_trait;
+use peat_mesh::sync::Document as MeshDocument;
+use peat_mesh::transport::{TranslationContext, Translator};
+
+#[async_trait]
+impl Translator for BleTranslator {
+    fn transport_id(&self) -> &'static str {
+        "ble"
+    }
+
+    async fn encode_outbound(
+        &self,
+        doc: &MeshDocument,
+        ctx: &TranslationContext,
+    ) -> Option<Vec<u8>> {
+        let collection = ctx.collection.as_deref()?;
+        // Reconstruct the JSON Value that the legacy `*_to_*`
+        // methods take. Document.fields is HashMap<String, Value>;
+        // Value::Object(Map) round-trips cleanly.
+        let value = mesh_doc_to_value(doc);
+
+        // Dispatch by collection. Configuration is per-translator —
+        // collections aren't hard-coded "tracks"/"platforms"/etc.,
+        // but read from `self.config.*_collection` so operators can
+        // rename them without breaking the translator.
+        let bytes = if collection == self.tracks_collection() {
+            postcard_encode(&self.track_to_position(&value)?)
+        } else if collection == self.platforms_collection() {
+            postcard_encode(&self.platform_to_peripheral(&value)?)
+        } else if collection == self.alerts_collection() {
+            postcard_encode(&self.alert_to_emergency(&value)?)
+        } else if collection == self.canned_messages_collection() {
+            postcard_encode(&self.doc_to_canned_message(&value)?)
+        } else {
+            // Decline: this translator doesn't carry the collection.
+            // Per ADR-059, `None` here is normal traffic — operators
+            // with collections scoped to other transports will see
+            // their docs declined here without diagnostic.
+            return None;
+        }?;
+
+        Some(bytes)
+    }
+
+    async fn decode_inbound(
+        &self,
+        bytes: &[u8],
+        ctx: &TranslationContext,
+    ) -> anyhow::Result<Option<MeshDocument>> {
+        use anyhow::Context;
+        let collection = match ctx.collection.as_deref() {
+            Some(c) => c,
+            // No collection in context: the inbound bridge didn't tell
+            // us what to decode. Treat as "not for this translator"
+            // (Ok(None)) rather than Err — Err is reserved for
+            // wire-format-drift diagnostics per the trait contract.
+            None => return Ok(None),
+        };
+
+        // Default callsign / cell scope for the decode side: pull from
+        // the context (set by the inbound bridge before invoking us).
+        let callsign = ctx.local_callsign.as_deref();
+        let mesh_id = ctx.cell_id.as_deref();
+
+        let value = if collection == self.tracks_collection() {
+            let pos: BlePosition =
+                postcard::from_bytes(bytes).context("ble: decode BlePosition (tracks)")?;
+            // Inbound peripheral_id is in the typed struct's wire form
+            // for tracks via the source field; we use a default of 0
+            // when not available — the inbound bridge can override
+            // via ctx.local_wire_id when it knows.
+            let peripheral_id = ctx
+                .local_wire_id
+                .as_deref()
+                .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(0);
+            self.position_to_track_in_cell(&pos, peripheral_id, callsign, mesh_id)
+        } else if collection == self.platforms_collection() {
+            let per: BlePeripheral =
+                postcard::from_bytes(bytes).context("ble: decode BlePeripheral (platforms)")?;
+            self.peripheral_to_platform_in_cell(&per, mesh_id)
+        } else if collection == self.alerts_collection() {
+            let em: BleEmergencyEvent =
+                postcard::from_bytes(bytes).context("ble: decode BleEmergencyEvent (alerts)")?;
+            self.emergency_to_alert(&em, callsign)
+        } else if collection == self.canned_messages_collection() {
+            let cm: BleCannedMessage = postcard::from_bytes(bytes)
+                .context("ble: decode BleCannedMessage (canned_messages)")?;
+            self.canned_message_to_doc_in_cell(&cm, callsign, mesh_id)
+        } else {
+            return Ok(None);
+        };
+
+        Ok(Some(value_to_mesh_doc(value)))
+    }
+}
+
+/// Convert a `peat_mesh::Document` into a `serde_json::Value` for the
+/// legacy `*_to_*` methods. `Document.fields` is already
+/// `HashMap<String, serde_json::Value>`; we just wrap it as an Object
+/// and stamp the id if present.
+fn mesh_doc_to_value(doc: &MeshDocument) -> Value {
+    let mut map = serde_json::Map::with_capacity(doc.fields.len() + 1);
+    for (k, v) in &doc.fields {
+        map.insert(k.clone(), v.clone());
+    }
+    if let Some(id) = &doc.id {
+        // The legacy methods treat "id" as a normal field; preserve it
+        // for callers that read it from the Value form.
+        map.entry("id".to_string())
+            .or_insert_with(|| Value::String(id.clone()));
+    }
+    Value::Object(map)
+}
+
+/// Inverse: rebuild a `peat_mesh::Document` from a `Value`.
+fn value_to_mesh_doc(value: Value) -> MeshDocument {
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let fields: HashMap<String, Value> = match value {
+        Value::Object(map) => map.into_iter().collect(),
+        // Non-object input shouldn't happen — the `*_to_*` methods
+        // produce JSON objects — but degrade gracefully.
+        _ => HashMap::new(),
+    };
+    MeshDocument {
+        id,
+        fields,
+        updated_at: SystemTime::now(),
+    }
+}
+
+/// postcard-serialize a value, returning `None` on encode failure
+/// (vanishingly rare with serde-derived structs, but we don't surface
+/// errors out of `encode_outbound` — the trait's `Option` return is
+/// the contract). Logs at warn level for codec-side telemetry.
+fn postcard_encode<T: Serialize>(value: &T) -> Option<Vec<u8>> {
+    match postcard::to_allocvec(value) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "ble translator: postcard encode failed (this is unusual; \
+                 typed BLE structs derive Serialize)"
+            );
+            None
+        }
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1115,5 +1297,184 @@ mod tests {
             ..TranslationConfig::default()
         });
         assert_eq!(custom.canned_messages_collection(), "my_messages");
+    }
+
+    // ========================================================================
+    // peat-mesh `Translator` trait impl tests (ADR-059 Slice 1.b)
+    // ========================================================================
+
+    use peat_mesh::transport::TranslationContext;
+    // No need to import `Translator` itself — the impl block at the
+    // top of this file already does, and method dispatch on a known
+    // concrete type doesn't require the trait in scope.
+
+    fn doc_with_fields(fields: serde_json::Map<String, serde_json::Value>) -> MeshDocument {
+        let id = fields.get("id").and_then(|v| v.as_str()).map(String::from);
+        MeshDocument {
+            id,
+            fields: fields.into_iter().collect(),
+            updated_at: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn translator_transport_id_is_ble() {
+        let t = test_translator();
+        assert_eq!(t.transport_id(), "ble");
+    }
+
+    #[tokio::test]
+    async fn translator_encode_outbound_declines_when_no_collection() {
+        let t = test_translator();
+        let doc = doc_with_fields(serde_json::Map::new());
+        let ctx = TranslationContext::outbound();
+        // No `with_collection`; must decline rather than dispatch
+        // arbitrarily.
+        assert_eq!(t.encode_outbound(&doc, &ctx).await, None);
+    }
+
+    #[tokio::test]
+    async fn translator_encode_outbound_declines_unknown_collection() {
+        let t = test_translator();
+        let doc = doc_with_fields(serde_json::Map::new());
+        let ctx = TranslationContext::outbound().with_collection("not_a_ble_collection");
+        assert_eq!(t.encode_outbound(&doc, &ctx).await, None);
+    }
+
+    /// Round-trip through the `Translator` trait surface for each of
+    /// the four BLE doc types. encode_outbound: doc → postcard bytes.
+    /// decode_inbound: bytes → doc (with the right collection's fields).
+    /// The intermediate is `postcard` per ADR-059 Slice 1.b — these
+    /// tests pin both the encoding choice and the dispatch-by-collection
+    /// behavior.
+    #[tokio::test]
+    async fn translator_roundtrip_track() {
+        let t = test_translator();
+
+        // Build a track Document the way `position_to_track_in_cell`
+        // would — that's what the inbound bridge produces today, and
+        // it's what the orchestrator's outbound fan-out would receive.
+        let position = BlePosition {
+            latitude: 33.7490,
+            longitude: -84.3880,
+            altitude: Some(320.0),
+            accuracy: None,
+        };
+        let track_value =
+            t.position_to_track_in_cell(&position, 0xCAFE_0001, Some("ALPHA-1"), Some("BRAVO"));
+        let doc = doc_with_fields(track_value.as_object().unwrap().clone());
+
+        let ctx_out = TranslationContext::outbound().with_collection(t.tracks_collection());
+        let bytes = t
+            .encode_outbound(&doc, &ctx_out)
+            .await
+            .expect("encode tracks");
+
+        // Decode back: use the inbound context shape — collection +
+        // local_wire_id stamped before invoking decode_inbound, per
+        // the trait doc on TranslationContext.collection.
+        let ctx_in = TranslationContext::inbound("peer-X")
+            .with_collection(t.tracks_collection())
+            .with_local_wire_id("CAFE0001");
+        let decoded = t
+            .decode_inbound(&bytes, &ctx_in)
+            .await
+            .expect("decode tracks Ok")
+            .expect("decode tracks Some");
+
+        // The decoded Document should have the same lat/lon as the
+        // original BlePosition, modulo float precision.
+        let decoded_lat = decoded.fields.get("lat").and_then(|v| v.as_f64()).unwrap();
+        let decoded_lon = decoded.fields.get("lon").and_then(|v| v.as_f64()).unwrap();
+        assert!((decoded_lat - 33.7490_f64).abs() < 1e-3, "lat mismatch");
+        assert!((decoded_lon - (-84.3880_f64)).abs() < 1e-3, "lon mismatch");
+    }
+
+    #[tokio::test]
+    async fn translator_roundtrip_alert() {
+        let t = test_translator();
+
+        let emergency = BleEmergencyEvent {
+            source_node: 0xDEAD_BEEF,
+            timestamp: 1_700_000_000_000,
+            acks: HashMap::new(),
+        };
+        let alert_value = t.emergency_to_alert(&emergency, Some("ALPHA-1"));
+        let doc = doc_with_fields(alert_value.as_object().unwrap().clone());
+
+        let ctx_out = TranslationContext::outbound().with_collection(t.alerts_collection());
+        let bytes = t
+            .encode_outbound(&doc, &ctx_out)
+            .await
+            .expect("encode alerts");
+
+        let ctx_in = TranslationContext::inbound("peer-X")
+            .with_collection(t.alerts_collection())
+            .with_callsign("ALPHA-1");
+        let decoded = t
+            .decode_inbound(&bytes, &ctx_in)
+            .await
+            .expect("decode alerts Ok")
+            .expect("decode alerts Some");
+
+        // Round-trip preserves source_node + timestamp fields.
+        assert_eq!(
+            decoded
+                .fields
+                .get("source_node")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            "DEADBEEF"
+        );
+        assert_eq!(
+            decoded
+                .fields
+                .get("timestamp")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            1_700_000_000_000_u64
+        );
+    }
+
+    /// decode_inbound returns `Ok(None)` (not `Err`) for an unknown
+    /// collection — per the trait contract, that's "not for this
+    /// translator," not a wire-format-drift error. Reserved for
+    /// telemetry distinguishability from real malformed bytes.
+    #[tokio::test]
+    async fn translator_decode_inbound_unknown_collection_returns_ok_none() {
+        let t = test_translator();
+        let bytes = postcard::to_allocvec(&BlePosition {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: None,
+            accuracy: None,
+        })
+        .unwrap();
+
+        let ctx = TranslationContext::inbound("peer-X").with_collection("not_a_ble_collection");
+        let result = t
+            .decode_inbound(&bytes, &ctx)
+            .await
+            .expect("Ok, not Err — decline is not a wire-format error");
+        assert!(result.is_none(), "decline returns Ok(None)");
+    }
+
+    /// decode_inbound returns `Err` (not `Ok(None)`) for **malformed
+    /// bytes** addressed to a known collection. This is the
+    /// wire-format-drift telemetry signal the trait contract
+    /// requires distinguishability for.
+    #[tokio::test]
+    async fn translator_decode_inbound_malformed_bytes_returns_err() {
+        let t = test_translator();
+        // Postcard expects specific framing for BlePosition; arbitrary
+        // bytes will fail to deserialize.
+        let bytes = b"this is not a postcard-encoded BlePosition";
+
+        let ctx = TranslationContext::inbound("peer-X").with_collection(t.tracks_collection());
+        let result = t.decode_inbound(bytes, &ctx).await;
+        assert!(
+            result.is_err(),
+            "malformed bytes for a known collection must surface as Err for telemetry"
+        );
     }
 }

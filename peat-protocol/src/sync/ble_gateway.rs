@@ -330,8 +330,12 @@ fn document_to_value(doc: &Document) -> Value {
 fn documents_for_event(event: &ChangeEvent) -> &[Document] {
     match event {
         ChangeEvent::Updated { document, .. } => std::slice::from_ref(document),
-        ChangeEvent::Initial { documents } => documents.as_slice(),
+        ChangeEvent::Initial { documents, .. } => documents.as_slice(),
         ChangeEvent::Removed { .. } => &[],
+        // peat-mesh's `ChangeEvent` is `#[non_exhaustive]` (peat-mesh
+        // 0.9.0-rc.3+); future variants (e.g. when Slice 2 enables
+        // delete propagation) carry no document payload to translate.
+        _ => &[],
     }
 }
 
@@ -397,6 +401,7 @@ mod tests {
             ChangeEvent::Updated {
                 collection,
                 document,
+                ..
             } => {
                 assert_eq!(collection, "tracks");
                 // The translator stamps `ble_origin: true`; verify it survived
@@ -431,6 +436,7 @@ mod tests {
         let updated = ChangeEvent::Updated {
             collection: "tracks".to_string(),
             document: iroh_track(40.0, -74.0, "ALPHA-1", 0x0000_0001),
+            origin: None,
         };
 
         let positions = gw.change_event_to_positions(&updated);
@@ -464,6 +470,7 @@ mod tests {
         .expect("ble doc");
 
         let initial = ChangeEvent::Initial {
+            collection: "tracks".to_string(),
             documents: vec![iroh_a, ble_c, iroh_b],
         };
 
@@ -486,6 +493,7 @@ mod tests {
         let removed = ChangeEvent::Removed {
             collection: "tracks".to_string(),
             doc_id: "any".to_string(),
+            origin: None,
         };
         assert!(gw.change_event_to_positions(&removed).is_empty());
     }
@@ -554,6 +562,7 @@ mod tests {
             ChangeEvent::Updated {
                 collection,
                 document,
+                ..
             } => {
                 assert_eq!(collection, "alerts");
                 assert_eq!(document.fields.get("ble_origin"), Some(&Value::Bool(true)));
@@ -587,6 +596,7 @@ mod tests {
         let updated = ChangeEvent::Updated {
             collection: "alerts".to_string(),
             document: value_to_document(value).expect("doc"),
+            origin: None,
         };
 
         let recovered = gw.change_event_to_emergencies(&updated);
