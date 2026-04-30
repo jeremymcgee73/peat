@@ -255,7 +255,7 @@ async fn wait_for_doc_on_node<B: DataSyncBackend>(
                                     }
                                 }
                             }
-                            Some(ChangeEvent::Initial { documents }) => {
+                            Some(ChangeEvent::Initial { documents, .. }) => {
                                 if documents.iter().any(|d| d.id.as_deref() == Some(doc_id)) {
                                     if let Ok(Some(_)) = backend.document_store().get(collection, &doc_id_owned).await {
                                         return true;
