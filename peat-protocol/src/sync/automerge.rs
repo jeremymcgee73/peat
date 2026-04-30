@@ -1774,6 +1774,12 @@ struct IrohDocumentStore {
     lamport_counter: Arc<AtomicU64>,
     /// Node ID for tombstone attribution (Issue #668)
     node_id: String,
+    /// In-flight origin map for the observer pipeline (ADR-059).
+    /// Populated by [`Self::upsert_with_origin`] before the storage write
+    /// triggers the backend broadcast; drained by the observer task in
+    /// [`Self::observe`] when the matching `doc_key` notification arrives.
+    /// Bounded + TTL'd against broadcast loss / lagged-rescan.
+    pending_origins: Arc<crate::sync::pending_origins::PendingOrigins>,
 }
 
 #[async_trait]
@@ -1785,27 +1791,6 @@ impl DocumentStore for IrohDocumentStore {
         origin: Option<String>,
     ) -> anyhow::Result<DocumentId> {
         use crate::storage::traits::StorageBackend;
-
-        // ADR-059 Slice 1.b.2.1 deferred-work marker: origin is NOT
-        // yet threaded into the broadcast-driven observer events this
-        // backend emits (see `observe()` ~line 2150). The observer
-        // task fetches docs from the store on backend-broadcast
-        // notifications, far removed in time + call stack from this
-        // upsert; threading origin requires an in-flight
-        // `(doc_key → origin)` map with TTL semantics, which is the
-        // shape Slice 1.b.2.2 needs to design alongside peat-ffi's
-        // `ingestPositionJni` rewire (the first real producer of
-        // `Some(origin)` calls into this method).
-        //
-        // Until then: locally-published documents with `Some(origin)`
-        // emit observer events with `origin: None`, which means the
-        // orchestrator's same-node echo-loop suppression is **not**
-        // enforced on iroh fan-out for this backend. This is safe in
-        // practice in Slice 1.b.2.1 because no caller passes
-        // `Some(origin)` to this method yet — `Node::publish` (the
-        // origin-less convenience) is the only producer. The
-        // `_origin = origin;` below is a placeholder until 1.b.2.2.
-        let _ = origin;
 
         // Generate ID if not provided
         let doc_id = document.id.clone().unwrap_or_else(|| {
@@ -1820,6 +1805,15 @@ impl DocumentStore for IrohDocumentStore {
         // Serialize document to JSON bytes
         let json_bytes = serde_json::to_vec(&document)?;
 
+        // ADR-059: stash origin BEFORE the upsert so the observer task —
+        // which fires on the backend's broadcast notification after
+        // `coll.upsert` returns — can recover it. Inserting after the
+        // upsert would race the observer if the broadcast notification
+        // arrives before this line completes (the broadcast is
+        // synchronous on the storage path).
+        let doc_key = format!("{}:{}", collection, doc_id);
+        self.pending_origins.insert(doc_key.clone(), origin);
+
         // Get collection and upsert
         let coll = self.backend.collection(collection);
         coll.upsert(&doc_id, json_bytes)
@@ -1831,8 +1825,8 @@ impl DocumentStore for IrohDocumentStore {
             })?;
 
         // Trigger sync to push the document to connected peers
-        // The doc_key format is "collection:doc_id"
-        let doc_key = format!("{}:{}", collection, doc_id);
+        // The doc_key format is "collection:doc_id" (computed above for
+        // the pending_origins stash; reuse the same value here).
         match self.backend.sync_document(&doc_key).await {
             Ok(()) => {
                 tracing::debug!("Sync triggered for document {} after upsert", doc_key);
@@ -2155,6 +2149,10 @@ impl DocumentStore for IrohDocumentStore {
         let query_clone = query.clone();
         let backend = Arc::clone(&self.backend);
         let tx_clone = tx.clone();
+        // ADR-059: clone the in-flight origin map into the observer task so
+        // it can recover the origin label set by `upsert_with_origin` when
+        // the corresponding `doc_key` notification arrives.
+        let pending_origins = Arc::clone(&self.pending_origins);
 
         // Spawn background task to listen for changes and emit Updated events
         tokio::spawn(async move {
@@ -2208,18 +2206,23 @@ impl DocumentStore for IrohDocumentStore {
 
                             // Check if document matches query
                             if matches_query(&doc, &query_clone) {
-                                // Emit Updated event
+                                // ADR-059: pop the origin stashed by an
+                                // in-flight `upsert_with_origin`. `None`
+                                // means either: (a) the doc came from
+                                // remote sync (no local upsert produced
+                                // this notification), or (b) the
+                                // matching upsert passed `origin: None`.
+                                // Both cases emit `origin: None`, which
+                                // is correct — the observer can't
+                                // distinguish remote-sync from local
+                                // origin-less without this stash, and
+                                // both are non-locally-bridged.
+                                let origin = pending_origins.pop(&doc_key);
                                 if tx_clone
                                     .send(ChangeEvent::Updated {
                                         collection: collection_name.clone(),
                                         document: doc,
-                                        // Sync-delivered events have no
-                                        // local-transport origin (per
-                                        // ADR-059): this node didn't
-                                        // ingest the doc via a local
-                                        // bridge, the change came from
-                                        // a remote peer's Automerge ops.
-                                        origin: None,
+                                        origin,
                                     })
                                     .is_err()
                                 {
@@ -2273,14 +2276,22 @@ impl DocumentStore for IrohDocumentStore {
                                     // Send event if document matches query
                                     #[allow(clippy::collapsible_if)]
                                     if matches_query(&doc, &query_clone) {
+                                        // ADR-059 lagged-rescan path:
+                                        // origin info was lost when the
+                                        // broadcast lagged. Pop in case
+                                        // the original upsert's stash is
+                                        // still valid (within TTL); else
+                                        // emit with `origin: None`.
+                                        // Same-node echo suppression for
+                                        // expired entries is the
+                                        // documented degradation under
+                                        // sustained load.
+                                        let origin = pending_origins.pop(&doc_key);
                                         if tx_clone
                                             .send(ChangeEvent::Updated {
                                                 collection: collection_name.clone(),
                                                 document: doc,
-                                                // Sync-delivered observer event
-                                                // (per ADR-059): no local-transport
-                                                // origin.
-                                                origin: None,
+                                                origin,
                                             })
                                             .is_err()
                                         {
@@ -3354,6 +3365,7 @@ impl DataSyncBackend for AutomergeIrohBackend {
             deletion_policy_registry: Arc::clone(&self.deletion_policy_registry),
             lamport_counter: Arc::clone(&self.lamport_counter),
             node_id,
+            pending_origins: Arc::new(crate::sync::pending_origins::PendingOrigins::new()),
         })
     }
 

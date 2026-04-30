@@ -861,7 +861,7 @@ impl Translator for BleTranslator {
             return Ok(None);
         };
 
-        Ok(Some(value_to_mesh_doc(value)))
+        Ok(Some(value_to_mesh_document(value)))
     }
 }
 
@@ -883,8 +883,16 @@ fn mesh_doc_to_value(doc: &MeshDocument) -> Value {
     Value::Object(map)
 }
 
-/// Inverse: rebuild a `peat_mesh::Document` from a `Value`.
-fn value_to_mesh_doc(value: Value) -> MeshDocument {
+/// Rebuild a [`peat_mesh::sync::Document`] from a JSON [`Value`] emitted by
+/// one of the translator's `*_to_*` legacy methods. Inverse of the private
+/// `mesh_doc_to_value` helper used by the BLE encode path.
+///
+/// Public so that callers (peat-ffi, tests) doing the
+/// "translate-then-publish" pattern can avoid duplicating this trivial but
+/// translator-shape-coupled conversion. The shape is owned by the
+/// translator: any future change to how `*_to_*` methods stamp `id`
+/// flows through this function automatically.
+pub fn value_to_mesh_document(value: Value) -> MeshDocument {
     let id = value
         .get("id")
         .and_then(|v| v.as_str())

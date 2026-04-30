@@ -56,6 +56,23 @@ static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<GlobalRef>>> =
 static DOCUMENT_SUBSCRIPTION_ACTIVE: LazyLock<std::sync::atomic::AtomicBool> =
     LazyLock::new(|| std::sync::atomic::AtomicBool::new(false));
 
+// ADR-059 Slice 1.b.2: outbound BLE frame callback. The Kotlin listener
+// receives `onFrame(transportId, collection, bytes)` for every encoded
+// document the BLE translator produces in `TransportManager`'s fan-out.
+// Replaceable: a second subscribe swaps the GlobalRef without re-registering
+// the underlying translator/sink. Cleared on unsubscribe.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+static OUTBOUND_FRAME_LISTENER: LazyLock<Mutex<Option<GlobalRef>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+// FanoutHandle held alive across the subscription lifetime. Drop cancels
+// the observer tasks; `unsubscribeOutboundFramesJni` takes the value and
+// drops it explicitly. Wrapped in a feature-gated alias because the type
+// only exists when peat-mesh is in scope.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+static OUTBOUND_FRAME_FANOUT: LazyLock<Mutex<Option<peat_mesh::transport::FanoutHandle>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 // Global Peat node handle that survives APK replacement
 // This allows Kotlin code to recover the node connection after plugin hot-swap
 #[cfg(feature = "sync")]
@@ -347,6 +364,31 @@ pub trait DocumentCallback: Send + Sync {
     fn on_error(&self, message: String);
 }
 
+/// Outbound transport-frame callback for non-Android platforms (iOS via
+/// UniFFI). Mirrors the Android `OutboundFrameListener` JNI surface
+/// (`subscribeOutboundFramesJni`); the trait method receives the same
+/// `(transport_id, collection, bytes)` triple per encoded document.
+///
+/// On Android the JNI path is used directly because UniFFI 0.28's Kotlin
+/// backend wraps callback interfaces in `com.sun.jna.Callback`, which
+/// fails under ATAK's classloader isolation. Implementations on
+/// non-Android platforms should expect any-thread invocation from the
+/// `peat-mesh` runtime.
+///
+/// The `register_outbound_frame_callback` method on [`PeatNode`] that
+/// would consume this trait is deferred to a follow-up: the
+/// `Drop`-vs-async `unregister_translator` interaction needs an
+/// `Arc<TransportManager>` refactor of `PeatNode` to be done cleanly
+/// (current `TransportManager` field is owned, not Arc-wrapped, so a
+/// subscription handle has no clean way to drive teardown on drop).
+/// The trait declaration here serves as documentation of the iOS-side
+/// shape so the follow-up can land without an FFI break.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[uniffi::export(callback_interface)]
+pub trait OutboundFrameCallback: Send + Sync {
+    fn on_frame(&self, transport_id: String, collection: String, bytes: Vec<u8>);
+}
+
 /// Handle for an active document subscription
 ///
 /// Drop this handle to unsubscribe from document changes.
@@ -406,15 +448,19 @@ pub struct PeatNode {
     /// `PEAT-MESH-COMPLETION-0.9.0.md`.
     #[cfg(feature = "sync")]
     node: Arc<peat_mesh::Node>,
-    /// Cross-transport document bridge composing `node` with peat-protocol's
-    /// `BleTranslator` (ADR-041). Built only when the `bluetooth` feature is
-    /// enabled — the gateway needs the translator types from
-    /// `peat-protocol/src/sync/ble_gateway.rs`, which are themselves
-    /// `bluetooth`-gated. Used by the `ingest*Jni` family of methods to
-    /// route BLE-decoded payloads from a peat-btle peer through the gateway
-    /// into `node`, where iroh sync propagates them to non-BLE peers.
+    /// peat-protocol's [`BleTranslator`] (ADR-041) used by the `ingest*Jni`
+    /// family of methods. Translates typed BLE structs to Automerge
+    /// documents; the result is published into [`Self::node`] with
+    /// `Some("ble")` origin so ADR-059's same-node echo suppression keeps
+    /// the doc from being re-encoded back out to BLE. The earlier
+    /// `BleGateway` wrapper composing translator + node was removed in
+    /// Slice 1.b.2.2 — composition happens inline in the JNI helpers
+    /// because peat-ffi owns both halves anyway, so the wrapper added no
+    /// boundary worth defending.
+    ///
+    /// [`BleTranslator`]: peat_protocol::sync::ble_translation::BleTranslator
     #[cfg(all(feature = "sync", feature = "bluetooth"))]
-    ble_gateway: Arc<peat_protocol::sync::ble_gateway::BleGateway>,
+    ble_translator: Arc<peat_protocol::sync::ble_translation::BleTranslator>,
     /// Transport manager for multi-transport coordination (ADR-032)
     /// Enables PACE policy-based transport selection and future BLE integration
     transport_manager: TransportManager,
@@ -1313,8 +1359,8 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     // Compose `peat_mesh::Node` over the same `AutomergeIrohBackend` the
     // existing typed surface uses. Both layers see the same underlying
     // doc store; the Node adds a generic publish/observe surface for
-    // doc-type-agnostic callers (PR #802 BleGateway, future per-doc-type
-    // typed wrappers).
+    // doc-type-agnostic callers (the `ingest*Jni` family, future
+    // per-doc-type typed wrappers).
     #[cfg(feature = "sync")]
     let node = {
         use peat_mesh::sync::traits::DataSyncBackend;
@@ -1322,17 +1368,14 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         Arc::new(peat_mesh::Node::new(backend_dyn))
     };
 
-    // BleGateway: BLE-typed structs ↔ Automerge documents over `node`,
-    // backed by peat-protocol's BleTranslator (ADR-041). Only constructed
-    // when the bluetooth feature is enabled.
+    // BleTranslator: BLE-typed structs ↔ Automerge documents (ADR-041).
+    // Built only when the bluetooth feature is enabled. Used by the
+    // `ingest*Jni` family of methods + (Slice 1.b.2.2) the
+    // `OutboundFrameCallback` JNI surface.
     #[cfg(all(feature = "sync", feature = "bluetooth"))]
-    let ble_gateway = {
-        use peat_protocol::sync::ble_gateway::BleGateway;
+    let ble_translator = {
         use peat_protocol::sync::ble_translation::BleTranslator;
-        Arc::new(BleGateway::new(
-            Arc::clone(&node),
-            BleTranslator::with_defaults(),
-        ))
+        Arc::new(BleTranslator::with_defaults())
     };
 
     Ok(Arc::new(PeatNode {
@@ -1341,7 +1384,7 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         #[cfg(feature = "sync")]
         node,
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
-        ble_gateway,
+        ble_translator,
         transport_manager,
         iroh_transport: transport,
         store,
@@ -2394,8 +2437,8 @@ mod tests {
 
         /// Non-string id (e.g. integer) is treated as id-absent — the backend
         /// assigns one rather than coercing the integer. Aligns with
-        /// peat-protocol's `BleGateway::value_to_document`, which made the
-        /// same decision in PR #802 round-1 review.
+        /// peat-protocol's `value_to_mesh_document`, which made the same
+        /// decision in PR #802 round-1 review.
         #[test]
         fn non_string_id_falls_back_to_assigned() {
             let rt = rt();
@@ -2411,22 +2454,29 @@ mod tests {
         }
     }
 
-    /// Tests for the BLE-gateway helpers backing the `ingest*Jni` family.
-    /// Foundation step 3 (BleGateway-shaped JNI) of the
-    /// peat-mesh-completion / peat-btle-reduction work — see
-    /// `PEAT-MESH-COMPLETION-0.9.0.md`.
+    /// Tests for the BLE-translator helpers backing the `ingest*Jni`
+    /// family. Slice 1.b.2.2 of ADR-059 — the inbound BLE→Node→iroh path
+    /// now goes directly through `BleTranslator` + `Node::publish_with_origin`
+    /// (the legacy `BleGateway` wrapper was deleted; its responsibilities
+    /// composed in-line here).
     #[cfg(all(feature = "sync", feature = "bluetooth"))]
     mod ingest_position_tests {
         use super::*;
         use peat_mesh::sync::traits::DataSyncBackend;
         use peat_mesh::sync::InMemoryBackend;
-        use peat_protocol::sync::ble_gateway::BleGateway;
         use peat_protocol::sync::ble_translation::BleTranslator;
 
-        fn fresh_gateway() -> BleGateway {
+        struct Fixture {
+            translator: BleTranslator,
+            node: peat_mesh::Node,
+        }
+
+        fn fresh_fixture() -> Fixture {
             let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
-            let node = Arc::new(peat_mesh::Node::new(backend));
-            BleGateway::new(node, BleTranslator::with_defaults())
+            Fixture {
+                translator: BleTranslator::with_defaults(),
+                node: peat_mesh::Node::new(backend),
+            }
         }
 
         fn rt() -> tokio::runtime::Runtime {
@@ -2440,13 +2490,13 @@ mod tests {
         /// tracks collection, the returned id is the translator's
         /// BLE-prefixed track id (`ble-` + uppercase 8-hex peripheral id),
         /// and the resulting Document carries the position fields plus
-        /// `ble_origin: true` so the gateway's outbound surface will
-        /// suppress it (loop-break check from PR #802).
+        /// `ble_origin: true` so any outbound BLE re-encoder filtering
+        /// on that marker breaks the loop.
         #[test]
         fn round_trip_full_envelope() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
+                let fx = fresh_fixture();
                 // peripheral_id 0xCAFE0001 = 3_405_643_777 — sanity-check the
                 // hex form by using a constant rather than hand-converting.
                 const PERIPHERAL: u32 = 0xCAFE_0001;
@@ -2462,15 +2512,15 @@ mod tests {
                     }}"#,
                     PERIPHERAL
                 );
-                let id = ingest_position_into_gateway(&gw, &json)
+                let id = ingest_position_via_translator(&fx.translator, &fx.node, &json)
                     .await
                     .expect("ingest");
                 // Translator format: ble_id_prefix ("ble-") + uppercase 8-hex.
                 assert_eq!(id, format!("ble-{:08X}", PERIPHERAL));
 
-                let doc = gw
-                    .node()
-                    .get(gw.translator().tracks_collection(), &id)
+                let doc = fx
+                    .node
+                    .get(fx.translator.tracks_collection(), &id)
                     .await
                     .expect("get")
                     .expect("found");
@@ -2488,13 +2538,13 @@ mod tests {
         fn omits_optional_fields() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
+                let fx = fresh_fixture();
                 let json = r#"{
                     "lat": 40.7128,
                     "lon": -74.0060,
                     "peripheral_id": 1
                 }"#;
-                let id = ingest_position_into_gateway(&gw, json)
+                let id = ingest_position_via_translator(&fx.translator, &fx.node, json)
                     .await
                     .expect("ingest");
                 assert_eq!(id, "ble-00000001");
@@ -2508,14 +2558,20 @@ mod tests {
         fn missing_required_fields_errors() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
+                let fx = fresh_fixture();
                 let json_no_lat = r#"{"lon": -74.0, "peripheral_id": 1}"#;
-                assert!(ingest_position_into_gateway(&gw, json_no_lat)
-                    .await
-                    .is_err());
+                assert!(
+                    ingest_position_via_translator(&fx.translator, &fx.node, json_no_lat)
+                        .await
+                        .is_err()
+                );
 
                 let json_no_id = r#"{"lat": 40.0, "lon": -74.0}"#;
-                assert!(ingest_position_into_gateway(&gw, json_no_id).await.is_err());
+                assert!(
+                    ingest_position_via_translator(&fx.translator, &fx.node, json_no_id)
+                        .await
+                        .is_err()
+                );
             });
         }
 
@@ -2524,8 +2580,9 @@ mod tests {
         fn malformed_json_errors() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
-                let result = ingest_position_into_gateway(&gw, "not-json").await;
+                let fx = fresh_fixture();
+                let result =
+                    ingest_position_via_translator(&fx.translator, &fx.node, "not-json").await;
                 assert!(result.is_err());
             });
         }
@@ -2540,7 +2597,7 @@ mod tests {
         fn peripheral_id_negative_int_form_recovers_to_same_u32() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
+                let fx = fresh_fixture();
                 // 0xCAFE_0001 = 3_405_643_777 as u32; -889_323_519 is the
                 // sign-extended Int form (verified: (3_405_643_777_i64 -
                 // 4_294_967_296) == -889_323_519).
@@ -2557,14 +2614,16 @@ mod tests {
                     NEGATIVE
                 );
 
-                let id_pos = ingest_position_into_gateway(&gw, &positive_json)
-                    .await
-                    .expect("positive form ingests");
+                let id_pos =
+                    ingest_position_via_translator(&fx.translator, &fx.node, &positive_json)
+                        .await
+                        .expect("positive form ingests");
                 assert_eq!(id_pos, expected_id);
 
-                let id_neg = ingest_position_into_gateway(&gw, &negative_json)
-                    .await
-                    .expect("negative (Kotlin Int) form ingests");
+                let id_neg =
+                    ingest_position_via_translator(&fx.translator, &fx.node, &negative_json)
+                        .await
+                        .expect("negative (Kotlin Int) form ingests");
                 assert_eq!(
                     id_neg, expected_id,
                     "both forms must yield the same track id"
@@ -2580,15 +2639,23 @@ mod tests {
         fn peripheral_id_out_of_range_errors() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
+                let fx = fresh_fixture();
 
                 // u32::MAX + 1
                 let too_big = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": 4294967296 }"#;
-                assert!(ingest_position_into_gateway(&gw, too_big).await.is_err());
+                assert!(
+                    ingest_position_via_translator(&fx.translator, &fx.node, too_big)
+                        .await
+                        .is_err()
+                );
 
                 // i32::MIN - 1
                 let too_small = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": -2147483649 }"#;
-                assert!(ingest_position_into_gateway(&gw, too_small).await.is_err());
+                assert!(
+                    ingest_position_via_translator(&fx.translator, &fx.node, too_small)
+                        .await
+                        .is_err()
+                );
             });
         }
 
@@ -2600,20 +2667,367 @@ mod tests {
         fn peripheral_id_boundaries_accepted() {
             let rt = rt();
             rt.block_on(async {
-                let gw = fresh_gateway();
+                let fx = fresh_fixture();
 
                 let max_json = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": 4294967295 }"#;
-                let id = ingest_position_into_gateway(&gw, max_json)
+                let id = ingest_position_via_translator(&fx.translator, &fx.node, max_json)
                     .await
                     .expect("u32::MAX");
                 assert_eq!(id, "ble-FFFFFFFF");
 
                 let min_int_json = r#"{ "lat": 40.0, "lon": -74.0, "peripheral_id": -2147483648 }"#;
-                let id = ingest_position_into_gateway(&gw, min_int_json)
+                let id = ingest_position_via_translator(&fx.translator, &fx.node, min_int_json)
                     .await
                     .expect("i32::MIN as Int form");
                 assert_eq!(id, "ble-80000000");
             });
+        }
+
+        /// Slice 1.b.2.2: the rewire publishes through
+        /// `Node::publish_with_origin(.., Some("ble"))`, so the resulting
+        /// `ChangeEvent::Updated` must carry `origin = Some("ble")`. This
+        /// is the load-bearing assertion that `TransportManager` fan-out
+        /// can suppress the BLE→Node→observer→BLE same-node echo without
+        /// it, the loop-break invariant is gone.
+        #[tokio::test]
+        async fn ingest_emits_observer_event_with_ble_origin() {
+            use peat_mesh::sync::types::{ChangeEvent, Query};
+            let fx = fresh_fixture();
+            let mut tracks = fx
+                .node
+                .observe(fx.translator.tracks_collection(), &Query::All)
+                .expect("observe");
+
+            let json = r#"{
+                "lat": 40.7,
+                "lon": -74.0,
+                "peripheral_id": 1,
+                "callsign": "SCOUT-1"
+            }"#;
+            let _ = ingest_position_via_translator(&fx.translator, &fx.node, json)
+                .await
+                .expect("ingest");
+
+            // Skip the Initial snapshot, then assert the Updated event's origin.
+            loop {
+                let ev = tracks.receiver.recv().await.expect("event");
+                if let ChangeEvent::Updated { origin, .. } = ev {
+                    assert_eq!(
+                        origin,
+                        Some("ble".to_string()),
+                        "ingestPositionJni must publish with Some(\"ble\") origin per ADR-059"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Tests for the outbound BLE-frame fan-out path (ADR-059 Slice 1.b.2).
+    /// The JNI surface itself can't be exercised without a JVM, but the
+    /// underlying mechanism — `TransportManager` registers a translator + sink,
+    /// observer pushes through encode_outbound, sink receives bytes — is fully
+    /// exercisable with a recording sink standing in for `JniOutboundSink`.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    mod outbound_frame_tests {
+        use super::*;
+        use peat_mesh::sync::traits::DataSyncBackend;
+        use peat_mesh::sync::InMemoryBackend;
+        use peat_mesh::transport::{
+            FanoutHandle, OutboundSink, TranslationContext, Translator,
+            TranslatorRegistrationConfig,
+        };
+        use peat_protocol::sync::ble_translation::BleTranslator;
+        use peat_protocol::transport::{TransportManager, TransportManagerConfig};
+        use std::sync::Mutex as StdMutex;
+        use tokio::time::{timeout, Duration};
+
+        /// Records `(transport_id, collection, bytes)` triples each time
+        /// `send_outbound` fires. Stand-in for the JNI dispatcher in unit
+        /// tests — we assert against the recorded frames rather than calling
+        /// into a JVM.
+        #[derive(Default)]
+        struct RecordingSink {
+            frames: StdMutex<Vec<(String, String, Vec<u8>)>>,
+        }
+
+        #[async_trait::async_trait]
+        impl OutboundSink for RecordingSink {
+            async fn send_outbound(
+                &self,
+                bytes: Vec<u8>,
+                ctx: &TranslationContext,
+            ) -> anyhow::Result<()> {
+                let collection = ctx.collection.clone().unwrap_or_default();
+                self.frames
+                    .lock()
+                    .unwrap()
+                    .push(("ble".to_string(), collection, bytes));
+                Ok(())
+            }
+        }
+
+        impl RecordingSink {
+            fn snapshot(&self) -> Vec<(String, String, Vec<u8>)> {
+                self.frames.lock().unwrap().clone()
+            }
+        }
+
+        struct Fixture {
+            node: Arc<peat_mesh::Node>,
+            translator: Arc<BleTranslator>,
+            transport_manager: TransportManager,
+            sink: Arc<RecordingSink>,
+        }
+
+        fn fixture() -> Fixture {
+            let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
+            Fixture {
+                node: Arc::new(peat_mesh::Node::new(backend)),
+                translator: Arc::new(BleTranslator::with_defaults()),
+                transport_manager: TransportManager::new(TransportManagerConfig::default()),
+                sink: Arc::new(RecordingSink::default()),
+            }
+        }
+
+        async fn register_and_start(fx: &Fixture) -> anyhow::Result<FanoutHandle> {
+            let translator_dyn: Arc<dyn Translator> = fx.translator.clone();
+            let sink_dyn: Arc<dyn OutboundSink> = fx.sink.clone();
+            fx.transport_manager
+                .register_translator(
+                    translator_dyn,
+                    sink_dyn,
+                    TranslatorRegistrationConfig::ble(),
+                )
+                .await?;
+            fx.transport_manager.start_fanout(
+                Arc::clone(&fx.node),
+                vec![fx.translator.tracks_collection().to_string()],
+            )
+        }
+
+        /// Wait up to 1s for the recording sink to receive at least
+        /// `expected_count` frames. The fan-out is asynchronous (observer
+        /// task → channel → drain task → sink), so a brief poll loop is
+        /// the right shape — fixed sleeps would be flaky.
+        async fn wait_for_frames(sink: &RecordingSink, expected: usize) {
+            let _ = timeout(Duration::from_secs(1), async {
+                loop {
+                    if sink.snapshot().len() >= expected {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        }
+
+        /// Baseline: a doc published via the iroh-side bridge (no
+        /// `Some("ble")` origin) reaches the BLE sink — the
+        /// translator-encode + drain-task path is wired correctly.
+        #[tokio::test]
+        async fn iroh_origin_doc_reaches_ble_sink() {
+            let fx = fixture();
+            let _h = register_and_start(&fx).await.expect("register");
+
+            // No origin = "iroh-side" doc. The fan-out should encode + deliver.
+            let doc = peat_mesh::sync::types::Document::with_id("ble-00000001".to_string(), {
+                let mut f = std::collections::HashMap::new();
+                f.insert("lat".to_string(), serde_json::json!(40.0));
+                f.insert("lon".to_string(), serde_json::json!(-74.0));
+                f.insert(
+                    "source_platform".to_string(),
+                    serde_json::json!("iroh-00000001"),
+                );
+                f.insert("hae".to_string(), serde_json::json!(100.0));
+                f.insert("cep".to_string(), serde_json::json!(5.0));
+                f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
+                f.insert("confidence".to_string(), serde_json::json!(0.9));
+                f.insert("category".to_string(), serde_json::json!("friendly"));
+                f.insert("callsign".to_string(), serde_json::json!("ALPHA-1"));
+                f.insert(
+                    "created_at".to_string(),
+                    serde_json::json!(1_700_000_000_000_i64),
+                );
+                f.insert(
+                    "last_update".to_string(),
+                    serde_json::json!(1_700_000_000_000_i64),
+                );
+                f
+            });
+            fx.node.publish("tracks", doc).await.expect("publish");
+
+            wait_for_frames(&fx.sink, 1).await;
+            let frames = fx.sink.snapshot();
+            assert!(
+                !frames.is_empty(),
+                "iroh-origin track must reach ble sink; got 0 frames"
+            );
+            let (transport, collection, bytes) = &frames[0];
+            assert_eq!(transport, "ble");
+            assert_eq!(collection, "tracks");
+            assert!(!bytes.is_empty(), "encoded bytes must be non-empty");
+        }
+
+        /// Loop suppression: a doc with `origin = Some("ble")` (i.e.
+        /// ingestPositionJni's output) MUST NOT be re-encoded back out the
+        /// BLE sink. This is the same-node echo-loop break ADR-059 §
+        /// "Origin propagation" requires.
+        #[tokio::test]
+        async fn ble_origin_doc_does_not_re_encode_to_ble_sink() {
+            let fx = fixture();
+            let _h = register_and_start(&fx).await.expect("register");
+
+            let doc = peat_mesh::sync::types::Document::with_id("ble-CAFE0001".to_string(), {
+                let mut f = std::collections::HashMap::new();
+                f.insert("lat".to_string(), serde_json::json!(40.0));
+                f.insert("lon".to_string(), serde_json::json!(-74.0));
+                f.insert("ble_origin".to_string(), serde_json::json!(true));
+                f
+            });
+
+            fx.node
+                .publish_with_origin("tracks", doc, Some("ble".to_string()))
+                .await
+                .expect("publish");
+
+            // Hold the awaited window slightly past the steady-state
+            // observer fan-out latency; if loop suppression is broken,
+            // the sink would have received the encoded frame by now.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+
+            let frames = fx.sink.snapshot();
+            assert!(
+                frames.is_empty(),
+                "ble-origin doc must be suppressed from outbound BLE \
+                 (ADR-059 same-node echo break); got {} frames",
+                frames.len()
+            );
+        }
+
+        /// Dropping the `FanoutHandle` (mirroring `unsubscribeOutboundFramesJni`'s
+        /// teardown) stops further frames from reaching the sink.
+        #[tokio::test]
+        async fn drop_handle_stops_subsequent_delivery() {
+            let fx = fixture();
+            let h = register_and_start(&fx).await.expect("register");
+
+            // Sanity: first publish reaches sink.
+            fx.node
+                .publish(
+                    "tracks",
+                    peat_mesh::sync::types::Document::with_id("ble-00000001".to_string(), {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("lat".to_string(), serde_json::json!(40.0));
+                        f.insert("lon".to_string(), serde_json::json!(-74.0));
+                        f.insert("source_platform".to_string(), serde_json::json!("iroh-1"));
+                        f.insert("callsign".to_string(), serde_json::json!("A"));
+                        f.insert("hae".to_string(), serde_json::json!(0.0));
+                        f.insert("cep".to_string(), serde_json::json!(0.0));
+                        f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
+                        f.insert("confidence".to_string(), serde_json::json!(0.5));
+                        f.insert("category".to_string(), serde_json::json!("friendly"));
+                        f.insert(
+                            "created_at".to_string(),
+                            serde_json::json!(1_700_000_000_000_i64),
+                        );
+                        f.insert(
+                            "last_update".to_string(),
+                            serde_json::json!(1_700_000_000_000_i64),
+                        );
+                        f
+                    }),
+                )
+                .await
+                .expect("publish-1");
+            wait_for_frames(&fx.sink, 1).await;
+            let pre_drop_count = fx.sink.snapshot().len();
+            assert!(pre_drop_count >= 1);
+
+            // Drop the handle — observer tasks for this fan-out cancel.
+            // The cancellation token is set synchronously on drop, but the
+            // observer task only notices on its next `select!` poll, so we
+            // yield+sleep briefly to let the runtime actually cancel the
+            // task before producing the new broadcast. Without this gap,
+            // tokio::select!'s non-biased polling may race the new event
+            // ahead of the cancellation arm. (peat-mesh's observer_task
+            // would benefit from `biased;` to make this deterministic;
+            // tracked as a Slice 2 hardening item.)
+            drop(h);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Publish AFTER cancellation has settled. Use a distinct doc
+            // id so any leaked frame would be visibly separate from
+            // pre-drop traffic.
+            fx.node
+                .publish(
+                    "tracks",
+                    peat_mesh::sync::types::Document::with_id("ble-00000002".to_string(), {
+                        let mut f = std::collections::HashMap::new();
+                        f.insert("lat".to_string(), serde_json::json!(41.0));
+                        f.insert("lon".to_string(), serde_json::json!(-75.0));
+                        f.insert("source_platform".to_string(), serde_json::json!("iroh-2"));
+                        f.insert("callsign".to_string(), serde_json::json!("B"));
+                        f.insert("hae".to_string(), serde_json::json!(0.0));
+                        f.insert("cep".to_string(), serde_json::json!(0.0));
+                        f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
+                        f.insert("confidence".to_string(), serde_json::json!(0.5));
+                        f.insert("category".to_string(), serde_json::json!("friendly"));
+                        f.insert(
+                            "created_at".to_string(),
+                            serde_json::json!(1_700_000_000_001_i64),
+                        );
+                        f.insert(
+                            "last_update".to_string(),
+                            serde_json::json!(1_700_000_000_001_i64),
+                        );
+                        f
+                    }),
+                )
+                .await
+                .expect("publish-2");
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            let post_drop_count = fx.sink.snapshot().len();
+            assert_eq!(
+                post_drop_count, pre_drop_count,
+                "no frames must arrive after FanoutHandle drop"
+            );
+        }
+
+        /// Re-register after teardown succeeds — the unsubscribe path is
+        /// exercised against a clean slate. Mirrors the
+        /// `unsubscribeOutboundFramesJni` → `subscribeOutboundFramesJni` JNI
+        /// flow.
+        #[tokio::test]
+        async fn re_register_after_unregister_succeeds() {
+            let fx = fixture();
+            let h = register_and_start(&fx).await.expect("register-1");
+            drop(h);
+            fx.transport_manager
+                .unregister_translator("ble")
+                .await
+                .expect("unregister");
+
+            // Second register must succeed (no transport_id collision).
+            let _h2 = register_and_start(&fx).await.expect("register-2");
+        }
+
+        /// Double-register on the same `transport_id` rejects with the
+        /// ADR-059 §"Transport ID uniqueness" invariant. The JNI
+        /// `subscribeOutboundFramesJni` defends against this by checking
+        /// the FanoutHandle slot before re-registering — this test guards
+        /// the underlying invariant the JNI relies on.
+        #[tokio::test]
+        async fn double_register_rejects() {
+            let fx = fixture();
+            let _h = register_and_start(&fx).await.expect("register-1");
+            let result = register_and_start(&fx).await;
+            assert!(
+                result.is_err(),
+                "second register on same transport_id must error"
+            );
         }
     }
 
@@ -4079,14 +4493,15 @@ async fn publish_document_into_node(
     node.publish(collection, document).await
 }
 
-/// Ingest a peat-btle [`BlePosition`]-shaped JSON envelope into the BLE
-/// gateway, which translates it to an Automerge track document and publishes
-/// it via [`peat_mesh::Node`]. From there iroh-bound peers receive the doc
-/// through Automerge sync — this is the BLE→Node→iroh half of the
-/// cross-transport bridge that step 4 of the foundation work validates.
+/// Ingest a peat-btle [`BlePosition`]-shaped JSON envelope: translate it
+/// to an Automerge track document via [`BleTranslator`] and publish into
+/// [`peat_mesh::Node`] with `Some("ble")` origin (ADR-059). From there
+/// iroh-bound peers receive the doc through Automerge sync; the origin
+/// rides on the resulting `ChangeEvent` so `TransportManager`'s fan-out
+/// suppresses the same-node `BLE → Node → observer → BLE` echo.
 ///
 /// JSON envelope (matches the `BlePosition` field shape plus the surrounding
-/// metadata `BleGateway::ingest_position` needs):
+/// metadata the translator needs):
 /// ```json
 /// {
 ///   "lat": 40.7,
@@ -4110,8 +4525,10 @@ async fn publish_document_into_node(
 /// Kotlin signature: `external fun ingestPositionJni(handle: Long, json: String): String`
 ///
 /// Returns the assigned track-document id on success, or empty string on any
-/// failure (handle invalid, bluetooth feature not built, JSON malformed, missing
-/// required fields, peripheral_id out of range, gateway publish error).
+/// failure (handle invalid, bluetooth feature not built, JSON malformed,
+/// missing required fields, peripheral_id out of range, publish error).
+///
+/// [`BleTranslator`]: peat_protocol::sync::ble_translation::BleTranslator
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni(
@@ -4129,11 +4546,21 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_ingestPosition
             Ok(j) => {
                 let json_str: String = j.into();
                 let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
-                let gateway = Arc::clone(&node_owner.ble_gateway);
+                let translator = Arc::clone(&node_owner.ble_translator);
+                let node = Arc::clone(&node_owner.node);
                 let runtime = Arc::clone(&node_owner.runtime);
                 std::mem::forget(node_owner);
 
-                match runtime.block_on(ingest_position_into_gateway(&gateway, &json_str)) {
+                // The Err arm has a side effect (android_log) that
+                // `unwrap_or_default()` cannot preserve, so the `match`
+                // is intentional. Keeping the lint silenced explicitly
+                // mirrors the same decision in pre-Slice-1.b.2.2 code.
+                #[allow(clippy::manual_unwrap_or_default)]
+                match runtime.block_on(ingest_position_via_translator(
+                    &translator,
+                    &node,
+                    &json_str,
+                )) {
                     Ok(id) => id,
                     Err(_e) => {
                         #[cfg(target_os = "android")]
@@ -4157,19 +4584,25 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_ingestPosition
 
 /// Pure-Rust helper backing [`Java_..._ingestPositionJni`]. Parses the JSON
 /// envelope into a [`BlePosition`] plus the surrounding ingest metadata,
-/// then calls [`BleGateway::ingest_position`]. Exposed for unit tests so
-/// the parse + ingest path can be exercised without spinning up a JVM.
+/// translates to an Automerge document via [`BleTranslator`], and publishes
+/// into [`peat_mesh::Node`] with `Some("ble")` origin per ADR-059. Exposed
+/// for unit tests so the parse + translate + publish path can be exercised
+/// without spinning up a JVM.
 ///
 /// Hand-rolled JSON parsing rather than `#[derive(Deserialize)]` because
 /// peat-ffi does not currently depend on `serde` directly (only
 /// `serde_json`); adding it just for one private marshaling struct isn't
 /// worth a Cargo.toml change and a fresh transitive footprint.
+///
+/// [`BlePosition`]: peat_protocol::sync::ble_translation::BlePosition
+/// [`BleTranslator`]: peat_protocol::sync::ble_translation::BleTranslator
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
-async fn ingest_position_into_gateway(
-    gateway: &peat_protocol::sync::ble_gateway::BleGateway,
+async fn ingest_position_via_translator(
+    translator: &peat_protocol::sync::ble_translation::BleTranslator,
+    node: &peat_mesh::Node,
     json: &str,
 ) -> anyhow::Result<String> {
-    use peat_protocol::sync::ble_translation::BlePosition;
+    use peat_protocol::sync::ble_translation::{value_to_mesh_document, BlePosition};
     use serde_json::Value;
 
     let value: Value = serde_json::from_str(json)
@@ -4214,13 +4647,19 @@ async fn ingest_position_into_gateway(
         accuracy,
     };
 
-    gateway
-        .ingest_position(
-            &position,
-            peripheral_id,
-            callsign.as_deref(),
-            mesh_id.as_deref(),
-        )
+    // Translate, then publish through Node::publish_with_origin so the
+    // `Some("ble")` origin rides on the resulting ChangeEvent — without
+    // it, TransportManager fan-out cannot break the BLE-loop on this
+    // node (ADR-059 §"Origin propagation through async observer
+    // pipelines").
+    let value = translator.position_to_track_in_cell(
+        &position,
+        peripheral_id,
+        callsign.as_deref(),
+        mesh_id.as_deref(),
+    );
+    let doc = value_to_mesh_document(value);
+    node.publish_with_origin(translator.tracks_collection(), doc, Some("ble".to_string()))
         .await
 }
 
@@ -4465,20 +4904,50 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeDoc
     android_log("unsubscribeDocumentChangesJni: subscription marked inactive");
 }
 
+/// Snapshot the listener `GlobalRef` from a static slot under its mutex,
+/// returning a clone that the caller can use without holding the lock.
+///
+/// Pulling the lock-acquire/clone/drop dance into a helper keeps every
+/// dispatch helper above honest about not holding a listener lock across a
+/// re-entrant JNI `call_method` (QA #808 IDIOM).
+#[cfg(feature = "sync")]
+fn clone_listener(slot: &Mutex<Option<GlobalRef>>) -> Option<GlobalRef> {
+    slot.lock().ok()?.as_ref().cloned()
+}
+
+/// Reconstruct a process-global `JavaVM` from `JAVA_VM` without holding the
+/// mutex past the read. The underlying pointer is stable for the JVM
+/// lifetime, so dropping the lock and re-wrapping is safe — and it lets
+/// JNI calls in dispatch helpers proceed without serializing on `JAVA_VM`.
+#[cfg(feature = "sync")]
+fn clone_java_vm() -> Option<jni::JavaVM> {
+    let raw_ptr = {
+        let guard = JAVA_VM.lock().ok()?;
+        guard.as_ref()?.get_java_vm_pointer()
+    };
+    // SAFETY: JNI_OnLoad seeded JAVA_VM via `JavaVM::from_raw`, so the
+    // pointer points at a live `sys::JavaVM` for the rest of the process.
+    // `JavaVM` has no `Drop` impl — wrapping the same pointer twice does
+    // not double-free.
+    unsafe { jni::JavaVM::from_raw(raw_ptr) }.ok()
+}
+
 /// Dispatch a document-change event to the registered Kotlin listener.
 /// Attaches the current tokio worker thread to the JVM if needed.
 #[cfg(feature = "sync")]
 fn dispatch_document_change(collection: &str, doc_id: &str) {
-    let listener_guard = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
-    let listener = match listener_guard.as_ref() {
-        Some(l) => l,
-        None => return,
+    // Snapshot the listener and JavaVM pointer under their locks, then drop
+    // the guards BEFORE the unbounded JNI `call_method` (QA #808 IDIOM).
+    // Kotlin's `onChange` may re-enter Rust JNI; holding either lock across
+    // the call would deadlock the listener slot (re-entrant lock) or
+    // serialize every translator's dispatch through a single JVM call.
+    // GlobalRef is Arc-shaped so cloning is cheap; JavaVM is process-stable
+    // so reconstructing from the raw pointer is sound.
+    let Some(listener) = clone_listener(&DOCUMENT_CHANGE_LISTENER) else {
+        return;
     };
-
-    let java_vm_guard = JAVA_VM.lock().unwrap();
-    let java_vm = match java_vm_guard.as_ref() {
-        Some(vm) => vm,
-        None => return,
+    let Some(java_vm) = clone_java_vm() else {
+        return;
     };
 
     let mut env = match java_vm.attach_current_thread() {
@@ -4486,6 +4955,7 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
         Err(e) => {
             #[cfg(target_os = "android")]
             android_log(&format!("dispatch_document_change: attach failed: {:?}", e));
+            let _ = e;
             return;
         }
     };
@@ -4500,7 +4970,7 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
     };
 
     if let Err(e) = env.call_method(
-        listener,
+        &listener,
         "onChange",
         "(Ljava/lang/String;Ljava/lang/String;)V",
         &[
@@ -4513,6 +4983,7 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
             "dispatch_document_change: call_method failed: {:?}",
             e
         ));
+        let _ = e;
         let _ = env.exception_describe();
         let _ = env.exception_clear();
     }
@@ -4521,16 +4992,12 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
 /// Dispatch an error message to the registered Kotlin listener.
 #[cfg(feature = "sync")]
 fn dispatch_document_error(message: &str) {
-    let listener_guard = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
-    let listener = match listener_guard.as_ref() {
-        Some(l) => l,
-        None => return,
+    // Snapshot then drop locks before JNI work — see dispatch_document_change.
+    let Some(listener) = clone_listener(&DOCUMENT_CHANGE_LISTENER) else {
+        return;
     };
-
-    let java_vm_guard = JAVA_VM.lock().unwrap();
-    let java_vm = match java_vm_guard.as_ref() {
-        Some(vm) => vm,
-        None => return,
+    let Some(java_vm) = clone_java_vm() else {
+        return;
     };
 
     let mut env = match java_vm.attach_current_thread() {
@@ -4544,7 +5011,7 @@ fn dispatch_document_error(message: &str) {
     };
 
     if let Err(e) = env.call_method(
-        listener,
+        &listener,
         "onError",
         "(Ljava/lang/String;)V",
         &[JValue::Object(&msg_jstr)],
@@ -4554,6 +5021,271 @@ fn dispatch_document_error(message: &str) {
             "dispatch_document_error: call_method failed: {:?}",
             e
         ));
+        let _ = e;
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+}
+
+// =============================================================================
+// OutboundFrameCallback JNI (ADR-059 Slice 1.b)
+// =============================================================================
+//
+// Bridges `TransportManager`'s per-transport fan-out (peat-mesh) into a
+// Kotlin callback so the ATAK plugin's BLE manager can deliver encoded
+// frames over the radio. The JNI shape mirrors `subscribeDocumentChangesJni`
+// — a single GlobalRef in a static slot, replaceable on re-subscribe — so
+// the same patterns audited on PR #803 carry over.
+
+/// `OutboundSink` implementation that forwards encoded bytes into the
+/// registered Kotlin listener. One instance is registered with
+/// `TransportManager` per `transport_id` we want to fan out — currently
+/// just `"ble"`, but the structure generalizes to LoRa/SBD/etc.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+struct JniOutboundSink {
+    transport_id: &'static str,
+}
+
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[async_trait::async_trait]
+impl peat_mesh::transport::OutboundSink for JniOutboundSink {
+    async fn send_outbound(
+        &self,
+        bytes: Vec<u8>,
+        ctx: &peat_mesh::transport::TranslationContext,
+    ) -> anyhow::Result<()> {
+        let collection = ctx.collection.as_deref().unwrap_or("");
+        dispatch_outbound_frame(self.transport_id, collection, &bytes);
+        Ok(())
+    }
+}
+
+/// JNI: Subscribe to outbound BLE-encoded frames produced by the
+/// `BleTranslator` in `TransportManager`'s fan-out.
+///
+/// Kotlin signature:
+/// `external fun subscribeOutboundFramesJni(handle: Long, listener: OutboundFrameListener): Boolean`
+///
+/// The listener receives `onFrame(transportId, collection, bytes)` for
+/// each encoded document the translator produces. Calls fire on the
+/// tokio runtime thread; the listener must tolerate any-thread invocation
+/// (the plugin posts to its own executor before touching radio state).
+///
+/// **Idempotent**: a second call replaces the listener `GlobalRef`; the
+/// underlying translator + sink registration and observer fan-out tasks
+/// are kept alive across the swap so no frames are lost between the two
+/// listeners. Use `unsubscribeOutboundFramesJni` to fully tear down.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutboundFramesJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    listener: jni::objects::JObject,
+) -> jboolean {
+    if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("subscribeOutboundFramesJni: Invalid handle (0)");
+        return 0;
+    }
+
+    let listener_global = match env.new_global_ref(&listener) {
+        Ok(g) => g,
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "subscribeOutboundFramesJni: new_global_ref failed: {:?}",
+                e
+            ));
+            let _ = e;
+            return 0;
+        }
+    };
+
+    // Listener swap is unconditional — second-subscribe just rebinds.
+    *OUTBOUND_FRAME_LISTENER.lock().unwrap() = Some(listener_global);
+
+    // If a fan-out is already running, the swap above is sufficient — the
+    // existing JniOutboundSink reads the listener slot dynamically.
+    {
+        let handle_slot = OUTBOUND_FRAME_FANOUT.lock().unwrap();
+        if handle_slot.is_some() {
+            return 1;
+        }
+    }
+
+    // First subscribe: register translator + sink and start fan-out.
+    // `TransportManager` is not Clone, so we hold the `node_owner` Arc by
+    // borrow (not by taking ownership) for the duration of the call;
+    // forget happens after the registration block completes.
+    let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+
+    // Unsized coercion `Arc<BleTranslator> -> Arc<dyn Translator>` happens
+    // implicitly when the LHS type is annotated; `Arc::clone` would
+    // preserve the concrete type and break the coercion.
+    let translator_dyn: Arc<dyn peat_mesh::transport::Translator> =
+        node_owner.ble_translator.clone();
+    let sink: Arc<dyn peat_mesh::transport::OutboundSink> = Arc::new(JniOutboundSink {
+        transport_id: "ble",
+    });
+    // Source the BLE-routable collection names from the translator's own
+    // accessors so this call site stays aligned with the translator's
+    // coverage. Hardcoded literals would silently drift if the collection
+    // names change or new ones (e.g. chat) are added.
+    let collections = vec![
+        node_owner.ble_translator.tracks_collection().to_string(),
+        node_owner.ble_translator.platforms_collection().to_string(),
+        node_owner.ble_translator.alerts_collection().to_string(),
+        node_owner
+            .ble_translator
+            .canned_messages_collection()
+            .to_string(),
+    ];
+
+    // Compose register + start + on-failure-rollback inside one
+    // `block_on` so a `start_fanout` failure unregisters the translator
+    // before returning. Without the rollback, the translator is left
+    // registered while the listener slot says "not subscribed", and the
+    // next subscribe call hits the duplicate-`transport_id` rejection in
+    // `register_translator` — a permanent stuck state until
+    // `unsubscribeOutboundFramesJni` clears it.
+    let final_result: anyhow::Result<peat_mesh::transport::FanoutHandle> =
+        node_owner.runtime.block_on(async {
+            node_owner
+                .transport_manager
+                .register_translator(
+                    translator_dyn,
+                    sink,
+                    peat_mesh::transport::TranslatorRegistrationConfig::ble(),
+                )
+                .await?;
+            match node_owner
+                .transport_manager
+                .start_fanout(Arc::clone(&node_owner.node), collections)
+            {
+                Ok(handle) => Ok(handle),
+                Err(e) => {
+                    let _ = node_owner
+                        .transport_manager
+                        .unregister_translator("ble")
+                        .await;
+                    Err(e)
+                }
+            }
+        });
+
+    std::mem::forget(node_owner);
+
+    match final_result {
+        Ok(fanout_handle) => {
+            *OUTBOUND_FRAME_FANOUT.lock().unwrap() = Some(fanout_handle);
+            1
+        }
+        Err(_e) => {
+            // Roll back the listener stash so a future retry isn't observed
+            // as "already subscribed".
+            *OUTBOUND_FRAME_LISTENER.lock().unwrap() = None;
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "subscribeOutboundFramesJni: register/start_fanout failed: {}",
+                _e
+            ));
+            0
+        }
+    }
+}
+
+/// JNI: Unsubscribe from outbound frame delivery.
+///
+/// Kotlin signature: `external fun unsubscribeOutboundFramesJni(handle: Long)`
+///
+/// Drops the `FanoutHandle` (cancelling observer tasks), unregisters the
+/// translator, and clears the listener `GlobalRef`. Idempotent — calling
+/// twice or before any subscribe is a no-op.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeOutboundFramesJni(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    // Drop the FanoutHandle first so no further frames are fanned out
+    // while we're tearing down.
+    let _ = OUTBOUND_FRAME_FANOUT.lock().unwrap().take();
+
+    if handle != 0 {
+        let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+        let _ = node_owner
+            .runtime
+            .block_on(node_owner.transport_manager.unregister_translator("ble"));
+        std::mem::forget(node_owner);
+    }
+
+    *OUTBOUND_FRAME_LISTENER.lock().unwrap() = None;
+
+    #[cfg(target_os = "android")]
+    android_log("unsubscribeOutboundFramesJni: subscription torn down");
+}
+
+/// Dispatch an outbound frame to the registered Kotlin listener.
+/// Attaches the current tokio worker thread to the JVM if needed.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+fn dispatch_outbound_frame(transport_id: &str, collection: &str, bytes: &[u8]) {
+    // Snapshot then drop locks before JNI work — see dispatch_document_change.
+    let Some(listener) = clone_listener(&OUTBOUND_FRAME_LISTENER) else {
+        return;
+    };
+    let Some(java_vm) = clone_java_vm() else {
+        return;
+    };
+
+    let mut env = match java_vm.attach_current_thread() {
+        Ok(e) => e,
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("dispatch_outbound_frame: attach failed: {:?}", e));
+            let _ = e;
+            return;
+        }
+    };
+
+    let transport_jstr = match env.new_string(transport_id) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let collection_jstr = match env.new_string(collection) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let bytes_jarr = match env.byte_array_from_slice(bytes) {
+        Ok(a) => a,
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "dispatch_outbound_frame: byte_array_from_slice failed: {:?}",
+                e
+            ));
+            let _ = e;
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_method(
+        &listener,
+        "onFrame",
+        "(Ljava/lang/String;Ljava/lang/String;[B)V",
+        &[
+            JValue::Object(&transport_jstr),
+            JValue::Object(&collection_jstr),
+            JValue::Object(&bytes_jarr),
+        ],
+    ) {
+        #[cfg(target_os = "android")]
+        android_log(&format!(
+            "dispatch_outbound_frame: call_method failed: {:?}",
+            e
+        ));
+        let _ = e;
         let _ = env.exception_describe();
         let _ = env.exception_clear();
     }
@@ -4948,6 +5680,23 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
             name: "unsubscribeDocumentChangesJni".into(),
             sig: "()V".into(),
             fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeDocumentChangesJni
+                as *mut c_void,
+        },
+        // ADR-059 Slice 1.b: outbound BLE-frame fan-out callback.
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "subscribeOutboundFramesJni".into(),
+            // (long handle, OutboundFrameListener listener) -> boolean
+            sig: "(JLcom/defenseunicorns/atak/peat/OutboundFrameListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutboundFramesJni
+                as *mut c_void,
+        },
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "unsubscribeOutboundFramesJni".into(),
+            // (long handle) -> void
+            sig: "(J)V".into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeOutboundFramesJni
                 as *mut c_void,
         },
         // Blob transfer (ADR-060)
