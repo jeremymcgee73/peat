@@ -78,14 +78,18 @@ pub mod types;
 #[cfg(feature = "automerge-backend")]
 pub mod automerge; // Automerge CRDT backend (E8 evaluation)
 
-// BLE translation layer (ADR-041, #557)
+// In-flight origin map for IrohDocumentStore observer-pipeline origin
+// threading (ADR-059 §"Origin propagation through async observer pipelines").
+#[cfg(feature = "automerge-backend")]
+pub(crate) mod pending_origins;
+
+// BLE translation layer (ADR-041, #557). The translator implements
+// `peat_mesh::transport::Translator` (ADR-059 Slice 1.b.2) so it plugs
+// directly into `TransportManager`'s fan-out — the older `BleGateway`
+// wrapper that composed translator+Node has been deleted (Slice 1.b.2.2);
+// callers compose the two themselves at their own integration boundary.
 #[cfg(feature = "bluetooth")]
 pub mod ble_translation;
-
-// BLE gateway: composes peat_mesh::Node + BleTranslator for cross-transport
-// document bridging. See `PEAT-MESH-COMPLETION-0.9.0.md`.
-#[cfg(feature = "bluetooth")]
-pub mod ble_gateway;
 
 // Re-export core types and traits for convenience
 pub use traits::*;
