@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "peat",
     "peat-schema",
     "peat-protocol",
     "peat-transport",

@@ -1,0 +1,15 @@
+[package]
+name = "peat"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reserved name for the future top-level facade crate of the Peat Protocol ecosystem. Depend on the per-component peat-* crates for now."
+homepage = "https://github.com/defenseunicorns/peat"
+documentation = "https://docs.rs/peat"
+readme = "README.md"
+keywords = ["peat", "mesh", "crdt", "tactical", "coordination"]
+categories = ["network-programming"]
+
+[dependencies]
