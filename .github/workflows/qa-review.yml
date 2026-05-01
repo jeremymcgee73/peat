@@ -14,7 +14,12 @@ jobs:
     name: Peat QA Review
     if: ${{ !github.event.pull_request.draft }}
     runs-on: peat-arm64-linux-gb10
-    timeout-minutes: 15
+    # 30m budget. Round-3 incremental reviews on substantive PRs (verifying
+    # multiple prior-round findings + a new delta) have observed real work
+    # of ~9 min plus agentic finalization, which exceeded the previous 15m
+    # cap. 30m gives comfortable headroom without blocking the runner
+    # concurrency slot for unreasonable spans.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
