@@ -498,7 +498,7 @@ The receive-side gap blocks the remaining plugin migration. Until peat-btle disp
 Introduce one new marker byte in peat-btle's top-level frame-discriminator space — alongside the existing `RELAY_ENVELOPE_MARKER` (0xB1) and `DELTA_DOCUMENT_MARKER` (0xB2):
 
 ```
-TRANSLATOR_FRAME_MARKER = 0xB3
+TRANSLATOR_FRAME_MARKER = 0xB6
 ```
 
 Frame layout, post-decryption:
@@ -506,7 +506,7 @@ Frame layout, post-decryption:
 ```
 +---------+---------+----------------------------+
 | 1 byte  | 1 byte  |   N bytes                  |
-| 0xB3    | code    |   postcard payload         |
+| 0xB6    | code    |   postcard payload         |
 +---------+---------+----------------------------+
 ```
 
@@ -525,14 +525,27 @@ Codes are **immutable** once assigned. A new collection appends a new code; coll
 
 **Why a fixed-byte code, not a length-prefixed string.** ADR-059's main wire-format-stability concern (§"Wire-format codec contract") is *transport IDs* (`"ble"`, `"iroh"`, `"tak"`) — those round-trip across nodes and registration order varies. Collection identifiers within `BleTranslator` are different: peat-btle is the single source of truth for what BLE-translator collections exist (the closed set is `tracks` / `platforms` / `alerts` / `canned_messages`, plus future additions made in peat-btle itself), so a peat-btle-internal numbering is stable by construction. The 1-byte saving over a length-prefixed string matters at the BLE MTU (~150 B sustained per ADR-041), and the constraint that codes are immutable substitutes for the registration-order portability the string form would buy.
 
-**Why 0xB3, specifically.** It is the next free byte after the existing top-level marker family (0xB1 relay, 0xB2 delta) and below the app-layer `DocumentType` registry range (0xC0–0xCF, `peat-btle/src/registry.rs`). Slotting into the top-level discriminator family — alongside `is_delta_document` — keeps translator frames inside the same dispatch pattern the existing top-level frame types already use; picking from the registry range would mis-imply that translator frames are app-layer document types under the registry's `DocumentType` trait (they are not — they are peat-mesh `Document`s, not registry `DocumentType` instances).
+**Why 0xB6, specifically.** Three reservations sit between the existing top-level marker family and the app-layer `DocumentType` registry range, leaving 0xB6 as the first free byte for translator frames:
+
+| Byte | Owner | Status |
+|------|-------|--------|
+| 0xB1 | `RELAY_ENVELOPE_MARKER` (peat-btle/src/document.rs) | shipped |
+| 0xB2 | `DELTA_DOCUMENT_MARKER` (peat-btle/src/document.rs) | shipped |
+| 0xB3 | `IDENTITY_ATTESTATION_MARKER` (peat-btle ADR-001 Phase 1) | reserved, not yet emitted |
+| 0xB4 | `REVOCATION_MARKER` (peat-btle ADR-001 Phase 3) | reserved, not yet emitted |
+| 0xB5 | `KEY_ROTATION_MARKER` (peat-btle ADR-001 Phase 4) | reserved, not yet emitted |
+| **0xB6** | **`TRANSLATOR_FRAME_MARKER` (this amendment)** | **first free top-level marker** |
+| 0xB7–0xBF | reserved for future translator-frame variants (this amendment) | future |
+| 0xC0–0xCF | app-layer `DocumentType` registry (peat-btle/src/registry.rs) | shipped |
+
+An earlier draft of this amendment claimed 0xB3 as the translator marker. QA review surfaced the collision with peat-btle's `ADR-001-trust-architecture.md` "Wire Format Summary" table (lines 524–526), which assigns 0xB3 / 0xB4 / 0xB5 to the trust phases. Although the ADR-001 markers are not yet emitted as Rust constants (the existing `IdentityAttestation::encode/decode` writes a 108-byte raw payload with no leading marker), the reservations are committed by the prior ADR — so the new entrant moves. 0xB6 keeps translator frames inside the top-level discriminator family alongside `is_delta_document`, leaves the trust phases free to roll out per ADR-001, and stays disjoint from the registry's `DocumentType` range so registry consumers don't mis-imply translator frames as `DocumentType` instances.
 
 #### Receive-side dispatch
 
-`peat_mesh::on_ble_data_received_anonymous` (and its identified-peer siblings at `peat_mesh.rs:2245` and `:2432`) gain a 0xB3 branch on the decrypted payload's first byte, alongside the existing `DeltaDocument::is_delta_document` check at `peat_mesh.rs:2520`. The branch:
+`peat_mesh::on_ble_data_received_anonymous` (and its identified-peer siblings at `peat_mesh.rs:2245` and `:2432`) gain a 0xB6 branch on the decrypted payload's first byte, alongside the existing `DeltaDocument::is_delta_document` check at `peat_mesh.rs:2520`. The branch:
 
 ```text
-on decrypted[0] == 0xB3:
+on decrypted[0] == 0xB6:
     if decrypted.len() < 2:                     // truncated frame
         bump metric ble.translator_frame_truncated
         return None
@@ -586,7 +599,7 @@ A new peat-btle public API mirroring the outbound callback shape:
 ```rust
 /// Receives Documents decoded from inbound BLE translator frames.
 ///
-/// Invoked by peat-btle's GATT receive dispatch after a 0xB3 frame is
+/// Invoked by peat-btle's GATT receive dispatch after a 0xB6 frame is
 /// successfully routed through `BleTranslator::decode_inbound`. The
 /// callback is expected to be non-blocking and panic-free; consumers
 /// that need async publish should spawn their own task.
@@ -614,7 +627,7 @@ impl PeatMesh {
 }
 ```
 
-**Storage shape and the no-callback window.** The field is `Option<Arc<dyn DecodedDocumentCallback>>` (behind whatever interior-mutability primitive `PeatMesh` already uses for similar setters), initialized to `None` at construction. Slice 1.b.3 ships peat-btle with the trait, the setter, and the receive-dispatch branch; Slice 1.b.4 — landing in a *later* peat-ffi release after a peat-btle release with 1.b.3 — installs the callback. **The release window between 1.b.3 shipping and 1.b.4 wiring is real**: a deployment running peat-btle-with-1.b.3 plus a peat-ffi version that predates 1.b.4 will receive 0xB3 frames, decode them successfully, and have no consumer to hand them to.
+**Storage shape and the no-callback window.** The field is `Option<Arc<dyn DecodedDocumentCallback>>` (behind whatever interior-mutability primitive `PeatMesh` already uses for similar setters), initialized to `None` at construction. Slice 1.b.3 ships peat-btle with the trait, the setter, and the receive-dispatch branch; Slice 1.b.4 — landing in a *later* peat-ffi release after a peat-btle release with 1.b.3 — installs the callback. **The release window between 1.b.3 shipping and 1.b.4 wiring is real**: a deployment running peat-btle-with-1.b.3 plus a peat-ffi version that predates 1.b.4 will receive 0xB6 frames, decode them successfully, and have no consumer to hand them to.
 
 Specified behavior in that window: drop the decoded `Document` and bump `ble.translator_no_callback{collection}`. The frame is not panicked-on, not error-logged at warning level (a missing consumer in the release-skew window is expected, not a fault), and not retried. The counter makes the gap observable — operators see exactly how many frames are being decoded into the void during the rollout — and lets peat-ffi integration tests assert the behavior is "no-op-drop with telemetry," not panic, not error, not silent. peat-ffi's 1.b.4 implementation can register the callback before opening any GATT connection, which closes the window from the consumer side once 1.b.4 is deployed.
 
@@ -624,29 +637,29 @@ peat-ffi's responsibility is to install a callback that calls `Node::publish_wit
 
 #### Backwards compatibility with mixed fleets
 
-The 0xB3 marker is purely additive. Three classes of peer matter:
+The 0xB6 marker is purely additive. Three classes of peer matter:
 
-1. **Legacy senders** (M5Stack on pre-#70 firmware, wearos-tak-civ pre-update, peat-atak-plugin pre-adoption) emit only `PeatDocument`-shaped frames with the existing 0xAB/0xAC/0xAD/0xAE/0xAF section markers. New peat-btle receivers MUST keep dispatching these — the existing legacy decoders stay in place and the 0xB3 branch is added alongside, not in place of them.
+1. **Legacy senders** (M5Stack on pre-#70 firmware, wearos-tak-civ pre-update, peat-atak-plugin pre-adoption) emit only `PeatDocument`-shaped frames with the existing 0xAB/0xAC/0xAD/0xAE/0xAF section markers. New peat-btle receivers MUST keep dispatching these — the existing legacy decoders stay in place and the 0xB6 branch is added alongside, not in place of them.
 
-2. **Legacy receivers** (same fleet, before peat-btle ships #70) see 0xB3-prefixed bytes as something `PeatDocument::decode` was never designed to handle. There is no version-range check at `peat-btle/src/document.rs:531`; any `version` u32 is accepted, and silent-drop on a 0xB3-prefixed payload depends entirely on `GCounter::decode` rejecting `data[8..12]` as `num_entries > MAX_COUNTER_ENTRIES` (= 256, `peat-btle/src/sync/crdt.rs:55`). The structural hazard: **any translator-encoded payload whose wire bytes 8–11 (the bytes `PeatDocument::decode` reads as `num_entries`) form a value ≤ 256 will be accepted as a valid-but-garbage `PeatDocument` and merge a junk GCounter into the receiver's state.** This is reachable for plausible inputs, not a theoretical edge case.
+2. **Legacy receivers** (same fleet, before peat-btle ships #70) see 0xB6-prefixed bytes as something `PeatDocument::decode` was never designed to handle. There is no version-range check at `peat-btle/src/document.rs:531`; any `version` u32 is accepted, and silent-drop on a 0xB6-prefixed payload depends entirely on `GCounter::decode` rejecting `data[8..12]` as `num_entries > MAX_COUNTER_ENTRIES` (= 256, `peat-btle/src/sync/crdt.rs:55`). The structural hazard: **any translator-encoded payload whose wire bytes 8–11 (the bytes `PeatDocument::decode` reads as `num_entries`) form a value ≤ 256 will be accepted as a valid-but-garbage `PeatDocument` and merge a junk GCounter into the receiver's state.** This is reachable for plausible inputs, not a theoretical edge case.
 
-   Concrete instance: the actual `BlePosition` struct (`peat-btle/src/translator.rs:80`) is `{ latitude: f32, longitude: f32, altitude: Option<f32>, accuracy: Option<f32> }`. A translator-encoded position broadcast at the (0, 0) origin with `altitude = None` and `accuracy = None` produces a 10-byte postcard payload of all-zero bytes (two zero-f32s plus two `None` tags), and the wire frame `[0xB3, code, 0x00 × 10]` puts `[lon_byte2, lon_byte3, altitude_tag, accuracy_tag] = [0x00, 0x00, 0x00, 0x00]` at the `num_entries` offset → `num_entries = 0` → slides through the bound check → `PeatDocument::decode` returns `Some(garbage_doc)` with an empty counter and no sections → `merge_document` pollutes the receiver's GCounter. Any tactical device broadcasting from the (0, 0) origin would trigger this on every peer running pre-#70 peat-btle, and any input where bytes 8–11 happen to fall ≤ 256 has the same effect.
+   Concrete instance: the actual `BlePosition` struct (`peat-btle/src/translator.rs:80`) is `{ latitude: f32, longitude: f32, altitude: Option<f32>, accuracy: Option<f32> }`. A translator-encoded position broadcast at the (0, 0) origin with `altitude = None` and `accuracy = None` produces a 10-byte postcard payload of all-zero bytes (two zero-f32s plus two `None` tags), and the wire frame `[0xB6, code, 0x00 × 10]` puts `[lon_byte2, lon_byte3, altitude_tag, accuracy_tag] = [0x00, 0x00, 0x00, 0x00]` at the `num_entries` offset → `num_entries = 0` → slides through the bound check → `PeatDocument::decode` returns `Some(garbage_doc)` with an empty counter and no sections → `merge_document` pollutes the receiver's GCounter. Any tactical device broadcasting from the (0, 0) origin would trigger this on every peer running pre-#70 peat-btle, and any input where bytes 8–11 happen to fall ≤ 256 has the same effect.
 
-   **Therefore #70 itself adds an explicit reserved-marker rejection check** in `on_ble_data_received_anonymous` (and identified-peer siblings) **alongside** the new 0xB3 dispatch branch. The check fires *before* fall-through to `merge_document` / `PeatDocument::decode`:
+   **Therefore #70 itself adds an explicit reserved-marker rejection check** in `on_ble_data_received_anonymous` (and identified-peer siblings) **alongside** the new 0xB6 dispatch branch. The check fires *before* fall-through to `merge_document` / `PeatDocument::decode`:
 
    ```text
-   on first_byte in 0xB3..=0xBF:
-       0xB3 → translator dispatch (specified above)
-       0xB4..=0xBF → reserved future translator markers; silent drop
+   on first_byte in 0xB6..=0xBF:
+       0xB6 → translator dispatch (specified above)
+       0xB7..=0xBF → reserved future translator markers; silent drop
                      bump metric ble.reserved_marker_drop{marker}
                      return None (do not call merge_document)
    ```
 
-   The 0xB4–0xBF range is reserved for future translator-frame variants (multi-frame, fragmented, etc.) so adding them later doesn't require touching legacy-rejection code on the receive path. The check is a 4-line addition, ships in the same peat-btle release as the 0xB3 branch, and is a deployment prerequisite: **operators MUST roll out the peat-btle release containing this check to every BLE peer in the deployment before enabling 0xB3 emission on any peer.** Senders without this rollout discipline pollute every receiver's GCounter probabilistically and (for `lat = 0.0`) deterministically — there is no graceful pre-#70 silent-drop guarantee.
+   The 0xB7–0xBF range is reserved for future translator-frame variants (multi-frame, fragmented, etc.) so adding them later doesn't require touching legacy-rejection code on the receive path. The check is a 4-line addition, ships in the same peat-btle release as the 0xB6 branch, and is a deployment prerequisite: **operators MUST roll out the peat-btle release containing this check to every BLE peer in the deployment before enabling 0xB6 emission on any peer.** Senders without this rollout discipline pollute every receiver's GCounter probabilistically and (for `lat = 0.0`) deterministically — there is no graceful pre-#70 silent-drop guarantee.
 
-   Pre-#70 peers that the operator cannot upgrade (e.g. M5Stack devices that have aged out of firmware support) make the deployment a 0xB3-disabled deployment until they are retired. The dual-emit-disable knob (Implementation step 4 below) lets operators with such peers run 100% legacy emit and accept the no-cross-transport-translator-frames cost as the explicit alternative to the GCounter-pollution hazard.
+   Pre-#70 peers that the operator cannot upgrade (e.g. M5Stack devices that have aged out of firmware support) make the deployment a 0xB6-disabled deployment until they are retired. The dual-emit-disable knob (Implementation step 4 below) lets operators with such peers run 100% legacy emit and accept the no-cross-transport-translator-frames cost as the explicit alternative to the GCounter-pollution hazard.
 
-3. **New peers, both directions** speak both. **Dual-emit is the default on the sender side** until peat-btle telemetry reports zero legacy-section-marker traffic across a deployment: the outbound dispatcher writes the 0xB3 translator frame *and* the corresponding legacy frame for the same logical doc.
+3. **New peers, both directions** speak both. **Dual-emit is the default on the sender side** until peat-btle telemetry reports zero legacy-section-marker traffic across a deployment: the outbound dispatcher writes the 0xB6 translator frame *and* the corresponding legacy frame for the same logical doc.
 
    **The legacy emit is gated by `BleTranslator::encode_outbound`'s success.** When `encode_outbound` returns `None` — codec declined, `target_nodes` filter excluded all reachable BLE peers (per ADR-059 §"Composes with — ADR-046"), `allowed_transports` excluded BLE (Slice 2+), or any other decline reason — the legacy emit is **also suppressed**. The dual-emit trigger is "I have a translator frame to send via BLE, also emit the matching legacy frame," not "translate and broadcast independently." This means every ADR-046 / ADR-059-Slice-2 / encode-time scoping rule applied to the translator frame is automatically applied to the legacy frame as well; the legacy path does not become a leak channel for target-restricted documents during the transition window.
 
@@ -654,11 +667,11 @@ The 0xB3 marker is purely additive. Three classes of peer matter:
 
    Dual-emit costs roughly 2× wire bytes per logical doc during the transition window. The cost is intentional: it's the price of not breaking interop with the existing ATAK/M5Stack/watch fleet. **The disable knob ships in Slice 1.b.3 itself** (per Implementation step 4 below) — operators with fleet-uniform deployments may disable it from day one, accepting the legacy-peer-blackhole risk explicitly. Slice 1.b.5's separate scope is the eventual removal of the legacy-emit *code path*, not the per-deployment toggle.
 
-A receiver that sees both a 0xB3 frame and the matching legacy frame for the same logical doc ingests both — each receive path calls `Node::publish_with_origin(.., Some("ble"))` independently, and Automerge merges both into the doc store. Whichever publish lands second produces a no-op CRDT merge on identical state; per ADR-059 §"Automerge no-op-merge suppression," no-op merges do not fire `ChangeEvent`s. The local observer therefore fires **once per logical doc**, not twice — downstream observer-stream consumers (UI redraw, alert tones, analytics counters, audit logs in peat-atak-plugin and wearos-tak-civ) see exactly one event regardless of how many BLE delivery paths brought the doc in. The single fan-out emission carries `origin = Some("ble")`, so the BLE channel skips on origin match and no echo is produced.
+A receiver that sees both a 0xB6 frame and the matching legacy frame for the same logical doc ingests both — each receive path calls `Node::publish_with_origin(.., Some("ble"))` independently, and Automerge merges both into the doc store. Whichever publish lands second produces a no-op CRDT merge on identical state; per ADR-059 §"Automerge no-op-merge suppression," no-op merges do not fire `ChangeEvent`s. The local observer therefore fires **once per logical doc**, not twice — downstream observer-stream consumers (UI redraw, alert tones, analytics counters, audit logs in peat-atak-plugin and wearos-tak-civ) see exactly one event regardless of how many BLE delivery paths brought the doc in. The single fan-out emission carries `origin = Some("ble")`, so the BLE channel skips on origin match and no echo is produced.
 
 #### Loop-prevention invariant under dual delivery
 
-The fan-out spec already covers this case (see "Concurrent ingest of the same logical doc"), but worth restating explicitly: a doc that arrives once via 0xB3 and once via legacy 0xAB/etc. produces two separate `publish_with_origin(.., Some("ble"))` calls on the receiver. The first publish (whichever lands first) drives a real state change → the local observer fires once → fan-out emits once with `origin = Some("ble")` → BLE channel skips on origin match → iroh/TAK/LoRa transports receive one copy. The second publish merges no-op on identical CRDT state and **does not fire the observer** per ADR-059 §"Automerge no-op-merge suppression." Net: one observer fire, one cross-transport emission, no BLE echo, no doubled downstream effects on observer-stream consumers.
+The fan-out spec already covers this case (see "Concurrent ingest of the same logical doc"), but worth restating explicitly: a doc that arrives once via 0xB6 and once via legacy 0xAB/etc. produces two separate `publish_with_origin(.., Some("ble"))` calls on the receiver. The first publish (whichever lands first) drives a real state change → the local observer fires once → fan-out emits once with `origin = Some("ble")` → BLE channel skips on origin match → iroh/TAK/LoRa transports receive one copy. The second publish merges no-op on identical CRDT state and **does not fire the observer** per ADR-059 §"Automerge no-op-merge suppression." Net: one observer fire, one cross-transport emission, no BLE echo, no doubled downstream effects on observer-stream consumers.
 
 The no-op-merge-suppression dependency here is the **same contract** ADR-059 already load-bearingly relies on for multi-hop loop prevention (gateway A→B→A round-trips). This amendment inherits that guarantee; it does not introduce a new dependency. Slice 1's A→B→A regression fixture (#55) and this amendment's dual-delivery fixture (Slice 1.b.3, below) exercise the contract from two different stress angles.
 
@@ -674,51 +687,51 @@ The no-op-merge-suppression dependency here is the **same contract** ADR-059 alr
 
 - **Dual-emit doubles BLE airtime per logical doc during the transition.** Real cost in ADR-019 QoS terms — high-burst scenarios may see preemption fire earlier on the BLE channel. Mitigation: dual-emit is per-deployment configurable from day one (knob ships in Slice 1.b.3, see Implementation step 4); deployments certain of fleet uniformity may disable it immediately, accepting the legacy-peer-blackhole risk explicitly.
 
-- **0xB3 emission is gated on a fleet-wide peat-btle release rollout.** Pre-#70 peat-btle's `PeatDocument::decode` does not provide a guaranteed silent-drop on 0xB3-prefixed payloads (see §"Backwards compatibility… 2"); operators must roll out the peat-btle release containing the reserved-marker rejection check to every BLE peer **before** enabling 0xB3 emission anywhere. This is a real operational constraint, not just a soft preference: skipping the rollout corrupts the GCounter on every legacy receiver that sees a translator frame whose `data[8..12]` happens to fall under `MAX_COUNTER_ENTRIES`.
-- **Two parallel decoders on the receive side until legacy retires.** The 0xAB/0xAC/0xAD/etc. section dispatch inside `PeatDocument::decode` and the new top-level 0xB3 branch both produce app-visible state; a future migration to retire legacy decoders is an additional cleanup slice (out of scope for this amendment). Until then, peat-btle carries both.
+- **0xB6 emission is gated on a fleet-wide peat-btle release rollout.** Pre-#70 peat-btle's `PeatDocument::decode` does not provide a guaranteed silent-drop on 0xB6-prefixed payloads (see §"Backwards compatibility… 2"); operators must roll out the peat-btle release containing the reserved-marker rejection check to every BLE peer **before** enabling 0xB6 emission anywhere. This is a real operational constraint, not just a soft preference: skipping the rollout corrupts the GCounter on every legacy receiver that sees a translator frame whose `data[8..12]` happens to fall under `MAX_COUNTER_ENTRIES`.
+- **Two parallel decoders on the receive side until legacy retires.** The 0xAB/0xAC/0xAD/etc. section dispatch inside `PeatDocument::decode` and the new top-level 0xB6 branch both produce app-visible state; a future migration to retire legacy decoders is an additional cleanup slice (out of scope for this amendment). Until then, peat-btle carries both.
 - **Code-table is a peat-btle-internal stable identifier list.** Adding a translator collection to BleTranslator now requires (a) a new code in the table and (b) coordinated rollout so peers ship the recognizer before any sender emits the new code. Same constraint as any wire-format extension.
 
 #### Composes with
 
 - **ADR-019 (QoS):** dual-emit lives on the channel boundary; QoS preempts both copies under load identically.
 - **ADR-046 (targeted delivery):** `target_nodes` is checked codec-side in `encode_outbound` (ADR-059 §"Composes with — ADR-046"). Receive-side dispatch is target-agnostic; if the doc arrived, it was for someone reachable. The `peer` argument on the decoded-document callback is available for codec-internal `target_nodes` filtering should a future Slice need it.
-- **ADR-041 (multi-transport embedded):** 0xB3 slots into the existing top-level marker family ADR-041 establishes for peat-btle wire framing. Choice of byte and dispatch-table extension match conventions already in `peat-btle/src/document.rs` and `peat-btle/src/sync/delta_document.rs`.
+- **ADR-041 (multi-transport embedded):** 0xB6 slots into the existing top-level marker family ADR-041 establishes for peat-btle wire framing. Choice of byte and dispatch-table extension match conventions already in `peat-btle/src/document.rs` and `peat-btle/src/sync/delta_document.rs`.
 
 ### Implementation
 
 **Slice 1.b.3 — peat-btle receive-side translator-frame routing.** Lands in peat-btle behind the existing `mesh-translator` Cargo feature. Surface area:
 
-1. `peat-btle/src/document.rs`: add `pub const TRANSLATOR_FRAME_MARKER: u8 = 0xB3;` alongside the existing marker constants.
+1. `peat-btle/src/document.rs`: add `pub const TRANSLATOR_FRAME_MARKER: u8 = 0xB6;` alongside the existing marker constants.
 2. `peat-btle/src/translator.rs`: add `code_to_collection(&self, code: u8) -> Option<&str>` and `collection_to_code(&self, name: &str) -> Option<u8>` methods on `BleTranslator`, reading from `TranslationConfig`. Expose `pub const COLLECTION_CODE_TRACKS: u8 = 0x01;` etc. — public so the in-tree dual-emit gating logic and tests can reference the same canonical values, **not** for host-side outbound use (per Step 5, the host owns no per-translator-frame logic).
 3. `peat-btle/src/lib.rs` (and the `uniffi_bindings.rs` surface): add `DecodedDocumentCallback` trait and `set_decoded_document_callback` on the public `PeatMesh`-bearing type, both `#[cfg(feature = "mesh-translator")]`. For UniFFI, expose as `Box<dyn DecodedDocumentCallback>` per the existing callback pattern.
 4. `peat-btle/src/peat_mesh.rs`: extend `on_ble_data_received_anonymous` (and identified-peer siblings) with **two** first-byte branches before the existing `DeltaDocument::is_delta_document` check:
 
-   - `first_byte == 0xB3`: translator dispatch. Invokes `decode_inbound` and the callback as specified in §"Receive-side dispatch."
-   - `first_byte ∈ 0xB4..=0xBF`: reserved-future-translator-marker silent-drop. Returns `None` without falling through to `merge_document`. Reserves the range so that future translator-frame variants (multi-frame, fragmented, etc.) don't require touching legacy-rejection logic on the receive path.
+   - `first_byte == 0xB6`: translator dispatch. Invokes `decode_inbound` and the callback as specified in §"Receive-side dispatch."
+   - `first_byte ∈ 0xB7..=0xBF`: reserved-future-translator-marker silent-drop. Returns `None` without falling through to `merge_document`. Reserves the range so that future translator-frame variants (multi-frame, fragmented, etc.) don't require touching legacy-rejection logic on the receive path.
 
    Surface these counters at the receive layer:
 
    - `ble.translator_frame_truncated`
    - `ble.translator_unknown_code{code}`
    - `ble.translator_decode_error{collection}`
-   - `ble.reserved_marker_drop{marker}` (0xB4–0xBF)
+   - `ble.reserved_marker_drop{marker}` (0xB7–0xBF)
    - `ble.legacy_section_marker_recv{marker}` (0xAB / 0xAC / 0xAD / 0xAE / 0xAF — counts inbound legacy frames per section type)
    - `ble.legacy_section_marker_send{marker}` (same set, counted at the dual-emit dispatch site on the outbound path)
 
    The two `legacy_section_marker_*` counters drive the Slice 1.b.5 retirement decision. They are listed alongside the translator-side counters because the retirement criterion ("zero legacy traffic across the deployment") is operationally undecidable without them — without these counters the criterion has no data to consult and "deferred" becomes "indefinite."
 
-   **Dual-emit toggle.** Add `enable_legacy_emit: bool` (default `true`) to `PeatMesh`'s outbound-path config and a setter `PeatMesh::set_enable_legacy_emit(bool)` so operators can disable the legacy emit per deployment from day one. When `false`, only the 0xB3 frame is emitted; the legacy-frame builder and `broadcastBytes` call for the legacy path are short-circuited. The toggle is **not** the same thing as Slice 1.b.5: 1.b.5 removes the legacy-emit code path entirely once telemetry confirms zero legacy traffic across all reachable deployments. The toggle is the operator-facing surface; the code-path removal is the eventual cleanup.
+   **Dual-emit toggle.** Add `enable_legacy_emit: bool` (default `true`) to `PeatMesh`'s outbound-path config and a setter `PeatMesh::set_enable_legacy_emit(bool)` so operators can disable the legacy emit per deployment from day one. When `false`, only the 0xB6 frame is emitted; the legacy-frame builder and `broadcastBytes` call for the legacy path are short-circuited. The toggle is **not** the same thing as Slice 1.b.5: 1.b.5 removes the legacy-emit code path entirely once telemetry confirms zero legacy traffic across all reachable deployments. The toggle is the operator-facing surface; the code-path removal is the eventual cleanup.
 5. **Outbound framing lives in `BleTranslator::encode_outbound`, not in the host.** `encode_outbound` returns the fully-framed bytes — `[TRANSLATOR_FRAME_MARKER, collection_code, postcard_payload]` — for every collection it carries. peat-ffi's `OutboundFrameCallback` ships those bytes unchanged to the host, and `BleOutboundFrameDispatcher` (peat-atak-plugin) and the iOS equivalent forward them to `PeatBleManager.broadcastBytes` (or its iOS analogue) without inspection. The host owns no per-translator-frame logic.
 
-   **Why this and not host-side prefixing.** The receive side already owns its decoding inside peat-btle: marker recognition, code lookup, ctx population, `decode_inbound` invocation. Mirroring the encode side keeps the wire-format identity in **one place** — `peat-btle/src/translator.rs` is the sole owner of "what bytes go on the BLE wire for a translator frame" in both directions. An earlier draft of this amendment placed the prefix in each platform binding (Android JNI, iOS UniFFI). QA review surfaced that as an asymmetric multi-binding correctness hazard: every host owning prepend logic with no compiler-enforced consistency, and silent failure modes on the receive side (forgotten prepend → unknown frame → silent drop; double-prepend → `code = 0xB3` → "unknown code" → silent drop). The encryption-envelope precedent does not transfer because session keys are host-managed; a fixed-byte protocol prefix has no host dependency, so the symmetry argument wins.
+   **Why this and not host-side prefixing.** The receive side already owns its decoding inside peat-btle: marker recognition, code lookup, ctx population, `decode_inbound` invocation. Mirroring the encode side keeps the wire-format identity in **one place** — `peat-btle/src/translator.rs` is the sole owner of "what bytes go on the BLE wire for a translator frame" in both directions. An earlier draft of this amendment placed the prefix in each platform binding (Android JNI, iOS UniFFI). QA review surfaced that as an asymmetric multi-binding correctness hazard: every host owning prepend logic with no compiler-enforced consistency, and silent failure modes on the receive side (forgotten prepend → unknown frame → silent drop; double-prepend → `code = 0xB6` → "unknown code" → silent drop). The encryption-envelope precedent does not transfer because session keys are host-managed; a fixed-byte protocol prefix has no host dependency, so the symmetry argument wins.
 
    **Implementation note.** `encode_outbound` looks up `collection_code` via the same `BleTranslator` config that supports operator-renamable collection names. If the collection code is unknown (operator added a collection without a code-table entry), `encode_outbound` returns `None` — the same decline path it already uses for unrecognized collections. Adding a new translator collection therefore requires (a) extending the typed-struct surface, (b) appending to the code table, (c) shipping a peat-btle release. Senders cannot accidentally emit an un-decodable frame.
 
 6. **Regression test fixtures.** Slice 1.b.3 ships three fixtures, each locking a different invariant:
 
-   - `peat-btle/tests/translator_frame_dual_delivery.rs` — a doc round-trips through both 0xB3 and the matching legacy frame on the same node; assert (a) one fan-out emission with `origin = Some("ble")`, (b) **observer-fire-count == 1** on the doc-store stream (locks the no-op-merge-suppression contract under dual-emit, directly addressing the QA concern that Automerge state convergence alone doesn't guarantee single observer fire to downstream consumers), (c) idempotent doc-store state. Composes with the Slice 1 A→B→A round-trip fixture (#55) — same contract, different exercise.
-   - `peat-btle/tests/reserved_marker_silent_drop.rs` — feed `[0xB4, 0x00, ...]` (and one frame per byte 0xB5–0xBF) directly to the receive dispatch; assert (a) `merge_document` is never called, (b) `ble.reserved_marker_drop{marker}` increments, (c) doc-store state is unchanged. Documents the post-#70 silent-drop guarantee explicitly so the §"Backwards compatibility… 2" claim is proof, not assertion.
-   - `peat-btle/tests/dual_emit_target_nodes_gating.rs` — publish a doc with `target_nodes = ["other-node"]` (no local-reachable target) and `allowed_transports = ["ble"]`; assert that **neither** the 0xB3 frame nor the legacy frame is emitted. Locks the §"Backwards compatibility… 3" guarantee that the legacy emit inherits encode-time scoping rather than becoming a leak channel.
+   - `peat-btle/tests/translator_frame_dual_delivery.rs` — a doc round-trips through both 0xB6 and the matching legacy frame on the same node; assert (a) one fan-out emission with `origin = Some("ble")`, (b) **observer-fire-count == 1** on the doc-store stream (locks the no-op-merge-suppression contract under dual-emit, directly addressing the QA concern that Automerge state convergence alone doesn't guarantee single observer fire to downstream consumers), (c) idempotent doc-store state. Composes with the Slice 1 A→B→A round-trip fixture (#55) — same contract, different exercise.
+   - `peat-btle/tests/reserved_marker_silent_drop.rs` — feed `[0xB7, 0x00, ...]` (and one frame per byte 0xB8–0xBF) directly to the receive dispatch; assert (a) `merge_document` is never called, (b) `ble.reserved_marker_drop{marker}` increments, (c) doc-store state is unchanged. Documents the post-#70 silent-drop guarantee explicitly so the §"Backwards compatibility… 2" claim is proof, not assertion.
+   - `peat-btle/tests/dual_emit_target_nodes_gating.rs` — publish a doc with `target_nodes = ["other-node"]` (no local-reachable target) and `allowed_transports = ["ble"]`; assert that **neither** the 0xB6 frame nor the legacy frame is emitted. Locks the §"Backwards compatibility… 3" guarantee that the legacy emit inherits encode-time scoping rather than becoming a leak channel.
 
 **Slice 1.b.4 — peat-ffi callback wiring.** Lands in peat-ffi after Slice 1.b.3 ships in a peat-btle release. Installs a `DecodedDocumentCallback` impl that calls `Node::publish_with_origin(collection, doc, Some("ble"))`. Registered at `PeatNode` construction; teardown is symmetric with the existing `OutboundFrameCallback` lifecycle.
 
@@ -745,6 +758,6 @@ The day-one operator-facing toggle (`enable_legacy_emit`) is the Slice 1.b.3 sur
 
 - **Encode the collection as a leading varint inside the postcard payload itself, no marker byte.** Rejected: peat-btle's leading-byte dispatch is the canonical layering boundary for "what kind of frame is this." Embedding the discriminator inside the postcard payload would force the receive side to *attempt* postcard decode before knowing whether the bytes are a translator frame — turning dispatch into try/catch instead of switch. Top-level marker dispatch is the pattern every other peat-btle frame type already uses.
 
-- **Add the 0xB3 branch as a section marker inside `PeatDocument::decode`'s while-loop (alongside 0xAB/0xAC/0xAD).** Rejected: those markers are *sections within a single PeatDocument envelope* (version + node_id + counter + sections). Translator frames have no PeatDocument header — they are independent top-level frames. Embedding them as PeatDocument sections would either require synthesising a fake header (wasteful and confusing) or inverting the section-vs-envelope relationship.
+- **Add the 0xB6 branch as a section marker inside `PeatDocument::decode`'s while-loop (alongside 0xAB/0xAC/0xAD).** Rejected: those markers are *sections within a single PeatDocument envelope* (version + node_id + counter + sections). Translator frames have no PeatDocument header — they are independent top-level frames. Embedding them as PeatDocument sections would either require synthesising a fake header (wasteful and confusing) or inverting the section-vs-envelope relationship.
 
-- **Host-side prefixing of marker + code on outbound (each platform binding owns the prepend).** Rejected during QA review of an earlier draft. The receive side decodes inside peat-btle; mirroring the encode side keeps the wire format owned in one crate. Host-side prefixing would put correctness-critical, no-compile-time-enforcement logic in every binding (Android JNI, iOS UniFFI, future hosts), with two silent-drop failure modes on the receive side: forgotten prepend produces an unknown frame format, double-prepend produces `code = 0xB3` lookup failure. Single source of truth in `peat-btle/src/translator.rs::encode_outbound` removes the hazard entirely.
+- **Host-side prefixing of marker + code on outbound (each platform binding owns the prepend).** Rejected during QA review of an earlier draft. The receive side decodes inside peat-btle; mirroring the encode side keeps the wire format owned in one crate. Host-side prefixing would put correctness-critical, no-compile-time-enforcement logic in every binding (Android JNI, iOS UniFFI, future hosts), with two silent-drop failure modes on the receive side: forgotten prepend produces an unknown frame format, double-prepend produces `code = 0xB6` lookup failure. Single source of truth in `peat-btle/src/translator.rs::encode_outbound` removes the hazard entirely.
