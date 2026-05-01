@@ -18,6 +18,13 @@ ignore = [
     # Transitive via iroh -> aws-lc-sys
     { id = "RUSTSEC-2026-0044", reason = "aws-lc X.509 bypass; transitive via iroh, awaiting upstream update" },
     { id = "RUSTSEC-2026-0048", reason = "aws-lc CRL logic error; transitive via iroh, awaiting upstream update" },
+    # Transitive via iroh -> hickory-resolver -> hickory-proto. iroh 0.97 caps
+    # hickory-resolver at <0.26, so hickory-proto cannot reach the >=0.26.1
+    # fix for RUSTSEC-2026-0119. RUSTSEC-2026-0118 has no fixed version yet.
+    # Both surface only on DNSSEC validation / message encoding paths in iroh's
+    # discovery layer; revisit when iroh bumps hickory.
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto NSEC3 unbounded loop; transitive via iroh, no upstream fix yet" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto O(n²) name compression; transitive via iroh capped at hickory<0.26, awaiting upstream" },
     # Workspace crates
     { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; used in peat-ffi, evaluate migration to postcard" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; macro-only, low risk" },
