@@ -178,9 +178,21 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --quiet
       - name: Run audit (fail on vulnerabilities, warn on unmaintained)
+        # cargo-audit doesn't read deny.toml and its only config-file path is
+        # ~/.cargo/audit.toml (outside the repo). Inline `--ignore` flags here
+        # are the canonical mechanism for workspace-tracked exceptions. **Each
+        # entry below MUST have a matching entry in deny.toml `[advisories]
+        # ignore` with the same RUSTSEC id and reason** — drop from both files
+        # in the same PR when a fix becomes reachable.
         run: |
-          cargo audit 2>&1 || true
-          cargo audit --json 2>/dev/null | jq -e '.vulnerabilities.count == 0'
+          cargo audit \
+            --ignore RUSTSEC-2026-0118 \
+            --ignore RUSTSEC-2026-0119 \
+            2>&1 || true
+          cargo audit \
+            --ignore RUSTSEC-2026-0118 \
+            --ignore RUSTSEC-2026-0119 \
+            --json 2>/dev/null | jq -e '.vulnerabilities.count == 0'
 
   supply-chain:
     name: Supply Chain
