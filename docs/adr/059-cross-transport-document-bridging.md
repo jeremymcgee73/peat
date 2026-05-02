@@ -761,3 +761,150 @@ The day-one operator-facing toggle (`enable_legacy_emit`) is the Slice 1.b.3 sur
 - **Add the 0xB6 branch as a section marker inside `PeatDocument::decode`'s while-loop (alongside 0xAB/0xAC/0xAD).** Rejected: those markers are *sections within a single PeatDocument envelope* (version + node_id + counter + sections). Translator frames have no PeatDocument header — they are independent top-level frames. Embedding them as PeatDocument sections would either require synthesising a fake header (wasteful and confusing) or inverting the section-vs-envelope relationship.
 
 - **Host-side prefixing of marker + code on outbound (each platform binding owns the prepend).** Rejected during QA review of an earlier draft. The receive side decodes inside peat-btle; mirroring the encode side keeps the wire format owned in one crate. Host-side prefixing would put correctness-critical, no-compile-time-enforcement logic in every binding (Android JNI, iOS UniFFI, future hosts), with two silent-drop failure modes on the receive side: forgotten prepend produces an unknown frame format, double-prepend produces `code = 0xB6` lookup failure. Single source of truth in `peat-btle/src/translator.rs::encode_outbound` removes the hazard entirely.
+
+---
+
+## Amendment 2 — Decoded-document callback wiring is plugin-side, not peat-ffi-side (Slice 1.b.4 design correction)
+
+**Status**: Proposed
+**Date**: 2026-05-02
+**Authors**: Kit Plummer
+**Organization**: Defense Unicorns
+
+### Context
+
+Amendment 1 §"Decoded-document callback" specified that Slice 1.b.4 would land in peat-ffi:
+
+> **Slice 1.b.4 — peat-ffi callback wiring.** Lands in peat-ffi after Slice 1.b.3 ships in a peat-btle release. Installs a `DecodedDocumentCallback` impl that calls `Node::publish_with_origin(collection, doc, Some("ble"))`. Registered at `PeatNode` construction; teardown is symmetric with the existing `OutboundFrameCallback` lifecycle.
+
+Implementation-time investigation against peat-btle 0.3.0 (the release that shipped the Slice 1.b.3 receive-dispatch path) surfaced that this wiring does not fit the actual data flow:
+
+- **`peat_btle::PeatMesh` is the only type that exposes `set_decoded_document_callback`** — that's where Slice 1.b.3 wired the receive dispatch and the trait setter.
+- **peat-ffi never owns a `peat_btle::PeatMesh` instance.** peat-ffi's BLE story is built on `peat_btle::BluetoothLETransport<A: BleAdapter>` (a transport-trait wrapper around an adapter) plus `peat_protocol::transport::btle::PeatBleTransport` (a peat-protocol-side wrapper). Neither owns or exposes `PeatMesh`. peat-ffi's `PeatNode` accordingly has no handle from which to call `set_decoded_document_callback`.
+- **peat-atak-plugin owns `PeatMesh` directly** via peat-btle's UniFFI bindings (`PeatBleManager.kt::getMesh() = peatBtle?.mesh`). Other host bindings (wearos-tak-civ, future iOS) follow the same pattern: the host instantiates `peat_btle::PeatMesh` via UniFFI, the host calls `on_ble_data_received_*` directly from the GATT-layer callbacks the host already owns.
+- **The Slice 1.b.3 trait `crate::DecodedDocumentCallback` is Rust-only.** It deliberately does *not* carry `#[uniffi::export(callback_interface)]`, so no Kotlin/Swift host can implement it. Amendment 1 §"Decoded-document callback" mentioned a UniFFI export ("For UniFFI, expose as `Box<dyn DecodedDocumentCallback>` per the existing callback pattern") but the trait shape (taking `peat_mesh::sync::Document`, which has no UniFFI binding today) made that unactionable in 0.3.0 without further design.
+
+The combination means Slice 1.b.4 as Amendment 1 wrote it cannot be implemented without either restructuring peat-ffi to own a `PeatMesh` (a non-trivial FFI-boundary change) or routing decoded documents through a different surface.
+
+### Decision
+
+**Slice 1.b.4 lands in the host (peat-atak-plugin and equivalents), not in peat-ffi.** The data flow is:
+
+```text
+BLE GATT receive
+   ↓  (host's UniFFI/GATT callback)
+peat_btle::PeatMesh::on_ble_data_received_*
+   ↓  (Slice 1.b.3 receive dispatch — already shipped in 0.3.0)
+BleTranslator::decode_inbound_sync(payload, ctx)
+   ↓  (Ok(Some(doc)))
+PeatMesh.decoded_document_callback (host-installed, UniFFI-exported)
+   ↓  (host's Kotlin/Swift impl serializes Document → JSON, calls peat-ffi)
+peat-ffi::publishDocumentJni(collection, json, origin="ble")
+   ↓
+peat_mesh::Node::publish_with_origin(collection, doc, Some("ble"))
+   ↓  (cross-transport fan-out)
+iroh / TAK / LoRa
+```
+
+The host is the natural bridge because it is the only component that owns handles to **both** `peat_btle::PeatMesh` (via UniFFI) and peat-ffi's `PeatNode` (via JNI). peat-ffi sees only the resulting `publishDocument` call with `origin="ble"`; it does not need to know that the doc came from a translator frame.
+
+#### UniFFI callback export (peat-btle 0.3.1)
+
+peat-btle gains a UniFFI-exported callback trait alongside the existing Rust-only one:
+
+```rust
+/// UniFFI-exported counterpart of `crate::DecodedDocumentCallback`. The
+/// `peat_mesh::sync::Document` payload is serialized to JSON before
+/// invocation so the host (Kotlin / Swift) can forward it through
+/// peat-ffi's existing `publishDocument`-shaped FFI without needing a
+/// UniFFI binding for `Document` itself. The Rust-side trait remains
+/// for in-process Rust consumers (peat-sim direct integration tests,
+/// future Rust-native hosts); they receive the typed `Document`.
+#[cfg(all(feature = "mesh-translator", feature = "uniffi"))]
+#[uniffi::export(callback_interface)]
+pub trait DecodedDocumentJsonCallback: Send + Sync {
+    /// `collection` is the BleTranslator collection name. `doc_json` is
+    /// the serde-JSON serialization of the decoded `Document`. `peer`
+    /// is the BLE peer identifier from the receive context.
+    fn on_document(&self, collection: String, doc_json: String, peer: Option<String>);
+}
+
+#[cfg(all(feature = "mesh-translator", feature = "uniffi"))]
+impl PeatMesh {
+    pub fn set_decoded_document_json_callback(
+        &self,
+        cb: Box<dyn DecodedDocumentJsonCallback>,
+    );
+}
+```
+
+The receive dispatch (`try_handle_translator_marker`) gains an additional invocation alongside the existing Rust-trait callback path: when a 0xB6 frame decodes successfully, BOTH the Rust-trait callback (if installed) AND the UniFFI JSON callback (if installed) fire. Each is independent — same as today's `OutboundFrameCallback` Rust-vs-UniFFI parallel paths. The release-skew window (Slice 1.b.3 shipping before 1.b.4 wires the host) still emits `PeatEvent::TranslatorNoCallback` if **neither** callback is installed; if at least one is installed, that branch is suppressed.
+
+#### Host implementation (peat-atak-plugin)
+
+The plugin gains a `BleDecodedDocumentBridge` (or equivalent) class that:
+
+1. Implements `uniffi.peat_btle.DecodedDocumentJsonCallback`.
+2. On `on_document(collection, docJson, peer)`, calls `peatNode.publishDocument(collection, docJson, "ble")` — the existing peat-ffi JNI surface, with the `origin="ble"` argument variant.
+3. Is registered on `peatBtle.mesh.setDecodedDocumentJsonCallback(this)` at plugin startup, after both the peat-btle `PeatMesh` and the peat-ffi `PeatNode` are constructed.
+
+If peat-ffi's existing `publishDocument` JNI does not yet accept an `origin` parameter, that's a one-line peat-ffi addition (extending an existing method with a new variant or optional arg).
+
+#### Why not restructure peat-ffi to own `PeatMesh`?
+
+Restructuring peat-ffi to own a `peat_btle::PeatMesh` instance — e.g., constructing one inside `PeatNode::new` and exposing a getter — is a possible alternative but rejected because:
+
+- **Doubles the `PeatMesh` lifecycle.** The plugin already constructs and owns one via UniFFI for its existing BLE management (`PeatBleManager.peatBtle.mesh`). A second instance inside peat-ffi would either need to be coordinated with the plugin's instance (lifecycle, identity, peer state) or replace it (which means peat-ffi owns the BLE stack, not the plugin — a much larger architectural change).
+- **Breaks the existing FFI/UniFFI boundary.** Today the plugin uses peat-btle's UniFFI for low-level BLE and peat-ffi's JNI for peat-mesh-level operations. Putting peat-btle's `PeatMesh` inside peat-ffi forces peat-ffi to bridge UniFFI types into JNI, which UniFFI is not designed for.
+- **Provides no benefit** the plugin-side wiring doesn't. Both paths end at the same `publish_with_origin` call.
+
+### Consequences
+
+#### Positive
+
+- **Implementable against the existing FFI/UniFFI split.** No restructuring of peat-ffi or its BLE adapter chain. Slice 1.b.4 becomes (1) a peat-btle 0.3.1 release adding the UniFFI callback export and (2) a peat-atak-plugin PR registering it.
+- **One PeatMesh instance per host.** The plugin's existing `peatBtle.mesh` stays the single owner; the new callback is just one more handler attached to it.
+- **Host owns the bridge logic, in line with the existing pattern.** `BleOutboundFrameDispatcher` (Slice 1.c) already lives in the plugin for symmetric reasons — the host is the bridge between peat-btle UniFFI and peat-ffi JNI. Receive-side bridging follows the same shape.
+
+#### Negative
+
+- **Slice 1.b.4 now requires another peat-btle release** (0.3.1) to add the UniFFI callback export. peat-btle 0.3.0 already shipped the Rust-trait variant, so this is purely additive — no breaking change, no operator-rollout sequencing concerns beyond the standard "plugin must run a peat-btle version that ships the UniFFI export."
+- **JSON serialization on the receive hot path.** Each decoded `Document` is serialized to JSON before crossing the UniFFI boundary. Mitigation: the existing `OutboundFrameCallback` path already serializes outbound frames similarly, and BLE wire throughput (≤ ~10 frames/sec sustained per ADR-041) is the dominant cost — JSON serialization is in the noise. Future Rust-native hosts (peat-sim direct-integration tests) skip the UniFFI path and use the Rust-trait callback for the typed `Document` directly.
+- **Two parallel callback fields on `PeatMesh`** during the 0.3.x line: `decoded_document_callback` (Rust trait) and a new UniFFI-exported one. Same shape as `OutboundFrameCallback`'s parallel paths — accepted as part of UniFFI integration cost. Slice 2.x may consolidate once iOS / wearos-tak-civ confirm they need the JSON form too.
+
+#### Composes with
+
+- **Amendment 1 §"Decoded-document callback" / §"Storage shape and the no-callback window"** — unchanged for the Rust-trait variant. The new UniFFI callback adds a parallel path; the no-callback `PeatEvent::TranslatorNoCallback` event fires only when **both** callbacks are absent.
+- **Slice 1.c outbound dispatcher in peat-atak-plugin** — symmetric: outbound is plugin-side (host implements `OutboundFrameCallback`, dispatcher routes bytes to `PeatBleManager.broadcastBytes`), inbound is plugin-side (host implements `DecodedDocumentJsonCallback`, bridge routes JSON to peat-ffi `publishDocument`).
+- **#65 / #66 / #69 / #26 unblock conditions** unchanged in spirit: those plugin migrations resume once Slice 1.b.4 ships in a peat-btle release the plugin can pin (0.3.1) and the plugin's `BleDecodedDocumentBridge` is in place.
+
+### Implementation
+
+**Slice 1.b.4 — peat-btle 0.3.1.** Lands in peat-btle behind both `mesh-translator` and `uniffi` features:
+
+1. `peat-btle/src/lib.rs`: add `pub trait DecodedDocumentJsonCallback` with `#[uniffi::export(callback_interface)]`.
+2. `peat-btle/src/peat_mesh.rs`: add `decoded_document_json_callback: RwLock<Option<Box<dyn DecodedDocumentJsonCallback>>>` field (gated by both features), `set_decoded_document_json_callback` method, initialize to `None` in all constructors. Extend `try_handle_translator_marker` to invoke the JSON callback alongside the Rust-trait callback when `Ok(Some(doc))`. Suppress `PeatEvent::TranslatorNoCallback` only when **both** callback slots are empty.
+3. `peat-btle/src/uniffi_bindings.rs`: expose `set_decoded_document_json_callback` on the UniFFI `PeatMesh` wrapper.
+4. CHANGELOG: 0.3.1 entry covering the additive UniFFI export.
+5. Release.
+
+**Slice 1.b.4 — peat-atak-plugin.** Lands in peat-atak-plugin once peat-btle 0.3.1 is on crates.io:
+
+1. New `BleDecodedDocumentBridge.kt` implementing `uniffi.peat_btle.DecodedDocumentJsonCallback`. On each `on_document(collection, docJson, peer)`, call `peatNode.publishDocument(collection, docJson, "ble")`.
+2. Wire registration into the plugin's startup sequence (`PeatPluginLifecycle` or equivalent), after both `PeatBleManager` and `PeatNode` are constructed.
+3. peat-ffi: if `publishDocument` doesn't yet accept an `origin` parameter, add a `publishDocumentWithOrigin(collection, json, origin)` JNI method (one-line wrapper around `Node::publish_with_origin`). Verify before assuming.
+4. Integration test: send a 0xB6 frame to peat-btle's `PeatMesh.on_ble_data_received_anonymous`, assert the decoded doc lands in the iroh-side doc store with `origin = Some("ble")`.
+
+**Slice 1.b.5 — peat-ffi RustNative-host wiring (deferred, optional).** If peat-ffi ever owns a `PeatMesh` instance (e.g., for a Rust-only headless build), it can install the Rust-trait `DecodedDocumentCallback` directly. Out of scope for #70 and not required for the plugin migration — the UniFFI path covers every host that exists today.
+
+**Slicing rename.** The original Amendment 1 "Slice 1.b.5 — host-side legacy-emit retirement (deferred)" remains as written — it is the legacy-emit code-path removal once telemetry confirms zero legacy traffic. To avoid number reuse, refer to the optional Rust-native peat-ffi wiring (paragraph above) as **Slice 1.b.6** if it ever ships.
+
+### Alternatives Considered
+
+- **Restructure peat-ffi to own `peat_btle::PeatMesh`.** Rejected: doubles the lifecycle (plugin already owns one), breaks the FFI/UniFFI boundary, provides no behavioral benefit over plugin-side bridging.
+- **Expose `peat_mesh::sync::Document` via UniFFI instead of JSON-string callback.** Rejected: requires UniFFI bindings for `peat_mesh::sync::Document`, `peat_mesh::sync::Field`, and the entire schema graph — peat-mesh has no UniFFI dependency today and adding one for a single callback's payload type is disproportionate. JSON-string is what every other peat-ffi `publishDocument`-family method already uses; consistent.
+- **Add a peat-ffi `setDecodedDocumentCallback` JNI surface that the plugin calls with an opaque PeatMesh handle.** Rejected: UniFFI handles aren't trivially passed across JNI, and even if they were, peat-ffi would still need to install the callback on a `PeatMesh` it doesn't own — the indirection buys nothing.
+
+### Supersedes
+
+- Amendment 1 §"Decoded-document callback" final paragraph claim that Slice 1.b.4 "Lands in peat-ffi after Slice 1.b.3 ships in a peat-btle release. Installs a `DecodedDocumentCallback` impl that calls `Node::publish_with_origin(collection, doc, Some("ble"))`. Registered at `PeatNode` construction." The wiring lands in the host (peat-atak-plugin and equivalents); the Rust-trait callback in peat-btle 0.3.0 is preserved as an in-process Rust-consumer surface but is not what the plugin uses.
