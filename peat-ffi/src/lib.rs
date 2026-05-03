@@ -2452,6 +2452,67 @@ mod tests {
                 assert!(!id.is_empty());
             });
         }
+
+        /// Origin-aware variant publishes successfully and threads the
+        /// origin string through to peat-mesh. ADR-059 Amendment 2 Slice
+        /// 1.b.4 requires this so the plugin's `BleDecodedDocumentBridge`
+        /// can ingest 0xB6 frames into the doc store without re-emitting
+        /// them back out to BLE — `Some("ble")` triggers the same
+        /// loop-prevention fan-out skip the existing `ingestPositionJni`
+        /// path uses.
+        #[test]
+        fn origin_variant_publishes_with_explicit_id() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let json = r#"{"id":"ble-decoded-001","sender":"OBS-1","text":"x"}"#;
+                let id = publish_document_into_node_with_origin(
+                    &node,
+                    "chats",
+                    json,
+                    Some("ble".to_string()),
+                )
+                .await
+                .expect("publish_with_origin");
+                assert_eq!(id, "ble-decoded-001");
+
+                let got = node
+                    .get("chats", &"ble-decoded-001".to_string())
+                    .await
+                    .expect("get")
+                    .expect("found");
+                assert_eq!(
+                    got.fields.get("sender").and_then(|v| v.as_str()),
+                    Some("OBS-1")
+                );
+            });
+        }
+
+        /// `None` origin makes the helper behave identically to the plain
+        /// publish path — locks the back-compat invariant the wrapper
+        /// `publish_document_into_node` relies on.
+        #[test]
+        fn origin_variant_with_none_matches_plain_publish() {
+            let rt = rt();
+            rt.block_on(async {
+                let node = fresh_node();
+                let json = r#"{"id":"plain-001","text":"plain"}"#;
+                let id = publish_document_into_node_with_origin(&node, "chats", json, None)
+                    .await
+                    .expect("publish_with_origin(None)");
+                assert_eq!(id, "plain-001");
+
+                let got = node
+                    .get("chats", &"plain-001".to_string())
+                    .await
+                    .expect("get")
+                    .expect("found");
+                assert_eq!(
+                    got.fields.get("text").and_then(|v| v.as_str()),
+                    Some("plain")
+                );
+            });
+        }
     }
 
     /// Tests for the BLE-translator helpers backing the `ingest*Jni`
@@ -4451,6 +4512,95 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumen
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Origin-aware sibling of [`Java_..._publishDocumentJni`]
+/// (ADR-059 Amendment 2 — Slice 1.b.4 host-side wiring).
+///
+/// Same body as `publishDocumentJni` plus an `origin` parameter that
+/// flows through to [`peat_mesh::Node::publish_with_origin`]. The
+/// plugin's `BleDecodedDocumentBridge` calls this with `origin="ble"`
+/// after decoding a 0xB6 translator frame, so cross-transport fan-out's
+/// loop-prevention skips the BLE channel on this node and the doc
+/// doesn't re-emit back out the way it came.
+///
+/// Empty `origin` is treated as `None` (equivalent to plain
+/// `publishDocumentJni`); any non-empty string is passed through
+/// verbatim. peat-mesh validates the origin against the registered
+/// transport set; an unknown origin produces a publish-time error
+/// (logged + empty return string).
+///
+/// Kotlin signature: `external fun publishDocumentWithOriginJni(handle: Long, collection: String, json: String, origin: String): String`
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentWithOriginJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    collection: JString,
+    json: JString,
+    origin: JString,
+) -> jstring {
+    let result_str: String = if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("publishDocumentWithOriginJni: Invalid handle (0)");
+        String::new()
+    } else {
+        match (
+            env.get_string(&collection),
+            env.get_string(&json),
+            env.get_string(&origin),
+        ) {
+            (Ok(c), Ok(j), Ok(o)) => {
+                let collection_str: String = c.into();
+                let json_str: String = j.into();
+                let origin_str: String = o.into();
+                let origin_opt = if origin_str.is_empty() {
+                    None
+                } else {
+                    Some(origin_str)
+                };
+                let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+                let mesh_node = Arc::clone(&node_owner.node);
+                let runtime = Arc::clone(&node_owner.runtime);
+                std::mem::forget(node_owner);
+
+                #[allow(clippy::manual_unwrap_or_default)]
+                match runtime.block_on(publish_document_into_node_with_origin(
+                    &mesh_node,
+                    &collection_str,
+                    &json_str,
+                    origin_opt,
+                )) {
+                    Ok(id) => id,
+                    Err(_e) => {
+                        #[cfg(target_os = "android")]
+                        android_log(&format!(
+                            "publishDocumentWithOriginJni: publish failed: {}",
+                            _e
+                        ));
+                        String::new()
+                    }
+                }
+            }
+            // Per-position match preserves the underlying JNI error in
+            // the diagnostic, matching `publishDocumentJni`'s shape. A
+            // wildcard arm would drop `_e` and obscure plugin-side
+            // debugging when one of the three string args is malformed.
+            (Err(_e), _, _) | (_, Err(_e), _) | (_, _, Err(_e)) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!(
+                    "publishDocumentWithOriginJni: failed to read args: {:?}",
+                    _e
+                ));
+                String::new()
+            }
+        }
+    };
+
+    env.new_string(result_str)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// Pure-Rust helper backing [`Java_..._publishDocumentJni`]. Parses a JSON
 /// object into a [`peat_mesh::sync::types::Document`] (the `"id"` string
 /// field, if present, becomes [`Document::id`]; remaining keys land in
@@ -4462,6 +4612,25 @@ async fn publish_document_into_node(
     node: &peat_mesh::Node,
     collection: &str,
     json: &str,
+) -> anyhow::Result<String> {
+    publish_document_into_node_with_origin(node, collection, json, None).await
+}
+
+/// Origin-aware sibling of [`publish_document_into_node`], backing
+/// [`Java_..._publishDocumentWithOriginJni`] (ADR-059 Amendment 2 Slice
+/// 1.b.4). When `origin` is `Some(_)`, publishes via
+/// [`peat_mesh::Node::publish_with_origin`] so cross-transport fan-out's
+/// loop-prevention skips the named origin transport — required for the
+/// plugin's `BleDecodedDocumentBridge` to ingest 0xB6 frames into the
+/// doc store without re-emitting them back out to BLE. With `None` this
+/// behaves identically to a plain `publish`. Exposed for unit tests so
+/// the parse + publish-with-origin path can be exercised without a JVM.
+#[cfg(feature = "sync")]
+async fn publish_document_into_node_with_origin(
+    node: &peat_mesh::Node,
+    collection: &str,
+    json: &str,
+    origin: Option<String>,
 ) -> anyhow::Result<String> {
     use peat_mesh::sync::types::Document;
     use serde_json::Value;
@@ -4490,7 +4659,13 @@ async fn publish_document_into_node(
         None => Document::new(fields),
     };
 
-    node.publish(collection, document).await
+    match origin {
+        Some(o) => {
+            node.publish_with_origin(collection, document, Some(o))
+                .await
+        }
+        None => node.publish(collection, document).await,
+    }
 }
 
 /// Ingest a peat-btle [`BlePosition`]-shaped JSON envelope: translate it
@@ -5647,6 +5822,14 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
             sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
             fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni as *mut c_void,
         },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "publishDocumentWithOriginJni".into(),
+            sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+                .into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentWithOriginJni
+                as *mut c_void,
+        },
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         NativeMethod {
             name: "ingestPositionJni".into(),
@@ -5965,6 +6148,16 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni
                         as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "publishDocumentWithOriginJni".into(),
+                    sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)\
+                          Ljava/lang/String;"
+                        .into(),
+                    fn_ptr:
+                        Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentWithOriginJni
+                            as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth"))]
                 NativeMethod {
