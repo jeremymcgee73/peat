@@ -908,3 +908,230 @@ Restructuring peat-ffi to own a `peat_btle::PeatMesh` instance — e.g., constru
 ### Supersedes
 
 - Amendment 1 §"Decoded-document callback" final paragraph claim that Slice 1.b.4 "Lands in peat-ffi after Slice 1.b.3 ships in a peat-btle release. Installs a `DecodedDocumentCallback` impl that calls `Node::publish_with_origin(collection, doc, Some("ble"))`. Registered at `PeatNode` construction." The wiring lands in the host (peat-atak-plugin and equivalents); the Rust-trait callback in peat-btle 0.3.0 is preserved as an in-process Rust-consumer surface but is not what the plugin uses.
+
+---
+
+## Amendment 3 — Polled struct field replaces UniFFI callback for the host-side wiring (Slice 1.b.4 second design correction)
+
+**Status**: Proposed
+**Date**: 2026-05-03
+**Authors**: Kit Plummer
+**Organization**: Defense Unicorns
+
+### Context
+
+Amendment 2 specified that Slice 1.b.4 lands as a UniFFI-exported callback (`DecodedDocumentJsonCallback`) on `peat_btle::PeatMesh`, with peat-atak-plugin implementing the trait in Kotlin. peat-btle 0.3.1 shipped that callback (PR [#36](https://github.com/defenseunicorns/peat-btle/pull/36), released 2026-05-03 to crates.io + Maven Central + Maven local).
+
+Implementation-time investigation against the 0.3.1 AAR surfaced an Android-specific limitation that Amendment 2 did not consider:
+
+- **UniFFI 0.31's Kotlin backend wraps `#[uniffi::export(callback_interface)]` traits in `com.sun.jna.Callback`** (verified by inspecting the regenerated `peat_btle.kt` in 0.3.1's sources jar — every callback method becomes a `: com.sun.jna.Callback` interface).
+- **JNA-based Rust→Kotlin callbacks fail under ATAK's classloader isolation.** This is documented prior art for `OutboundFrameCallback` in peat-ffi (`peat-ffi/src/lib.rs:373-385`): "On Android the JNI path is used directly because UniFFI 0.28's Kotlin backend wraps callback interfaces in `com.sun.jna.Callback`, which fails under ATAK's classloader isolation." The same JNA mechanism is in UniFFI 0.31; the same ATAK limitation applies.
+- **`DecodedDocumentJsonCallback` is the first `#[uniffi::export(callback_interface)]` in peat-btle.** No prior peat-btle Rust→Kotlin callback exists, so Amendment 2's design assumption ("works because UniFFI") had no in-tree precedent to validate against.
+
+The Amendment 2 design therefore can't be implemented in peat-atak-plugin without one of:
+
+- **Direct-JNI fallback in peat-btle** (mirror peat-ffi's `LazyLock<Mutex<Option<GlobalRef>>>` pattern + `JavaVM::attach_current_thread()` + `env.call_method(...)`). peat-btle has no JNI scaffolding today; adding it is a substantial change to a crate that's deliberately host-agnostic.
+- **An on-device test of the JNA path** to see whether UniFFI 0.31's mechanism happens to work in the plugin's specific ATAK build despite the documented prior failure. Empirical but burns a deploy cycle either way.
+
+Both options trade peat-btle architectural cost or deployment iteration cost for what is, at root, a one-frame-per-receive bridging concern. There is a simpler shape that avoids the callback infrastructure entirely.
+
+### Decision
+
+**Slice 1.b.4 lands as a polled struct field on `DataReceivedResult`, not a callback.** The plugin already calls `peatBtle.mesh.onBleDataReceived*()` for every GATT receive and inspects the returned `DataReceivedResult` (`is_emergency`, `is_ack`, `total_count`, etc.). Extending that struct with an optional decoded-frame field is purely additive and has no callback-direction component:
+
+```rust
+// peat-btle/src/uniffi_bindings.rs (additive to the existing struct)
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DataReceivedResult {
+    // ... existing fields unchanged ...
+
+    /// ADR-059 Amendment 3 — set when the receive dispatch decoded a
+    /// 0xB6 translator frame on this call. `None` for legacy/delta/
+    /// reserved-marker paths, for 0xB6 frames that declined or errored,
+    /// and for builds compiled without the `mesh-translator` feature
+    /// (the field stays in the binding shape unconditionally so hosts
+    /// don't see binding drift across feature combos; only the
+    /// population logic is feature-gated). Hosts forward populated
+    /// entries to peat-mesh via their existing publish-with-origin
+    /// FFI surface (e.g. peat-ffi's
+    /// `publishDocumentWithOriginJni(collection, doc_json, "ble")`).
+    pub decoded_translator_frame: Option<DecodedTranslatorFrame>,
+}
+
+/// Defined unconditionally — *not* `#[cfg(feature = "mesh-translator")]`.
+/// The type itself is a plain UniFFI record with no feature-dependent
+/// surface; gating the type would force the `decoded_translator_frame`
+/// field to also be gated, which breaks the binding-shape stability
+/// hosts expect. Population of the type happens only when
+/// `mesh-translator` is on; without the feature the field is always
+/// `None`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DecodedTranslatorFrame {
+    /// BleTranslator collection name, e.g. `"tracks"` / `"platforms"`.
+    pub collection: String,
+    /// serde-JSON serialization of the decoded `Document` — same shape
+    /// as the JSON callback variant from 0.3.1, just delivered via
+    /// struct return rather than callback invocation.
+    pub doc_json: String,
+    /// BLE peer identifier from the receive context.
+    pub peer: Option<String>,
+}
+```
+
+`try_handle_translator_marker`'s signature changes from `bool` to a richer return:
+
+```rust
+/// Outcome of the marker dispatch. The translator-frame variant carries
+/// the decoded payload back to the wrapper so it can land in
+/// `DataReceivedResult.decoded_translator_frame`. No shared mutable
+/// state — each call's outcome rides the return value, so concurrent
+/// receives on different threads cannot race on a shared slot.
+enum TranslatorMarkerOutcome {
+    /// Not a 0xB6/0xB7..=0xBF frame; caller continues the legacy/delta
+    /// dispatch path.
+    NotTranslatorMarker,
+    /// 0xB6 frame decoded successfully; payload returned for the
+    /// wrapper to hoist into `DataReceivedResult`.
+    Decoded(DecodedTranslatorFrame),
+    /// 0xB6 reserved-range / decode-error / codec-decline / unknown-code
+    /// — caller stops processing but no frame to surface.
+    Handled,
+}
+```
+
+The `on_ble_data_received_*` wrappers carry the `Decoded(frame)` arm into the `DataReceivedResult` they construct. **No `Mutex`, no thread-local, no shared state** — strictly per-call return-threaded. Concurrent receives on different threads remain race-free for the same reason `on_ble_data_received_*` is already thread-safe today.
+
+#### Plugin-side bridge
+
+```kotlin
+// peat-atak-plugin (BleDecodedDocumentBridge.kt or equivalent)
+val result = peatBtle.mesh.onBleDataReceived(identifier, bytes, nowMs) ?: return
+result.decodedTranslatorFrame?.let { frame ->
+    peatNode.publishDocumentWithOrigin(frame.collection, frame.docJson, "ble")
+}
+```
+
+The plugin already does post-call inspection on `DataReceivedResult` (for emergency/ack/event-type forwarding) — the new field slots into the same pattern. peat-ffi's `publishDocumentWithOriginJni` (PR #817) is the one and only Rust→Kotlin→Rust hop, and it's the well-tested direct-JNI path that has worked in ATAK since Slice 1.b.
+
+#### What happens to peat-btle 0.3.1's `DecodedDocumentJsonCallback`
+
+The UniFFI-exported callback trait stays. It remains the canonical wiring point for:
+
+- **peat-sim direct-integration tests** running in-process against `peat_btle::PeatMesh`.
+- **Future Rust-native hosts** (headless edge nodes, server-side bridges) that consume peat-btle without an FFI boundary.
+- **Non-ATAK Android hosts** if any emerge whose classloader environment doesn't have ATAK's JNA limitation. The callback still works for them; they're just not the dominant case.
+
+The Rust-trait `DecodedDocumentCallback` from 0.3.0 also stays, with the same scope. **Both callback paths remain valid and continue to fire from the receive dispatch when installed** — the polled struct field is a third, independent path that fires regardless of whether either callback is installed (and is the one peat-atak-plugin will use).
+
+#### Three independent dispatch paths after Slice 1.b.4
+
+The receive dispatch in `try_handle_translator_marker` now has three independent outputs on `Ok(Some(doc))`:
+
+| Path | Type | Consumer | Status |
+|---|---|---|---|
+| Rust-trait `DecodedDocumentCallback` | callback | in-process Rust consumers | shipped in 0.3.0 |
+| UniFFI `DecodedDocumentJsonCallback` | callback (JNA) | non-ATAK hosts, Rust integration tests | shipped in 0.3.1 |
+| `DataReceivedResult.decoded_translator_frame` | struct field (poll) | peat-atak-plugin (ATAK), every UniFFI host | new in 0.3.2 |
+
+The three are independent. None suppresses another. **"Independent" describes the dispatch contract, not host wiring**: the receive path fires every installed-or-readable output once per decoded frame, but **hosts MUST select exactly one as their publish driver** (the call site that turns a decoded frame into a `peat_mesh::Node::publish_with_origin`). Wiring two paths to publish — say, installing the UniFFI JSON callback whose canonical impl publishes AND also forwarding `DataReceivedResult.decoded_translator_frame` to publish — produces a double-publish per frame on the same host. ADR-059 §"Concurrent ingest of the same logical doc" + §"Automerge no-op-merge suppression" guarantee the *correctness* of that case (Automerge merges the second publish as a no-op, observer fires once, fan-out emits once), so it isn't a wire-format bug, but the host pays 2× FFI roundtrip + 2× origin-stamp accounting per frame before Automerge collapses them. Pick one. The canonical guidance:
+
+- **peat-atak-plugin / every UniFFI host (ATAK and equivalents)**: polled `decoded_translator_frame` field. It's the path designed for hosts whose UniFFI callback infrastructure has the JNA limitation, and it's the path with no Rust→host callback hop.
+- **In-process Rust consumers (peat-sim integration tests, future Rust-native hosts)**: Rust-trait `DecodedDocumentCallback`. No FFI boundary, typed `Document`, lowest-overhead.
+- **Non-ATAK Rust integration tests / future non-ATAK Android hosts**: UniFFI `DecodedDocumentJsonCallback` if you want a callback shape. If JNA happens to work in your environment.
+
+A host that genuinely wants both paths firing can do so as long as it dedups host-side (ignore one of the two outputs in its publish dispatcher). The "An eventual cleanup slice may retire" line for the 0.3.1 UniFFI callback (in §Negative below) is the long-tail path: once every UniFFI host adopts the polled field, the callback can be deprecated and the three-paths model collapses to two.
+
+**`PeatEvent::TranslatorNoCallback` semantics in 0.3.2.** The 0.3.1 rule (fires when neither callback is installed at decode time) doesn't translate cleanly to 0.3.2's polled-only canonical wiring: the plugin reads the polled field and publishes from it, but the event still fires for every decoded frame because no callback is installed. That's a steady-state failure mode, not a release-skew window. Resolved by extending the suppression rule to include an explicit polled-consumer attestation:
+
+```rust
+impl PeatMesh {
+    /// Mark this `PeatMesh` as having a polled-field consumer
+    /// (a host that reads `DataReceivedResult.decoded_translator_frame`
+    /// per receive and forwards through its own publish path).
+    /// Idempotent — calling again is a no-op. peat-atak-plugin and
+    /// every other UniFFI host wiring the polled path SHOULD call
+    /// this once at startup, after constructing `PeatMesh` and before
+    /// any GATT receive arrives. Without this attestation, the
+    /// receive dispatch has no way to distinguish a polled-consumer
+    /// host from a host that decoded the frame and dropped it on the
+    /// floor, and `PeatEvent::TranslatorNoCallback` will fire for
+    /// every frame.
+    ///
+    /// **Defined unconditionally** — *not* `#[cfg(feature = "mesh-translator")]`.
+    /// The method is present in the binding shape regardless of feature
+    /// combo, mirroring the `decoded_translator_frame` field rule
+    /// (Implementation point 2). When the `mesh-translator` feature is
+    /// off, the method is a no-op (nothing to attest, no event to
+    /// suppress). UniFFI hosts (Kotlin / Swift) call the same Kotlin
+    /// signature against any peat-btle build and observe consistent
+    /// shape — no feature-aware conditional compilation, which UniFFI
+    /// consumers don't have access to anyway.
+    pub fn acknowledge_polled_translator_consumer(&self);
+}
+```
+
+Suppression rule in 0.3.2: the event fires when **all three** conditions hold — no Rust-trait callback installed, no UniFFI JSON callback installed, and `acknowledge_polled_translator_consumer` was never called. Any one of the three suppresses it. peat-btle still can't observe whether the host *actually* reads the field, but it CAN observe the explicit attestation, which is the right contract: hosts opt in to "I'm consuming this," peat-btle suppresses the no-consumer signal. Hosts that publish from a callback path don't need to call the attestation; hosts that publish from the polled field do.
+
+Canonical plugin startup in 0.3.2:
+
+```kotlin
+val peatBtle = PeatBtle.fromGenesis(...)
+peatBtle.mesh.acknowledgePolledTranslatorConsumer()  // one line, once
+// ... later, on every GATT receive, read result.decodedTranslatorFrame
+```
+
+The event keeps its 0.3.1 name and intent (operator-observable "no Rust-side consumer registered interest"). The polled-consumer case becomes a registered interest via the attestation, not a separate "polled" suppression branch in the dispatch site.
+
+### Consequences
+
+#### Positive
+
+- **Slice 1.b.4 implementable on the existing FFI surface.** No new JNI scaffolding in peat-btle, no Rust→Kotlin callback dependency, no JNA classloader concern. Plugin uses the same direct-JNI path (peat-ffi `publishDocumentWithOriginJni`) it already uses for other receive-side flows.
+- **One round-trip across the FFI boundary per receive** (`onBleDataReceived` returns the result with the new field), down from two (UniFFI callback fire + then Kotlin → JNI publish call). Lower latency, no thread-attach cost.
+- **Symmetric with the existing receive-side fan-out.** The plugin already inspects `DataReceivedResult.is_emergency`, `result.event_type`, etc., and forwards as appropriate. Translator-frame ingest slots into the same pattern.
+- **All three paths coexist for free.** Rust hosts keep the typed callback. Non-ATAK UniFFI hosts (if any) keep the JSON callback. Plugin reads the struct field. No path forces another to retire.
+
+#### Negative
+
+- **Plugin must remember to read the field.** A future plugin edit that takes a `DataReceivedResult` and ignores the new field would silently drop translator frames. Mitigation: the plugin's existing post-call inspection helper centralizes the result handling; the new field gets handled there once and never again. Easier failure mode to spot than a callback that fails to register at startup.
+- **Another peat-btle release (0.3.2).** Adding a new field to the UniFFI struct is additive but does require regenerating Kotlin/Swift bindings, so all hosts pinning < 0.3.2 see the old struct shape. Same release-cadence cost as Amendment 2 introduced.
+- **Three callback-shaped paths is one more than the spec needs.** Once the plugin migrates to the polled field, the UniFFI callback in 0.3.1 has no production consumer. It stays as a non-ATAK escape valve. An eventual cleanup slice may retire it; not in scope here.
+
+#### Composes with
+
+- **Amendment 1 §"Decoded-document callback" / §"Storage shape and the no-callback window"** — the Rust-trait callback path is unchanged. The release-skew window observability event (`PeatEvent::TranslatorNoCallback`) keeps the same intent (operator-observable signal when no consumer has registered interest) but extends its suppression rule per the §Decision three-condition contract: fires when **no Rust-trait callback installed** AND **no UniFFI JSON callback installed** AND **`acknowledge_polled_translator_consumer` was never called**. The polled field's read-side is invisible to the dispatcher, so suppression rides the explicit attestation; any of the three suppressors silences the event.
+- **Amendment 2 §"Decision"** — the host-side wiring stays plugin-side; the only change is the FFI-shape mechanism (polled struct field, not UniFFI callback).
+- **peat-ffi Slice 1.b.4** (PR #817) — `publishDocumentWithOriginJni` is the consumer-side endpoint. Its signature is unchanged.
+
+### Implementation
+
+**peat-btle 0.3.2:**
+
+1. Add `DecodedTranslatorFrame { collection: String, doc_json: String, peer: Option<String> }` UniFFI record. **Defined unconditionally** — not `cfg`-gated. The type itself has no feature-dependent surface; gating it would force the `decoded_translator_frame` field to also be gated and break the binding-shape stability claim.
+2. Add `decoded_translator_frame: Option<DecodedTranslatorFrame>` field to `DataReceivedResult`, always present in the UniFFI struct shape. Population is feature-gated: builds with `mesh-translator + uniffi` populate from the receive dispatch; builds without leave it `None`. Binding consumers see a stable shape across feature combos.
+3. Change `try_handle_translator_marker`'s return type from `bool` to a `TranslatorMarkerOutcome` enum (`NotTranslatorMarker | Decoded(DecodedTranslatorFrame) | Handled`). The `Decoded` variant carries the decoded payload back via per-call return — no `Mutex`, no thread-local, no shared state. The `on_ble_data_received_*` wrappers thread the variant into the `DataReceivedResult` they return: `Decoded(frame)` populates `decoded_translator_frame`; `NotTranslatorMarker` continues the legacy/delta dispatch; `Handled` short-circuits to `None` as today.
+4. Add `PeatMesh::acknowledge_polled_translator_consumer(&self)` method **defined unconditionally** (mirroring the `decoded_translator_frame` field rule — present in the binding shape across all feature combos so hosts don't observe drift). Backed by an `AtomicBool` field on `PeatMesh`, also unconditional. Idempotent — calling again is a no-op. When the `mesh-translator` feature is off the method itself is still present but the suppression-check logic that reads the flag is feature-gated alongside the rest of the dispatch (the event can't fire without the feature, so the flag is moot). When the feature is on, extend the `PeatEvent::TranslatorNoCallback` suppression check in the receive dispatch to read the flag: event fires only when no Rust-trait callback installed AND no UniFFI JSON callback installed AND attestation flag is `false`. Expose on the UniFFI `PeatMesh` wrapper so Kotlin / Swift hosts can call it.
+5. CHANGELOG entry for 0.3.2 documenting the additive field, the attestation setter, the suppression-rule extension, and the Amendment 3 motivation.
+6. Release: tag v0.3.2, publish to crates.io + Maven Central + Maven local. (Same target list as the 0.3.1 release referenced in §Context.)
+
+**peat-atak-plugin Slice 1.b.4:**
+
+1. Bump `peat-btle` Gradle pin to 0.3.2.
+2. Call `peatBtle.mesh.acknowledgePolledTranslatorConsumer()` once at plugin startup, after `PeatMesh` is constructed and before any GATT receive is wired. This suppresses `PeatEvent::TranslatorNoCallback` for the canonical polled-only deployment.
+3. Wire `result.decodedTranslatorFrame` inspection into the existing post-call handler in the plugin's GATT receive path.
+4. Forward each populated entry to `peatNode.publishDocumentWithOrigin(frame.collection, frame.docJson, "ble")` via the JNI surface PR #817 added.
+5. Integration test: send a 0xB6 frame to peat-btle's `onBleDataReceived`, assert the doc lands in the plugin's iroh-side doc store with `origin = Some("ble")` and that `PeatEvent::TranslatorNoCallback` does NOT fire.
+
+**Slice numbering:** Amendment 1's slice list (1.b.5 legacy-emit retirement, 1.b.6 optional Rust-native peat-ffi wiring) is unchanged. The polled-field path is the canonical Slice 1.b.4 host-side mechanism going forward.
+
+### Alternatives Considered
+
+- **Direct-JNI fallback in peat-btle (mirror peat-ffi's pattern).** Rejected: peat-btle has no JNI scaffolding; adding `LazyLock<Mutex<Option<GlobalRef>>>` + `JavaVM::attach_current_thread` + `env.call_method` infrastructure to peat-btle is a substantial change to a crate that is deliberately host-agnostic. The polled struct field gets the same outcome with no new infrastructure.
+
+- **On-device test of the UniFFI/JNA callback path.** Rejected as the primary path: documented prior art in peat-ffi confirms JNA callbacks fail under ATAK classloader isolation. Spending a deploy cycle to re-confirm that finding wastes time. (If the polled field implementation hits its own surprise, on-device test of the UniFFI fallback is a viable backup — but it isn't the design path.)
+
+- **Restructure peat-ffi to own a `peat_btle::PeatMesh` instance** (re-considered after Amendment 2's rejection). Rejected for the same reasons documented in Amendment 2 §"Why not restructure peat-ffi?" — doubles the lifecycle the plugin owns, breaks the FFI/UniFFI boundary, gains no benefit over plugin-side wiring.
+
+### Supersedes
+
+- Amendment 2 §"Decision" / §"Implementation" *mechanism* — the wiring point stays plugin-side, but the cross-FFI shape moves from `DecodedDocumentJsonCallback` invocation to `DataReceivedResult.decoded_translator_frame` inspection. The `DecodedDocumentJsonCallback` trait shipped in peat-btle 0.3.1 is preserved for non-ATAK consumers and stays in the public API.
