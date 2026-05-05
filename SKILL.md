@@ -1,179 +1,100 @@
-# Peat Ecosystem SKILL.md
+---
+name: peat-ecosystem
+description: Top-level skill for Claude Code sessions across any peat-* repo. Read first, then read the per-repo SKILL.md.
+when_to_use: Any session touching files in a defenseunicorns/peat-* repository, or coordinating changes across more than one peat repo.
+verifies_with: Each affected repo's CI green, no architecture invariant violated, PR references its issue with the required sections.
+---
 
-This file is the top-level context document for Claude Code sessions workingacross the Peat ecosystem. Always read this file before touching any Peat repo.Then read the per-repo SKILL.md for domain-specific rules.
+# Peat Ecosystem SKILL
 
------
+Peat is an interoperability-first mesh registry sync platform built for heterogeneous autonomous systems in defense and edge environments. Its core value proposition is **interoperability that enables scale** — Peat connects systems that don't speak the same language across transport and protocol boundaries. Peat is developed under the Defense Unicorns GitHub org: https://github.com/defenseunicorns
 
-## What is Peat
+## When this skill applies
 
-Peat is an interoperability-first mesh registry sync platform built for
-heterogeneous autonomous systems in defense and edge environments. Peat’s
-core value proposition is **interoperability that enables scale** — not
-software delivery, not a data sync layer. Peat connects systems that don’t
-speak the same language across transport and protocol boundaries.
+- Any session touching files in a `peat-*` repo or the top-level `peat` crate
+- Cross-repo changes affecting more than one peat repo
+- Reviewing a PR in any peat repo
 
-Peat is developed under the Defense Unicorns GitHub org:
-https://github.com/defenseunicorns
+After reading this file, read the relevant per-repo SKILL.md from the router below. Per-repo skills are authored against `peat/SKILL_TEMPLATE.md`.
 
-TODO: Add one sentence on relationship to UDS (Defense Unicorns’ flagshipproduct) — Peat is a peer/complement, not a subset.
+## Skill router
 
------
+Read only what's relevant to the current task. Do not preload every per-repo skill.
 
-## Repo Map
+| Repo | Purpose | Skill | Status |
+|---|---|---|---|
+| **peat** | Top-level crate; shared types, traits, errors. Dependency anchor. | This file (see "peat repo-specific" section below) | WIP / placeholder |
+| **peat-registry** | Registry sync engine. Kubernetes integration. | `peat-registry/SKILL.md` | Active |
+| **peat-mesh** | Mesh networking; multi-hop routing. | `peat-mesh/SKILL.md` | Active |
+| **peat-btle** | BLE transport bridge. M5Stack/ESP32. | `peat-btle/SKILL.md` | Active |
+| **peat-node** | Edge-hardware node implementation. | `peat-node/SKILL.md` | Active |
+| **peat-gateway** | Mesh-to-external bridge layer. | `peat-gateway/SKILL.md` | Active |
+| **peat-lite** | Constrained-environment implementation. | `peat-lite/SKILL.md` | Active |
+| **peat-atak-plugin** | Android/Kotlin ATAK plugin via Rust FFI. | `peat-atak-plugin/SKILL.md` | Active |
+| **peat-rmw** | ROS2 RMW integration. | `peat-rmw/SKILL.md` | Active |
+| **peat-mavlink** | MavLink protocol integration. | `peat-mavlink/SKILL.md` | Active |
 
-All repos live at https://github.com/defenseunicorns/peat-*
+## Hard invariants (cross-cutting)
 
-|Repo                |Purpose                                                                                    |Status           |
-|--------------------|-------------------------------------------------------------------------------------------|-----------------|
-|**peat**            |Top-level crate. Shared types, traits, error handling. Dependency anchor for the ecosystem.|WIP / placeholder|
-|**peat-registry**   |Registry sync engine. Kubernetes integration. First public-facing capability.              |Active           |
-|**peat-mesh**       |Mesh networking layer. Multi-hop routing between nodes.                                    |Active           |
-|**peat-btle**       |Bluetooth Low Energy transport bridge. M5Stack/ESP32 hardware integration.                 |Active           |
-|**peat-node**       |Individual node implementation. Runs on edge hardware.                                     |Active           |
-|**peat-gateway**    |Gateway and bridge layer. Connects mesh segments and external systems.                     |Active           |
-|**peat-lite**       |Lightweight implementation for constrained environments.                                   |Active           |
-|**peat-atak-plugin**|Android/Kotlin ATAK plugin. TAK ecosystem integration via FFI from Rust.                   |Active           |
-|**peat-rmw**        |ROS2 RMW (Robot Middleware) integration.                                                   |Active           |
-|**peat-mavlink**    |MavLink protocol integration.                                                              |Active           |
+These rules apply in every repo. Violating one without explicit user approval is out of scope, full stop.
 
+**Language.** Rust everywhere except the Kotlin layer in `peat-atak-plugin`. No new language dependencies. No Python. No shell scripts for anything that belongs in Rust.
 
+**Dependency flow.** `peat` is the dependency anchor. Common types, traits, error handling flow *down* from `peat`. Repos depend on `peat`, never on each other directly. Circular dependencies are rejected.
 
-TODO: Add WearTAK integration location — inside peat-atak-plugin or separate?TODO: Add any private/internal repos not listed here.TODO: Confirm status of each repo (active / experimental / deprecated).
+**Transport agnosticism.** Peat protocol logic must not assume a transport. BLE, mesh, IP, serial are all interchangeable. Transport-specific code stays in transport repos (`peat-btle`, `peat-mesh`), never in `peat-node`, `peat-gateway`, or `peat` core.
 
------
+**Interoperability first.** Every feature decision answers: does this make Peat more or less interoperable with external systems? Peat must never require a counterpart to run Peat software to integrate.
 
-## Architecture Invariants
+**Unsafe Rust.** Requires explicit justification in a code comment. The FFI boundary in `peat-atak-plugin` is the only routinely legitimate unsafe zone.
 
-These rules apply across every repo in the ecosystem. Claude Code sessions
-must never violate these without explicit instruction and documented reasoning.
+**FFI boundary direction.** All Peat protocol logic stays in Rust. Kotlin in `peat-atak-plugin` is UI and Android lifecycle only — never a destination for protocol, mesh, transport, registry, or serialization logic.
 
-**Language**
+## Workflow
 
+For any task in a peat repo:
 
-All implementation is Rust except the Kotlin layer in peat-atak-plugin
-No new language dependencies without explicit approval
-No Python, no shell scripts for anything that belongs in Rust
+1. **Orient.** Read this file. Read the per-repo SKILL.md from the router. Read `CLAUDE.md` if present. Run `git status` and `git log -10`.
+2. **Locate the spec.** Confirm the task has a GitHub issue with the required sections (see "Issue format" below). If not, ask the user before implementing.
+3. **Plan.** Produce a short plan. Check it against the hard invariants and the per-repo skill's scope guards.
+4. **Implement** following the per-repo workflow. Vertical slices, one concern per commit.
+5. **Verify** per the per-repo skill's exit criteria.
+6. **Hand off.** Open PR referencing the issue. Summary states *what changed and why*. Flag any cross-repo implications.
 
+## Verification (ecosystem-level)
 
-**Dependency Flow**
+Beyond the per-repo verify checklist, an ecosystem-level change is not done until:
 
+- [ ] Each affected repo's CI is green
+- [ ] No new cross-repo cycle introduced (`peat` does not depend on its consumers; sibling repos do not depend on each other)
+- [ ] PR references a GitHub issue with Context / Scope / Acceptance Criteria / Constraints / Dependencies sections
+- [ ] If a hard invariant was waived, the PR description names which one and quotes the user approval
 
-peat (top-level crate) is the shared dependency anchor
-Common types, traits, and error handling flow DOWN from peat
-Individual repos depend on peat, never on each other directly
-Circular dependencies are never acceptable
+"Seems right" or "the diff looks correct" is never sufficient.
 
+## Anti-rationalization
 
-**Transport Agnosticism**
+| Excuse | Rebuttal |
+|---|---|
+| "This change spans repos but they're tightly coupled — one big PR is cleaner." | One PR per repo, linked through a tracking issue. Atomicity across repos isn't real; reviewability is. |
+| "I'll just import directly from `peat-mesh` into `peat-node` for this." | Cross-repo direct deps are a circular-dependency factory. Add the trait to `peat` core. |
+| "It's only a tiny shell script for a build helper." | No shell scripts for things that belong in Rust. Justify the language choice with the user first. |
+| "I'll write a quick TS/Python utility for this." | No new language dependencies without explicit approval. |
+| "`peat` core doesn't have the type I need; I'll just put it in this repo for now." | Surface the gap as an issue against `peat`. Don't fork the type system. |
+| "I'll move this Peat protocol logic into Kotlin to make the FFI simpler." | All Peat protocol logic stays in Rust. Kotlin is UI and Android lifecycle only. |
+| "This change makes Peat assume the counterpart is also running Peat — fine for now, we'll generalize later." | Interoperability-first is the product. Generalize before merging, or don't merge. |
 
+## Scope guards
 
-Peat protocol logic must never assume a specific transport
-BLE, mesh, IP, serial — all are transports, all are interchangeable
-Transport-specific code belongs in transport repos (peat-btle, peat-mesh)
-  never in peat-node, peat-gateway, or peat core
+- Kit is the general contractor across all repos. Claude Code sessions are sub-contractors, scoped to **one repo at a time**.
+- Cross-repo changes are coordinated through linked GitHub issues, not by reaching across repos.
+- Use the public API/traits of other peat repos. Never assume their internals.
+- Do not add a dependency on `peat` core that assumes types or traits not yet stabilized — flag assumptions in the PR.
+- Do not add new repos to the ecosystem without explicit user approval.
 
-**Interoperability First**
+## Issue format
 
-
-Every feature decision should be evaluated against: does this make Peat
-  more or less interoperable with external systems?
-
-Peat should never require a counterpart to run Peat software to integrate
-
-
-**Error Handling**
-
-
-TODO: Document error handling conventions (thiserror? anyhow? custom?)
-
-
-**Async Runtime**
-
-
-TODO: Document async runtime choice (Tokio? async-std?) and conventions
-
-
-**No Unsafe Unless Necessary**
-
-
-Unsafe Rust requires explicit justification in a code comment
-FFI boundary (peat-atak-plugin) is the primary legitimate unsafe zone
-
-
------
-
-## The FFI Boundary
-
-The only point where Rust leaves the ecosystem is the FFI layer in
-peat-atak-plugin, which bridges to Android/Kotlin.
-
-**Rules for Claude Code sessions at the FFI boundary:**
-
-
-Never move business logic into the Kotlin layer — Kotlin is UI and Android
-  lifecycle only
-
-All Peat protocol logic stays in Rust, exposed via FFI
-Memory management at the boundary is explicit — document ownership clearly
-TODO: Document the FFI tooling in use (UniFFI? jni crate? manual bindings?)
-TODO: Document how errors cross the FFI boundary
-TODO: Document threading model at the boundary (Kotlin coroutines vs Rust async)
-
-
-**What belongs in Rust:**
-
-
-All Peat protocol logic
-All mesh and transport logic
-All registry sync logic
-Data serialization/deserialization
-
-
-**What belongs in Kotlin:**
-
-
-Android UI
-Android lifecycle management
-ATAK plugin registration and hooks
-Calling into Rust via FFI
-
-
------
-
-## Peat Core (WIP)
-
-The top-level **peat** crate is currently a placeholder. Its intended role is
-to be the shared dependency that gives the ecosystem a single source of truth
-for types, traits, and errors.
-
-**Intended contents:**
-
-
-Core data types (messages, identities, capabilities)
-Shared traits (Transport, Node, Registry)
-Error types
-TODO: Finalize what belongs here vs. stays in individual repos
-
-
-**What does NOT belong in peat core:**
-
-
-Transport implementations
-Hardware-specific code
-Platform-specific code (Android, ROS2, etc.)
-
-
-Until peat core is stable, Claude Code sessions should be conservative aboutadding dependencies on it. Flag any assumptions about peat core types in PRdescriptions.
-
------
-
-## GitHub Workflow
-
-**Org:** https://github.com/defenseunicorns
-
-**Issue Format for Claude Code Sessions**
-
-Each GitHub issue used as a Claude Code spec should include:
+Each issue used as a Claude Code spec must include:
 
 ```
 ## Context
@@ -186,72 +107,64 @@ What is in scope. What is explicitly out of scope.
 Specific, testable conditions for done.
 
 ## Constraints
-Any architecture invariants, performance requirements, or
-conventions that apply.
+Architecture invariants, performance requirements, conventions.
 
 ## Dependencies
 Links to related issues or PRs in other repos.
 ```
 
-**Branch Naming**
+## Gotchas
 
+Populate as sessions run. One line per gotcha plus a `Why:` line.
 
-TODO: Document DU branch naming conventions
+- *(none recorded yet)*
 
+---
 
-**PR Expectations**
+# `peat` repo-specific skill
 
+The remainder of this file is the per-repo skill for the `peat` top-level crate, since this repo also hosts the ecosystem skill above.
 
-Every PR must reference a GitHub issue
-Claude Code PRs must include a summary of what was changed and why
-CI must pass before review request
-TODO: Document required reviewers per repo
+## Status
 
+WIP / placeholder. Until `peat` core stabilizes, sessions should be conservative about adding dependencies on it and must flag any assumptions about peat-core types in PR descriptions.
 
-**General Contractor Coordination**
+## Intended contents
 
+- Core data types (messages, identities, capabilities)
+- Shared traits (`Transport`, `Node`, `Registry`)
+- Error types
 
-Kit is the general contractor across all repos
-Claude Code sessions are sub-contractors, scoped to one repo at a time
-Cross-repo changes are coordinated through linked GitHub issues
-No Claude Code session should make assumptions about another repo’s
-  internals — use the public API/traits only
+## Does NOT belong in `peat` core
 
------
+- Transport implementations
+- Hardware-specific code
+- Platform-specific code (Android, ROS2, etc.)
 
-## Per-Repo SKILL.md Index
+## Workflow guard for changes to `peat` core
 
-Each repo has its own SKILL.md covering domain-specific rules, conventions,
-and gotchas. Always read the per-repo SKILL.md before starting work.
+- Any new public type or trait requires a brief design note in the PR description.
+- Any breaking change to a public type requires a list of downstream repos that need updating, in the PR description.
+- Removing a public item requires confirming via `cargo check -p <consumer>` that no consumer in the workspace breaks (or coordinating an update PR in each consumer first).
 
-|Repo            |SKILL.md location        |
-|----------------|-------------------------|
-|peat            |peat/SKILL.md            |
-|peat-registry   |peat-registry/SKILL.md   |
-|peat-mesh       |peat-mesh/SKILL.md       |
-|peat-btle       |peat-btle/SKILL.md       |
-|peat-node       |peat-node/SKILL.md       |
-|peat-gateway    |peat-gateway/SKILL.md    |
-|peat-lite       |peat-lite/SKILL.md       |
-|peat-atak-plugin|peat-atak-plugin/SKILL.md|
-|peat-rmw        |peat-rmw/SKILL.md        |
-|peat-mavlink    |peat-mavlink/SKILL.md    |
+---
 
+# Open questions (for Kit)
 
+These are TODOs that block the skill set from being complete. They're listed here so they're visible, not to imply the agent should resolve them autonomously.
 
-TODO: Create per-repo SKILL.md files. Start with peat-registry andpeat-atak-plugin as the two most active repos.
+- One-sentence statement on Peat's relationship to UDS (peer / complement vs. subset)
+- Status confirmation per repo (active / experimental / deprecated)
+- WearTAK integration location — inside `peat-atak-plugin` or separate repo
+- Any private/internal repos not listed in the router
+- Error handling conventions across the workspace (`thiserror` vs. `anyhow` vs. custom)
+- Async runtime choice and conventions (Tokio vs. async-std vs. other)
+- Branch naming convention for DU repos
+- Required reviewers per repo
+- FFI tooling for `peat-atak-plugin` (UniFFI vs. `jni` crate vs. manual bindings) — belongs in `peat-atak-plugin/SKILL.md` once decided
+- FFI error-crossing convention — same
+- FFI threading model (Kotlin coroutines ↔ Rust async) — same
 
------
-
-## Known Gotchas
-
-This section grows over time. Add entries when Claude Code sessions makewrong assumptions or produce output that needs significant correction.
-
-
-TODO: Populate from experience as sessions run
-
-
------
-
-*Last updated: May 2026*
+---
+*Last updated: 2026-05-05*
 *Maintained by: Kit Plummer, VP Data and Autonomy, Defense Unicorns*
