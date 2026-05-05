@@ -30,20 +30,28 @@ display-interface-spi = "0.5"
 mipidsi = "0.8"
 embedded-graphics = "0.8"
 
-# Peat libraries (external repo). Resolved as a sibling-repo path because
-# `peat-btle` is published separately; the relative path expects the
-# layout:
-#
-#   <parent>/peat/                      <- this repo
-#   <parent>/peat/examples/m5stack-core2-peat/
-#   <parent>/peat-btle/                 <- defenseunicorns/peat-btle clone
-#
-# i.e. clone `peat-btle` next to `peat`, not under it. CI doesn't currently
-# cross-check this layout, so a missing checkout fails at build time with
-# "no manifest found at <path>". Until peat-btle is consumed via
-# crates.io / a registry path, treat this as a developer-environment
-# requirement.
-peat-btle = { path = "../../../peat-btle", default-features = false, features = ["esp32"] }
+# Peat libraries (registry). Pinned to =0.3.4-rc.2 — the rc.2 surface
+# this firmware depends on:
+#   * `update_peripheral_state` location-preservation fix (rc.1+).
+#   * Relaxed `HealthStatus::decode` activity validator (rc.1+) —
+#     lets `activity=4` (Prone) round-trip on the legacy peripheral
+#     path instead of dropping the entire peripheral, the
+#     `activity=4 + alerts=ALERT_MAN_DOWN` Prone wire encoding this
+#     firmware emits.
+#   * `update_alerts(alerts: u8)` API (rc.1+) used by the
+#     periodic-debounced alerts write.
+#   * `translator-codec` Cargo feature (rc.2) — exposes the
+#     BleTranslator codec types (`BlePeripheral`,
+#     `BleHealthStatus`, etc.) and the slim
+#     `publish_platform_advertisement` API without pulling
+#     peat-mesh / tokio / signal-hook (none of which build for
+#     xtensa-esp32). The `esp32` feature pulls `translator-codec`
+#     transitively, so the firmware gets the codec without an
+#     explicit feature opt-in.
+# Exact-version pin (`=`) so a future rc.x release doesn't auto-pull
+# under `cargo update`; the bump is deliberate and tied to the
+# downstream rebuild.
+peat-btle = { version = "=0.3.4-rc.2", default-features = false, features = ["esp32"] }
 
 [build-dependencies]
 embuild = "0.33"
