@@ -2,10 +2,11 @@
 
 **Status**: Proposed
 **Date**: 2025-12-07
-**Updated**: 2025-01-09
+**Updated**: 2026-05-05
 **Authors**: Kit Plummer, Codex
-**Relates to**: ADR-011 (Automerge + Iroh), ADR-017 (P2P Mesh Management), ADR-030 (Multi-Interface Transport), ADR-019 (QoS), ADR-046 (Targeted Delivery)
+**Relates to**: ADR-011 (Automerge + Iroh), ADR-017 (P2P Mesh Management), ADR-030 (Multi-Interface Transport), ADR-019 (QoS), ADR-046 (Targeted Delivery), ADR-039 (Peat-BTLE Mesh Transport), ADR-041 (Multi-Transport + Embedded Integration), ADR-052 (Peat-LoRa)
 **Implements**: Issue #548
+**Amends**: Issue #822 (Per-Peer Link State Query API)
 
 ---
 
@@ -434,6 +435,214 @@ pub trait Transport: MeshTransport {
     }
 }
 ```
+
+### Amendment A — Per-Peer Link State Query (2026-05-05)
+
+> **Note on placement.** This amendment is intentionally headed as "Amendment A" rather than continuing the existing numbered sequence (§§1–5, 2, 7). The numbered sequence in the original document has a pre-existing duplicate ("§2 PACE Transport Policy" and "§2 Message Requirements" both use the number 2) that is out of scope for this amendment to renumber. The amendment heading sits between §5 and the duplicate §2 in the source order; readers using a generated TOC will see it as a top-level amendment, not as part of the numbered Decision sequence.
+
+The trait hierarchy above gives consumers transport-level capability and per-transport `signal_quality()`. What it does not yet give consumers is **per-peer link detail** — for a specific peer, which transport(s) is it currently reachable via, and at what link quality? That question is asked by visualization layers (the ATAK plugin's platform list, future desktop UIs, headless dashboards) and by transport-selection policies that want richer signals than `can_reach()`'s boolean.
+
+The amendment adds a single transport-agnostic accessor on the `Transport` trait, plus the unified `LinkState` type that consumers walk over `TransportManager` to render the multi-transport view. This is the natural extension of the dual-mode pattern in ADR-039 §dual-mode and the multi-transport architecture in ADR-041: hosts that render multi-transport state use peat-mesh + transports as plugins (so they get the unified view); pure transport peripherals (M5Stack on xtensa-esp32, watch) may continue to use transport crates standalone — they are sources of state, not consumers of it.
+
+```rust
+/// Transport-agnostic per-peer link state.
+///
+/// Returned by `Transport::peer_link_state` for any transport that knows
+/// about the given peer. Optional fields are populated where meaningful
+/// for the transport and `None` otherwise — adding a new transport (LoRa,
+/// satellite, future radios) requires no struct change.
+#[derive(Debug, Clone)]
+pub struct LinkState {
+    /// Identifies which transport instance this state describes
+    /// (e.g., "iroh-wlan0", "ble-hci0", "lora-915mhz"). Matches the
+    /// `TransportInstance.id` registered in `TransportManager`.
+    pub transport_id: TransportId,
+
+    /// Transport family — for UI category grouping and per-transport
+    /// rendering decisions.
+    pub transport_type: TransportType,
+
+    /// Physical interface name where applicable (eth0, wlan0,
+    /// p2p-wlan0). None for transports that don't expose a NIC concept
+    /// (e.g., BLE, LoRa).
+    pub interface: Option<String>,
+
+    /// Bucketed quality for UI tier indicators. Each transport
+    /// implementation maps its raw signal/path-quality measure into
+    /// this enum; consumers don't need to know transport-specific
+    /// thresholds.
+    pub quality: LinkQuality,
+
+    /// Round-trip-time estimate in milliseconds, where the transport
+    /// can measure or estimate it.
+    pub rtt_ms: Option<u32>,
+
+    /// Received signal strength in dBm, populated by transports that
+    /// expose it (BLE, LoRa, tactical radio). None for IP transports.
+    pub rssi_dbm: Option<i8>,
+
+    /// Path classification for transports with a notion of direct vs
+    /// relayed connectivity (iroh, future tactical radio with relay
+    /// nodes). None where the concept doesn't apply.
+    pub path_kind: Option<PathKind>,
+}
+
+/// Bucketed link quality. Each transport defines its own RSSI / RTT /
+/// loss thresholds for the bucket boundaries; consumers only see the
+/// bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkQuality {
+    Excellent,
+    Good,
+    Fair,
+    Weak,
+    Unknown,
+}
+
+/// Connection path classification. Populated by IP-style transports
+/// that expose direct-vs-relayed paths (iroh's `PathInfo::is_relay()`).
+///
+/// `Mixed` (multiple paths actively transmitting at once) was considered
+/// during this amendment and intentionally deferred — no transport
+/// currently has a multi-path-concurrent consumer that needs the
+/// distinction, and adding the variant before a real emitter exists
+/// would force consumers to write rendering code with no test path.
+/// File as a follow-up to ADR-032 when iroh (or another transport) gains
+/// a concurrent-multi-path mode that consumers must distinguish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    /// Direct peer-to-peer connection
+    Direct,
+    /// Connection routed through a relay
+    Relay,
+}
+
+#[async_trait]
+pub trait Transport: MeshTransport {
+    // ... existing methods (capabilities, is_available, signal_quality,
+    //     can_reach, estimate_delivery_ms) unchanged ...
+
+    /// Get per-peer link state for visualization and selection.
+    ///
+    /// Returns `None` if this transport has no record of this peer
+    /// (never seen, no connection history, or the transport simply
+    /// doesn't track per-peer state). A peer with a known-disconnected
+    /// state record SHOULD return `Some` with `LinkQuality::Weak` (or
+    /// the transport's analogous degraded bucket), not `None` —
+    /// "disconnected but known" is meaningful information for the
+    /// visualization layer and should not be conflated with "no record
+    /// at all". Returns `Some(LinkState)` with as much detail as the
+    /// transport can provide — fields the transport doesn't measure
+    /// stay `None`.
+    ///
+    /// Default impl returns `None`, so existing transport
+    /// implementations continue to compile; visualization simply shows
+    /// "unknown" until each transport opts in.
+    ///
+    /// `peer_id` is the unified peat-mesh `NodeId` (see "Identity
+    /// bridging" below). Per-transport implementations are responsible
+    /// for converting it to whatever native handle the underlying stack
+    /// uses.
+    fn peer_link_state(&self, peer_id: &peat_mesh::NodeId) -> Option<LinkState> {
+        None
+    }
+}
+```
+
+#### Identity bridging
+
+`peat_mesh::NodeId` is the unified peer identifier across all transports — the type already used by `MeshTransport::connect`, `can_reach`, and the rest of the peat-mesh `Transport` surface. Each `Transport` implementation is responsible for mapping it to whatever native peer handle the underlying stack uses, the same way per-transport `connect` already does:
+
+- **iroh transport.** `peat_mesh::NodeId` ↔ iroh `NodeId` (both Ed25519-public-key-derived). The mapping is the identity function in this case.
+- **`PeatBleTransport`.** `peat_mesh::NodeId` ↔ `peat_btle::NodeId` (a u32). The conversion already exists in peat-mesh today (`peat-mesh/src/transport/btle.rs::btle_to_peat_node_id` / `peat_to_btle_node_id`); `peer_link_state` reuses it before reaching into peat-btle's per-peer record.
+- **Future `PeatLoraTransport`.** Whatever radio-layer addressing the LoRa stack uses (per ADR-052) gets bridged to `peat_mesh::NodeId` the same way, in the transport's own conversion functions.
+
+If a transport cannot resolve the requested `NodeId` to one of its own peers, it returns `None` — same contract as `can_reach` returning `false`.
+
+#### Per-transport implementation expectations
+
+| Transport | Source of `LinkState` |
+|---|---|
+| `PeatBleTransport` (peat-mesh wrapping peat-btle) | Reads from peat-btle's per-peer connection record — `state` → `LinkQuality` (`Connected` → Good/Excellent depending on RSSI, `Degraded` → Fair, `Disconnected/Lost` → Weak), `last_rssi` → `rssi_dbm`. `LinkQuality` uses existing peat-btle thresholds (≥ −50 Excellent, ≥ −70 Good, ≥ −85 Fair, < −85 Weak). `path_kind` is `None` (BLE has no relay concept at this layer). `interface` is the local BLE adapter identifier where the platform exposes one. |
+| iroh `Transport` (peat-mesh wrapping `MeshSyncTransport`) | Reads from `MeshSyncTransport::peer_paths(peer_id)` — selected path's `is_relay()` → `PathKind`, `peer_rtt(peer_id)` → `rtt_ms`. `interface` from `TransportInstance.interface` (e.g., "wlan0"). `rssi_dbm` is `None`. `quality` is bucketed from RTT + path kind per the table below. |
+
+##### iroh quality bucketing
+
+Concrete thresholds, applied in priority order (first match wins):
+
+| Condition | `LinkQuality` |
+|---|---|
+| `path_kind == Relay` | `Fair` |
+| `path_kind == Direct` and `rtt_ms < 30` | `Excellent` |
+| `path_kind == Direct` and `rtt_ms < 100` | `Good` |
+| `path_kind == Direct` and `rtt_ms < 300` | `Fair` |
+| `path_kind == Direct` and `rtt_ms >= 300` | `Weak` |
+| `rtt_ms` unavailable (e.g., new connection, no measurement yet) | `Unknown` |
+
+These are starting-point thresholds, expected to be empirically retuned once the implementation has soak data. The point of locking them in the ADR is to keep peat-mesh and any future transport that reuses the bucketing pattern from drifting against each other in their first releases. Future transport implementations that follow this pattern (LoRa, satellite, tactical radio) define their own per-row thresholds in their own ADRs but reuse the same `LinkQuality` enum.
+| Future `PeatLoraTransport` (per ADR-052) | Reads link metrics from the LoRa modem (RSSI, SNR, SF). `path_kind` = `None` initially; if/when LoRa relay lands, populates `Direct`/`Relay`. `interface` is the radio identifier. |
+
+#### TransportManager surface for the unified loop
+
+Three `TransportManager` accessors compose into the consumer-side loop. All three already exist in peat-mesh today (`peat-mesh/src/transport/manager.rs`); this section documents them for ADR cover, since the host-rendering rule below relies on them being part of the public surface:
+
+```rust
+impl TransportManager {
+    /// Transports a given peer is currently reachable through, in
+    /// implementation-defined preference order. Returns an empty Vec if
+    /// the peer is not known to any registered transport.
+    pub fn available_instances_for_peer(
+        &self,
+        peer_id: &peat_mesh::NodeId,
+    ) -> Vec<TransportInstance> { /* ... */ }
+
+    /// Transport types (deduplicated) a given peer is currently
+    /// reachable through. Convenience wrapper for callers that only
+    /// need the type-level view (e.g., "is this peer on BLE at all?").
+    pub fn available_transports(
+        &self,
+        peer_id: &peat_mesh::NodeId,
+    ) -> Vec<TransportType> { /* ... */ }
+
+    /// Resolve a `TransportId` (from a `TransportInstance`) back to the
+    /// concrete `Arc<dyn Transport>` so callers can invoke trait
+    /// methods like `peer_link_state` against the right transport
+    /// instance. Returns `None` if no transport is registered under
+    /// that ID.
+    pub fn get_transport(
+        &self,
+        transport_id: &TransportId,
+    ) -> Option<Arc<dyn Transport>> { /* ... */ }
+}
+```
+
+These are the three `TransportManager` methods the consumer-side rule depends on. Other manager surface (PACE policy, message-requirement matching) is unaffected by this amendment.
+
+#### Host-rendering rule
+
+Hosts that render or reason about multi-transport state MUST consume `LinkState` through peat-mesh's `TransportManager`. The unified loop is:
+
+```rust
+fn render_peer_links(manager: &TransportManager, peer_id: &peat_mesh::NodeId)
+    -> Vec<LinkState>
+{
+    manager.available_instances_for_peer(peer_id)
+        .into_iter()
+        .filter_map(|instance| {
+            let transport = manager.get_transport(&instance.id)?;
+            transport.peer_link_state(peer_id)
+        })
+        .collect()
+}
+```
+
+The same loop works regardless of how many transport types are registered, including transports added in the future.
+
+Hosts MUST NOT reach into individual transport crates (peat-btle, peat-lora, etc.) to query per-peer state for visualization purposes; that path duplicates plumbing and ossifies the consumer against transport-specific facades. The consumer-side surface is `peat-mesh::Transport::peer_link_state` and nothing else.
+
+Hosts that are **pure transport peripherals** — environments where peat-mesh genuinely cannot run (M5Stack on xtensa-esp32, watch where peat-mesh's deps are not earned) — may continue to use transport crates standalone (peat-btle's `translator-codec` Cargo feature, the equivalent in future peat-lora). These hosts produce state for the network but are not expected to render multi-transport views; the consumer-side rule above does not apply to them. ADR-039 §dual-mode and ADR-041 spell out which hosts fall into which category.
+
+This amendment does not promote ADR-032 from Proposed to Accepted — that promotion belongs with the implementation that proves the trait extension out across at least two transports (peat-btle plugin mode + iroh), not with this doc change.
 
 ### 2. Message Requirements for Transport Selection
 
