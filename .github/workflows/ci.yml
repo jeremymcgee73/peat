@@ -33,6 +33,43 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  m5stack-dep-gate:
+    # Refuses to merge a Cargo.toml that pins peat-btle as a path dep
+    # (e.g. `path = "../../../peat-btle"`). Path deps resolve only on
+    # developer machines where the sibling repo is checked out, so a
+    # mis-ordered merge that lands a path-pinned firmware-build silently
+    # breaks any consumer who clones only this repo. Once peat-btle's
+    # release publishes to crates.io, the dep promotes to a registry
+    # pin and this gate goes green; until then it intentionally blocks
+    # the merge so the release-order constraint is enforced by CI
+    # rather than human discipline.
+    name: M5Stack peat-btle dep gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify peat-btle is a registry pin (not a path dep)
+        run: |
+          set -euo pipefail
+          MANIFEST=examples/m5stack-core2-peat/Cargo.toml
+          # Catch both inline form (`peat-btle = { ..., path = ... }`)
+          # and table form (`[dependencies.peat-btle]` ... `path = ...`)
+          # — the inline-only grep used to silently miss table-style
+          # deps, letting a contributor sneak a path dep past the gate.
+          # An explicit awk pass covers the table case.
+          inline_hit=$(grep -E '^\s*peat-btle\s*=.*\bpath\s*=' "$MANIFEST" || true)
+          table_hit=$(awk '
+            /^\[dependencies\.peat-btle\]/ { in_table=1; next }
+            in_table && /^\[/             { in_table=0 }
+            in_table && /^\s*path\s*=/    { print FILENAME ":" NR ": " $0 }
+          ' "$MANIFEST")
+          if [ -n "$inline_hit$table_hit" ]; then
+            echo "::error file=$MANIFEST::peat-btle is still a path dep — promote to an exact registry pin (e.g. peat-btle = \"=0.3.4-rc.2\") before merging. The current rc on crates.io is the version this firmware's slim publish surface depends on."
+            [ -n "$inline_hit" ] && echo "$inline_hit"
+            [ -n "$table_hit"  ] && echo "$table_hit"
+            exit 1
+          fi
+          echo "M5Stack peat-btle dep is registry-sourced — gate clear."
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

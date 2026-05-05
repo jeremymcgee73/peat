@@ -40,13 +40,61 @@ use mipidsi::models::ILI9342CRgb565;
 use mipidsi::options::Orientation;
 use mipidsi::Builder;
 
-use peat_btle::canned_message::CannedMessageDocument;
 use peat_btle::peat_mesh::{PeatMesh, PeatMeshConfig};
-use peat_btle::sync::PeripheralType;
+use peat_btle::sync::{HealthStatus, PeripheralType};
+use peat_btle::translator::{BleHealthStatus, BlePeripheral, BlePeripheralType};
 use peat_btle::{MeshGenesis, NodeId};
+
+// Compile-time guard: the Prone-as-unavailable signal is encoded into
+// the peripheral health alerts bitfield, but `BleHealthStatus`
+// (translator wire shape) and `HealthStatus` (CRDT wire shape) declare
+// `ALERT_MAN_DOWN` as separate constants on separate types. They MUST
+// hold the same `u8` value — receivers that decode the legacy
+// peripheral path read `HealthStatus::ALERT_MAN_DOWN`, receivers that
+// decode 0xB6 translator frames read `BleHealthStatus::ALERT_MAN_DOWN`,
+// and the M5Stack publishes through both paths simultaneously. A
+// future peat-btle refactor that splits the values would silently
+// break mixed-firmware deployments where some peers read each shape;
+// this assert catches the divergence at the M5Stack build, before any
+// firmware ships.
+const _: () = assert!(
+    BleHealthStatus::ALERT_MAN_DOWN == HealthStatus::ALERT_MAN_DOWN,
+    "peat-btle ALERT_MAN_DOWN diverged between BleHealthStatus (translator) \
+     and HealthStatus (peripheral) — receivers on the two paths would \
+     observe inconsistent man-down state. Pin them to the same value or \
+     re-export one from the other in peat-btle.",
+);
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+
+/// Single source of truth for the IMU-activity → BLE wire encoding.
+/// Returns `(activity_u8, alerts_u8)`, where `activity_u8` is the
+/// `HealthStatus.activity` byte and `alerts_u8` is the
+/// `HealthStatus.alerts` bitfield.
+///
+/// The encoding has to land identically on three independent emitters
+/// — the activity-transition handler (immediate platform advert via
+/// the 0xB6 translator path) and the periodic `update_health_full` /
+/// `update_alerts` call (legacy peripheral path). Without a shared
+/// definition, a future edit to one site would silently produce
+/// divergent translator-frame and CRDT health states for the same
+/// device — exactly the coherence drift the ALERT_MAN_DOWN
+/// const-assert above guards against, but at the activity layer
+/// instead of the alerts layer.
+///
+/// See the inline comments in [`run_main`] (around the periodic
+/// peripheral-health update) for the per-population behavior
+/// rationale: `activity=4` for Prone preserves legacy-receiver safety
+/// (pre-0.3.4 peat-btle drops the peripheral entirely; 0.3.4+ surfaces
+/// "unknown") rather than mis-rendering as Stationary.
+fn activity_wire_encoding(activity: imu::Activity) -> (u8, u8) {
+    match activity {
+        imu::Activity::Standing => (0u8, 0u8),
+        imu::Activity::Prone => (4u8, HealthStatus::ALERT_MAN_DOWN),
+        imu::Activity::PossibleFall => (3u8, 0u8),
+    }
+}
 
 /// Shared mesh genesis for the WEARTAK encrypted mesh. The decoded blob
 /// contains `MeshGenesis::encryption_secret()` — i.e. it IS the mesh's
@@ -488,7 +536,6 @@ struct DisplayState {
     connected_peers: Vec<u32>,    // Node IDs of currently connected peers
     acked_peers: Vec<u32>,        // Node IDs that have ACK'd the current emergency
     activity: u8,                 // Activity state (0=Stationary, 1=Walking, 2=Running, 3=Fall)
-    last_canned_msg: Option<(u8, u32, u64)>, // (code, source_node, timestamp)
 }
 
 /// Draw initial static UI elements (call once at startup)
@@ -554,20 +601,6 @@ where
 }
 
 
-/// Draw canned message ticker at bottom of content area
-fn draw_canned_ticker<D>(display: &mut D, msg_name: &str, source_node: u32)
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    // Ticker bar: y=185-205, just above the button separator
-    let _ = Rectangle::new(Point::new(0, 185), Size::new(320, 20))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 4))) // dark green bg
-        .draw(display);
-    let style = MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW);
-    let text = format!("{:08X}: {}", source_node, &msg_name[..msg_name.len().min(22)]);
-    let _ = Text::new(&text, Point::new(5, 202), style).draw(display);
-}
-
 /// Update only changed parts of the display (minimizes flicker)
 /// Returns the new display state for comparison on next update
 fn update_display<D>(
@@ -614,12 +647,6 @@ where
         connected_peers: connected_peers.clone(),
         acked_peers: acked_peers.to_vec(),
         activity: activity_u8,
-        last_canned_msg: {
-            let msgs = mesh.get_all_app_documents_of_type::<CannedMessageDocument>();
-            msgs.iter()
-                .max_by_key(|m| m.timestamp())
-                .map(|m| (m.message_code(), m.source_node(), m.timestamp()))
-        },
     };
 
     // Skip if nothing changed
@@ -764,16 +791,6 @@ where
                 }
             } else {
                 let _ = Text::new("Mesh: no peers", Point::new(85, 130), gray).draw(display);
-            }
-        }
-    }
-
-    // Canned message ticker
-    if current.last_canned_msg != prev.last_canned_msg {
-        if let Some((_code, source, _ts)) = &current.last_canned_msg {
-            let msgs = mesh.get_all_app_documents_of_type::<CannedMessageDocument>();
-            if let Some(latest) = msgs.iter().max_by_key(|m| m.timestamp()) {
-                draw_canned_ticker(display, latest.message_name(), *source);
             }
         }
     }
@@ -943,7 +960,19 @@ fn main() -> anyhow::Result<()> {
         .with_encryption(genesis.encryption_secret())
         .with_peripheral_type(PeripheralType::SoldierSensor);
     let mesh = PeatMesh::new(config);
-    mesh.document_registry().try_register::<CannedMessageDocument>();
+    // Note on backward compatibility: previous firmware versions
+    // registered a `CannedMessageDocument` doc-type via
+    // `mesh.document_registry().try_register::<CannedMessageDocument>()`.
+    // peat-btle 0.3.x removed the type and the corresponding read /
+    // registration surface, so this firmware no longer registers it.
+    // Any pre-0.3.4-rc.2 peer still emitting `CannedMessageDocument`
+    // CRDT documents will have those documents *silently dropped*
+    // (unregistered type → won't merge into local app-document state).
+    // The canned-message ticker is therefore disabled until peat-btle
+    // ships a replacement query / registration surface and this
+    // firmware re-registers against it. Bench-deployed peers already
+    // run 0.3.4-era firmware; flag a fleet-wide rollout if older
+    // hardware is reintroduced.
     info!("PeatMesh created for node {:08X}", node_id.as_u32());
 
     // Initialize NVS store for persistence
@@ -1018,6 +1047,18 @@ fn main() -> anyhow::Result<()> {
     let mut last_imu_read: u32 = 0;
     const IMU_READ_INTERVAL_MS: u32 = 100;  // Read IMU at 10Hz
     let mut current_activity = imu::Activity::Standing;
+    // Last alerts byte we wrote into the local peripheral via
+    // `mesh.update_alerts`. Tracked so the periodic 1 Hz health update
+    // can skip the call when the value is unchanged — without this
+    // guard, every Standing/PossibleFall tick re-bumps peat-btle's
+    // peripheral version (a no-op state-wise, but a fresh
+    // version-bump that downstream sync paths could observe). The
+    // immediate publish on activity transition still fires
+    // unconditionally, so the line transition's edge is preserved
+    // exactly. Init to the wire encoding for `Standing` (the
+    // initial `current_activity` value) so the first 1 Hz call after
+    // boot doesn't redundantly write a zero we already match.
+    let mut last_alerts_published: u8 = activity_wire_encoding(imu::Activity::Standing).1;
     let mut fall_detected = false;
 
     // IMU read-failure tracking. On the M5Stack Core2 the AXP2101 power
@@ -1137,6 +1178,81 @@ fn main() -> anyhow::Result<()> {
                           accel.x, accel.y, accel.z, accel.magnitude());
                     current_activity = activity;
                     needs_redraw = true;
+
+                    // Publish a platform advertisement (ADR-059 0xB6
+                    // translator frame, "platforms" collection) so the
+                    // tablet plugin's onTranslatorFrameDecoded surfaces
+                    // the new state — Prone → ALERT_MAN_DOWN drives
+                    // PeatPlatform.Status to UNAVAILABLE. Synchronous
+                    // with the IMU transition so peers don't have to
+                    // wait for the 5 s gossip cycle to see the flip;
+                    // the regular legacy-peripheral broadcast still
+                    // happens in parallel for clients on the
+                    // pre-translator-frame receive path.
+                    // Activity → wire encoding lives in
+                    // `activity_wire_encoding` (top of file) so this
+                    // call site and the periodic `update_health_full`
+                    // call site below can't drift apart. The legacy /
+                    // alerts-aware / pre-0.3.4 receiver-population
+                    // analysis lives there too (and on the periodic
+                    // call site) — TL;DR: Prone=4 + alerts=man_down
+                    // keeps legacy peers from mis-rendering as
+                    // Stationary.
+                    // Skip the activity-transition advert if we don't
+                    // yet have a battery reading. Defaulting to 100 was
+                    // a tactical-safety bug — when the AXP I2C read is
+                    // failing or hasn't completed yet, a 0xB6 frame
+                    // with `battery_percent=100` would render a "full
+                    // battery" icon for a node that may be critically
+                    // low or in AXP fault. The next periodic 1 Hz tick
+                    // re-tries the AXP read and re-publishes once the
+                    // value is real. Emergency-detection (the fall
+                    // branch below) runs unconditionally regardless of
+                    // the publish skip — battery state isn't on the
+                    // emergency path.
+                    if let Some(battery_percent) = battery_pct {
+                        let (activity_u8, alerts) = activity_wire_encoding(activity);
+                        let advert = BlePeripheral {
+                            id: node_id.as_u32(),
+                            // BlePeripheral schema: `parent_node: u32`,
+                            // 0 is the canonical "no parent / unpaired
+                            // peripheral" sentinel (see translator.rs
+                            // doc comment on the field). The M5Stack
+                            // is a standalone soldier-worn sensor with
+                            // no relay topology above it — 0 is
+                            // correct, not a placeholder.
+                            parent_node: 0,
+                            peripheral_type: BlePeripheralType::SoldierSensor,
+                            callsign: callsign.clone(),
+                            health: BleHealthStatus {
+                                battery_percent,
+                                heart_rate: None,
+                                activity: activity_u8,
+                                alerts,
+                            },
+                            timestamp: now_ms(),
+                            position: None, // SCOUT-A698 has no GPS
+                        };
+                        if let Some(framed) = mesh.publish_platform_advertisement(&advert) {
+                            let sent = nimble::gossip_document(&framed);
+                            info!(
+                                ">>> Platform advert: {:?} alerts=0x{:02X} ({} bytes -> {} conns)",
+                                activity,
+                                alerts,
+                                framed.len(),
+                                sent
+                            );
+                        } else {
+                            warn!(
+                                "publish_platform_advertisement returned None — wire encode failed"
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "publish_platform_advertisement skipped: battery_pct=None \
+                             (AXP I2C not ready yet) — will retry on next 1 Hz tick"
+                        );
+                    }
 
                     // Fall detection - trigger emergency automatically!
                     if activity == imu::Activity::PossibleFall && !fall_detected && !alert_active {
@@ -1500,27 +1616,57 @@ fn main() -> anyhow::Result<()> {
 
         // Periodic status update (every 1 second = 20 * 50ms)
         if loop_count % 20 == 0 {
-            // Update battery reading and peripheral health
+            // Update battery reading and peripheral health.
+            //
+            // Activity wire encoding:
+            //   0 = Standing      (legacy: Stationary — semantic match)
+            //   3 = PossibleFall  (unchanged)
+            //   4 = Prone         (intentional — see legacy-receiver
+            //                      population analysis below)
+            //
+            // Prone is signalled via TWO independent fields so that all
+            // three peer-firmware populations behave correctly:
+            //
+            //   1. `alerts |= ALERT_MAN_DOWN` is the canonical
+            //      Prone-as-unavailable signal that 0.3.4+ alerts-aware
+            //      receivers (this slice's plugin) read to drive
+            //      `Status.OFFLINE`.
+            //
+            //   2. `activity = 4` ensures peers that never read alerts
+            //      degrade safely:
+            //        * pre-0.3.4 peat-btle rejects `activity > 3` and
+            //          drops the entire peripheral — peer disappears
+            //          from the legacy receive path rather than
+            //          mis-rendering as "Stationary."
+            //        * 0.3.4+ without alerts-aware UI surfaces "unknown"
+            //          (the post-relax decoder treats out-of-range
+            //          activity as a render hint to skip animation).
+            //
+            //   Encoding Prone as `activity=0` would mis-render as
+            //   "Stationary" on populations (a) and (b) — a
+            //   tactical-safety regression versus today's "unknown".
+            //   The const-assert near the top of this file pins
+            //   ALERT_MAN_DOWN to the same `u8` value across the
+            //   translator and CRDT wire shapes; see that comment for
+            //   the divergence-detection rationale.
             if let Some(mv) = axp_read_battery_voltage(&mut i2c) {
                 let pct = battery_percent_from_voltage(mv);
                 battery_pct = Some(pct);
-                // Wire-format activity code sent to peers via
-                // mesh.update_health_full(). Avoid colliding with the
-                // legacy enum (0=Stationary, 1=Walking, 2=Running,
-                // 3=PossibleFall) so un-updated peers don't mis-render
-                // Prone as Walking. Prone uses 4; old peers fall through
-                // to "unknown" instead of a wrong label.
-                //   0 = Standing       (legacy: Stationary — semantic match)
-                //   1 = (legacy Walking — no longer emitted)
-                //   2 = (legacy Running — no longer emitted)
-                //   3 = PossibleFall   (unchanged)
-                //   4 = Prone          (new — no legacy collision)
-                let activity_u8 = match current_activity {
-                    imu::Activity::Standing => 0,
-                    imu::Activity::Prone => 4,
-                    imu::Activity::PossibleFall => 3,
-                };
+                let (activity_u8, alerts) = activity_wire_encoding(current_activity);
                 mesh.update_health_full(pct, activity_u8);
+                // Debounce: only re-stamp `alerts` when the wire
+                // value actually changed. Without this, every Standing
+                // / PossibleFall tick re-bumps peat-btle's peripheral
+                // version through `update_alerts(0)` even though no
+                // wire-observable state changed — a 1 Hz no-op churn
+                // on top of the 5 s gossip cadence. Activity-transition
+                // publishes (the immediate 0xB6 frame above) still
+                // fire unconditionally, so the alert-rising / falling
+                // edges are preserved exactly.
+                if alerts != last_alerts_published {
+                    mesh.update_alerts(alerts);
+                    last_alerts_published = alerts;
+                }
             }
 
             let status: &'static str = if alert_active {
