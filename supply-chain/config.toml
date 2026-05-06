@@ -33,6 +33,28 @@ audit-as-crates-io = true
 [policy.peat-protocol]
 audit-as-crates-io = true
 
+# ADR-059 Amendment 4 Slice 4.d (interim) — peat-mesh and peat-btle are
+# resolved from git via `[patch.crates-io]` in the workspace Cargo.toml
+# (the post-Slice-4.a/4.b mains, until the Slice 4 train ships post-UAT
+# releases per defenseunicorns/peat#828).
+#
+# `audit-as-crates-io = false` tells vet to treat each git source as
+# its own audit space rather than trying to map it back to a
+# published crates.io version. peat-btle 0.4.0 isn't on crates.io
+# yet (4.b release is held until UAT), and peat-mesh main carries
+# Slice-4.a content that diverges from the published 0.9.0-rc.7
+# tarball — audit-as-crates-io = true on either would force a diff
+# audit against crates.io content the git source intentionally
+# differs from. The version-keyed exemption blocks below grant
+# safe-to-deploy on the git revisions; first-party trust, same shape
+# as the peat-schema / peat-protocol entries above. Both policy
+# entries and exemptions come out when the patch entries do.
+[policy.peat-mesh]
+audit-as-crates-io = false
+
+[policy.peat-btle]
+audit-as-crates-io = false
+
 [[exemptions.cc]]
 version = "1.2.57"
 criteria = "safe-to-deploy"
@@ -47,6 +69,16 @@ criteria = "safe-to-deploy"
 
 [[exemptions.peat-protocol]]
 version = "0.9.0-rc.1"
+criteria = "safe-to-deploy"
+
+# ADR-059 Amendment 4 Slice 4.d interim git-rev consumption.
+# Removed when the Slice 4 train ships post-UAT releases.
+[[exemptions.peat-mesh]]
+version = "0.9.0-rc.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.peat-btle]]
+version = "0.4.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cesu8]]

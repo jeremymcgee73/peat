@@ -329,6 +329,154 @@ pub struct SyncStats {
     pub bytes_received: u64,
 }
 
+// =============================================================================
+// ADR-032 §Amendment A — Per-Peer Transport State (UniFFI surface)
+// =============================================================================
+//
+// Mirror types over `peat_mesh::transport::LinkState` family. The
+// peat-mesh types aren't UniFFI-decorated (they live in the transport
+// layer, not the binding layer), so we re-shape them into peat-ffi
+// `Record`s/`Enum`s with `From<peat_mesh::...>` conversions. The Kotlin
+// plugin consumer (defenseunicorns/peat-atak-plugin#15) renders
+// directly off these.
+//
+// Per ADR-032 §Amendment A's host-rendering rule, peat-ffi is the
+// *single source of truth* for transport-state queries in the UI; the
+// plugin MUST NOT reach into peat-btle's UniFFI directly for this
+// purpose. The unified loop walks `TransportManager`, calls
+// `peer_link_state` on each registered transport, and overlays
+// `transport_id` from the registered id (interface overlay is a
+// follow-up — `TransportManager` doesn't yet expose a public
+// instance-metadata accessor).
+
+/// Per-peer transport state across all registered transports.
+///
+/// Returned by [`PeatNode::peer_transport_state`] and contained in the
+/// list returned by [`PeatNode::all_peer_transport_states`]. An empty
+/// `links` vec is a valid state and means "this peer is not currently
+/// reachable via any registered transport" — visualization should
+/// render the peer with no transport badges, not as an error.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PeerTransportState {
+    /// Hex-encoded peer node identifier (matches the form produced by
+    /// `PeatNode::node_id` and `PeatNode::connected_peers`).
+    pub peer_id: String,
+    /// Links for each transport that currently has a record of this
+    /// peer. Order is implementation-defined (usually
+    /// `TransportManager`'s registration order). An empty list is
+    /// valid — see struct docs.
+    pub links: Vec<TransportLink>,
+}
+
+/// One transport's link state for a peer (FFI mirror of
+/// `peat_mesh::transport::LinkState`).
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TransportLink {
+    /// Identifies the registered transport instance, e.g. `"ble-hci0"`,
+    /// `"iroh-wlan0"`. Per ADR-032 §Amendment A, peat-ffi overlays this
+    /// from the `TransportManager`-registered id at synthesis time.
+    pub transport_id: String,
+    /// Transport family, lowercase string for cross-language
+    /// portability (`"ble"` / `"iroh"` / `"lora"` / `"satellite"` / …).
+    pub transport_type: String,
+    /// Physical interface name where applicable (`eth0`, `wlan0`,
+    /// `p2p-wlan0`). `None` for transports that don't expose a NIC
+    /// concept (e.g. BLE, LoRa).
+    pub interface: Option<String>,
+    /// Bucketed quality. Each transport defines its own thresholds.
+    pub quality: TransportLinkQuality,
+    /// Round-trip-time estimate in milliseconds, where the transport
+    /// can measure or estimate it.
+    pub rtt_ms: Option<u32>,
+    /// Received signal strength in dBm, populated by transports that
+    /// expose it (BLE, LoRa, tactical radio). `None` for IP transports.
+    pub rssi_dbm: Option<i8>,
+    /// Path classification for IP-style transports with a relay
+    /// concept (iroh's `PathInfo::is_relay()`). `None` where the
+    /// concept doesn't apply (BLE).
+    pub path_kind: Option<TransportPathKind>,
+}
+
+/// Bucketed link quality for UI tier indicators.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum TransportLinkQuality {
+    Excellent,
+    Good,
+    Fair,
+    Weak,
+    Unknown,
+}
+
+/// Connection path classification.
+///
+/// `Mixed` (multi-path concurrent) was considered during ADR-032
+/// §Amendment A and intentionally deferred until a real emitter exists.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum TransportPathKind {
+    Direct,
+    Relay,
+}
+
+#[cfg(feature = "sync")]
+impl From<peat_mesh::transport::LinkQuality> for TransportLinkQuality {
+    fn from(q: peat_mesh::transport::LinkQuality) -> Self {
+        match q {
+            peat_mesh::transport::LinkQuality::Excellent => TransportLinkQuality::Excellent,
+            peat_mesh::transport::LinkQuality::Good => TransportLinkQuality::Good,
+            peat_mesh::transport::LinkQuality::Fair => TransportLinkQuality::Fair,
+            peat_mesh::transport::LinkQuality::Weak => TransportLinkQuality::Weak,
+            peat_mesh::transport::LinkQuality::Unknown => TransportLinkQuality::Unknown,
+        }
+    }
+}
+
+#[cfg(feature = "sync")]
+impl From<peat_mesh::transport::PathKind> for TransportPathKind {
+    fn from(p: peat_mesh::transport::PathKind) -> Self {
+        match p {
+            peat_mesh::transport::PathKind::Direct => TransportPathKind::Direct,
+            peat_mesh::transport::PathKind::Relay => TransportPathKind::Relay,
+        }
+    }
+}
+
+#[cfg(feature = "sync")]
+impl From<peat_mesh::transport::LinkState> for TransportLink {
+    fn from(s: peat_mesh::transport::LinkState) -> Self {
+        // `transport_type` to lowercase string — the ADR's enum names
+        // (BluetoothLE, Quic, etc.) are descriptive but don't match the
+        // string form callers tend to use ("ble", "iroh"). Map
+        // explicitly so a future enum-variant addition is a compile-
+        // time prompt to extend this map rather than silently emitting
+        // a Debug-formatted string.
+        let transport_type = match s.transport_type {
+            peat_mesh::transport::TransportType::BluetoothLE => "ble".to_string(),
+            peat_mesh::transport::TransportType::Quic => "iroh".to_string(),
+            peat_mesh::transport::TransportType::LoRa => "lora".to_string(),
+            peat_mesh::transport::TransportType::WifiDirect => "wifi-direct".to_string(),
+            peat_mesh::transport::TransportType::TacticalRadio => "tactical-radio".to_string(),
+            peat_mesh::transport::TransportType::Satellite => "satellite".to_string(),
+            peat_mesh::transport::TransportType::BluetoothClassic => {
+                "bluetooth-classic".to_string()
+            }
+            peat_mesh::transport::TransportType::Custom(n) => format!("custom-{n}"),
+        };
+        TransportLink {
+            transport_id: s.transport_id,
+            transport_type,
+            interface: s.interface,
+            quality: s.quality.into(),
+            rtt_ms: s.rtt_ms,
+            rssi_dbm: s.rssi_dbm,
+            path_kind: s.path_kind.map(Into::into),
+        }
+    }
+}
+
 /// Type of document change event
 #[cfg(feature = "sync")]
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -581,6 +729,91 @@ impl PeatNode {
             bytes_sent: stats.bytes_sent,
             bytes_received: stats.bytes_received,
         })
+    }
+
+    /// ADR-032 §Amendment A — unified per-peer transport state.
+    ///
+    /// Walks `TransportManager` for the given peer, calls
+    /// `peer_link_state` on each registered transport that can reach
+    /// it, and overlays the registered `TransportInstance.id` onto the
+    /// returned `LinkState.transport_id` (per the host-rendering rule:
+    /// the producer doesn't know its own registered id, the consumer
+    /// fills it). Returns `Ok(PeerTransportState { peer_id, links: vec![] })`
+    /// for peers no transport reports — "absence is a valid state."
+    ///
+    /// Hex-encoded `peer_id` matches the form `connected_peers()`
+    /// returns. Invalid hex is propagated as-is to peat-mesh's
+    /// `NodeId::new`, which is also a `String` wrapper — invalid input
+    /// surfaces as an empty `links` vec rather than an error, matching
+    /// the absence contract.
+    pub fn peer_transport_state(&self, peer_id: String) -> Result<PeerTransportState, PeatError> {
+        let mesh_peer = peat_mesh::NodeId::new(peer_id.clone());
+        let links = self
+            .transport_manager
+            .available_instances_for_peer(&mesh_peer)
+            .into_iter()
+            .filter_map(|transport_id| {
+                let transport = self.transport_manager.get_instance(&transport_id)?;
+                let mut state = transport.peer_link_state(&mesh_peer)?;
+                // Host-rendering rule: overlay the registered id onto
+                // the producer's placeholder. See
+                // `peat_mesh::transport::btle::BLE_TRANSPORT_ID_PLACEHOLDER`.
+                state.transport_id = transport_id;
+                Some(TransportLink::from(state))
+            })
+            .collect();
+        Ok(PeerTransportState { peer_id, links })
+    }
+
+    /// ADR-032 §Amendment A — transport state for the peer set this
+    /// `peat-ffi` instance currently enumerates from iroh.
+    ///
+    /// Designed for the plugin's periodic poll (~2 s) — the
+    /// implementation walks transport state in a single pass without
+    /// per-peer recursion.
+    ///
+    /// **Coverage caveat (Slice-4.d-interim — not the final SSOT
+    /// shape).** This method enumerates peers exclusively from
+    /// `self.iroh_transport.connected_peers()`. BLE-only peers
+    /// (peers reachable via peat-btle but not currently visible to
+    /// iroh) are **not** included. Plugin authors must continue to
+    /// merge BLE-only peers from peat-btle's UniFFI surface
+    /// directly until the single-source-of-truth migration
+    /// completes. The Amendment A SSOT promise — "peat-ffi is the
+    /// single source of truth, the plugin MUST NOT reach into
+    /// peat-btle's UniFFI directly" — is the destination, not the
+    /// current implementation; this method's coverage is a strict
+    /// subset of that destination. Treat the cross-FFI peat-btle
+    /// reach as a documented interim, not an idiom to standardize on.
+    /// Tracked under defenseunicorns/peat#828.
+    pub fn all_peer_transport_states(&self) -> Result<Vec<PeerTransportState>, PeatError> {
+        // Collect a deduped peer set across registered transports.
+        // peat-mesh's TransportManager doesn't expose a single
+        // "all known peers" iterator, so we union over registered
+        // instance peers via `iroh_transport.connected_peers()` for
+        // the iroh side (the only transport peat-ffi currently
+        // surfaces directly). BLE-side peers come through the
+        // bluetooth feature's transport registration; their
+        // connected_peers are surfaced through the same walk on
+        // peer_transport_state once the caller knows their id from
+        // the BLE-side UniFFI lookup. For now this method covers
+        // peers visible to iroh; the plugin merges BLE-only peers
+        // from its peat-btle UniFFI consumer separately while the
+        // single-source-of-truth migration completes.
+        let mut peer_ids: Vec<String> = self
+            .iroh_transport
+            .connected_peers()
+            .iter()
+            .map(|id| hex::encode(id.as_bytes()))
+            .collect();
+        peer_ids.sort();
+        peer_ids.dedup();
+
+        let mut out = Vec::with_capacity(peer_ids.len());
+        for peer_id in peer_ids {
+            out.push(self.peer_transport_state(peer_id)?);
+        }
+        Ok(out)
     }
 
     /// Request a full document sync with all connected peers.
