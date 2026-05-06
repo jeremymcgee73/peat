@@ -9,18 +9,71 @@ members = [
     "peat-discovery",
     "peat-ffi",
     "examples/peat-tak-bridge",
-    "examples/peat-ble-test",
+    # NOTE: temporarily commented out to diagnose a cargo cycle-
+    # detection issue exposed by the relaxation of the `=`-exact
+    # peat-mesh ↔ peat-btle pin policy. peat-ble-test pulls peat-btle
+    # directly, and peat-btle ↔ peat-mesh used to have mutually-optional
+    # `dep:` declarations (peat-btle's `mesh-translator` feature
+    # pulled peat-mesh; peat-mesh's `bluetooth` feature pulled
+    # peat-btle). With `=` pins the resolver failed on version
+    # mismatch first; with relaxed ranges resolution succeeded and
+    # cargo's structural cycle-detection fired.
+    #
+    # Re-inclusion is part of the ADR-059 Amendment 4 Slice 4.d
+    # follow-up under defenseunicorns/peat#828: with the back-edge
+    # cycle now structurally dissolved on peat-btle main (Slice 4.b
+    # deleted the `mesh-translator` feature + optional `peat-mesh`
+    # dep), peat-ble-test should rejoin the workspace once the
+    # Slice 4 train clears UAT and crates.io has the post-cycle-break
+    # peat-btle release. If it still flushes the resolver under the
+    # rev-pinned [patch.crates-io] window, that's a separate finding
+    # to log against #828.
+    # "examples/peat-ble-test",
 ]
 # New `examples/*` Rust crates: add to `members` if they share this
 # workspace's toolchain/lockfile, or to `exclude` if they need their own
 # (e.g. embedded ESP32 via xtensa-esp-none-elf).
 exclude = ["examples/m5stack-core2-peat"]
 
-# For local development, uncomment to use local checkouts:
-# [patch.crates-io]
-# peat-mesh = { path = "../peat-mesh" }
-# [patch.crates-io]
-# peat-btle = { path = "../peat-btle" }
+# ADR-059 Amendment 4 Slice 4.d (interim).
+#
+# Until the Slice 4 train ships releases (gated on the
+# peat-android-demo two-phone UAT — see defenseunicorns/peat#828),
+# the peat workspace consumes peat-mesh and peat-btle directly from
+# the post-Slice-4.a/4.b mains via git overrides rather than from
+# crates.io. Both mains have the back-edge cycle dissolved
+# structurally: peat-btle 0.4.0 deleted its `mesh-translator`
+# feature + optional `peat-mesh` dep; peat-mesh hosts the
+# `Translator` trait impl on the peat-btle codec primitives behind
+# its own `bluetooth` feature.
+#
+# crates.io still has peat-mesh 0.9.0-rc.7 (pre-Slice-4.a) and
+# peat-btle 0.3.4-rc.5 (pre-Slice-4.b), both of which still carry
+# the back-edge declaration that triggers cargo's structural
+# cyclic-dep detection. Pinning to those versions makes the
+# workspace unbuildable; pinning to git mains is what unblocks
+# defenseunicorns/peat#830 (peat-ffi UniFFI surface for ADR-032
+# Amendment A) and the downstream peat-android-demo UAT.
+#
+# Pinned to specific commit `rev`s rather than `branch = "main"` so
+# resolution is reproducible — main-branch motion on either repo
+# (regressions, force-pushes, routine merges) doesn't silently
+# change this workspace's transitive deps and CI behavior. Bumping
+# to a later main commit is an explicit edit here, not implicit.
+# The pinned revs are:
+#   peat-mesh 77823a9 — defenseunicorns/peat-mesh PR #101 merge
+#     ("chore: bump peat-btle pin to >=0.4.0, <0.4.1
+#      (post-Slice-4.b follow-up)")
+#   peat-btle b4b43e5 — defenseunicorns/peat-btle PR #50 merge
+#     ("feat: drop mesh-translator back-edge to peat-mesh
+#      (ADR-059 Amendment 4 Slice 4.b)")
+#
+# Once the demo UAT clears, this section gets ripped out and the
+# workspace.dependencies pins below get bumped to whatever versions
+# the post-UAT release cuts hit on crates.io.
+[patch.crates-io]
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "77823a9908146d82bb32e9e1635d1d0a5b0970ec" }
+peat-btle = { git = "https://github.com/defenseunicorns/peat-btle", rev = "b4b43e5cf767d78cd4c4de54ad2e6b6a2d551a56" }
 
 [workspace.package]
 version = "0.9.0-rc.1"
@@ -30,11 +83,26 @@ license = "Apache-2.0"
 repository = "https://github.com/defenseunicorns/peat"
 
 [workspace.dependencies]
-# Mesh networking
-peat-mesh = { version = "=0.9.0-rc.4", default-features = false }
+# Mesh networking. Range `>=0.9.0-rc.5, <0.9.1` — floor `rc.5` is the
+# first release shipping ADR-032 §Amendment A's per-peer link state
+# surface (`Transport::peer_link_state`, `LinkState`, `LinkQuality`,
+# `PathKind`, `PeatBleTransport::peer_link_state` impl,
+# `BLE_TRANSPORT_ID_PLACEHOLDER`). Upper bound `<0.9.1` keeps the
+# wire-shape protection at the patch line — any `0.9.1+` release
+# requires an explicit re-pin here.
+peat-mesh = { version = ">=0.9.0-rc.5, <0.9.1", default-features = false }
 
-# BLE mesh transport (ADR-039)
-peat-btle = "0.2.0"
+# BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
+# 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
+# back-edge feature + optional `peat-mesh` dep. Same wire-shape
+# protection at the patch line that the pre-Slice-4.b range pin
+# maintained on the 0.3.4 line: any `0.4.x → 0.4.y` bump can carry
+# a `translator-codec` byte-format change for a pre-1.0 crate, so
+# the explicit `<0.4.1` upper bound is the deliberate gate. The
+# actual resolved commit comes via the rev-pinned
+# [patch.crates-io] git override above until Slice 4 ships
+# post-UAT releases.
+peat-btle = ">=0.4.0, <0.4.1"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

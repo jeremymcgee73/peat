@@ -3745,25 +3745,12 @@ name = "peat"
 version = "0.9.0-rc.1"
 
 [[package]]
-name = "peat-ble-test"
-version = "0.9.0-rc.1"
-dependencies = [
- "anyhow",
- "clap",
- "peat-btle",
- "peat-protocol",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "peat-btle"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4049305d045d6b6d715d635aacede01375e15c7d818e926669b56045d0b74ceb"
+version = "0.4.0"
+source = "git+https://github.com/defenseunicorns/peat-btle?rev=b4b43e5cf767d78cd4c4de54ad2e6b6a2d551a56#b4b43e5cf767d78cd4c4de54ad2e6b6a2d551a56"
 dependencies = [
  "android_logger",
+ "anyhow",
  "async-trait",
  "bitflags 2.11.0",
  "blake3",
@@ -3777,7 +3764,10 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-bluetooth",
  "objc2-foundation",
+ "postcard",
  "rand_core 0.6.4",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "spin 0.9.8",
  "thiserror 2.0.18",
@@ -3836,9 +3826,8 @@ dependencies = [
 
 [[package]]
 name = "peat-mesh"
-version = "0.9.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e568d7aa3eede0e794c14dd79447d2216fd66a4f7aa6e8e429c31b0da6ba8d17"
+version = "0.9.0-rc.7"
+source = "git+https://github.com/defenseunicorns/peat-mesh?rev=77823a9908146d82bb32e9e1635d1d0a5b0970ec#77823a9908146d82bb32e9e1635d1d0a5b0970ec"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3861,6 +3850,7 @@ dependencies = [
  "peat-btle",
  "peat-lite",
  "pkcs8 0.11.0-rc.11",
+ "postcard",
  "rand 0.9.4",
  "rand_core 0.6.4",
  "redb",
