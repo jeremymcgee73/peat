@@ -21,18 +21,32 @@ After reading this file, read the relevant per-repo SKILL.md from the router bel
 
 Read only what's relevant to the current task. Do not preload every per-repo skill.
 
-| Repo | Purpose | Skill | Status |
-|---|---|---|---|
-| **peat** | Top-level crate; shared types, traits, errors. Dependency anchor. | This file (see "peat repo-specific" section below) | WIP / placeholder |
-| **peat-registry** | Registry sync engine. Kubernetes integration. | `peat-registry/SKILL.md` | Active |
-| **peat-mesh** | Mesh networking; multi-hop routing. | `peat-mesh/SKILL.md` | Active |
-| **peat-btle** | BLE transport bridge. M5Stack/ESP32. | `peat-btle/SKILL.md` | Active |
-| **peat-node** | Edge-hardware node implementation. | `peat-node/SKILL.md` | Active |
-| **peat-gateway** | Mesh-to-external bridge layer. | `peat-gateway/SKILL.md` | Active |
-| **peat-lite** | Constrained-environment implementation. | `peat-lite/SKILL.md` | Active |
-| **peat-atak-plugin** | Android/Kotlin ATAK plugin via Rust FFI. | `peat-atak-plugin/SKILL.md` | Active |
-| **peat-rmw** | ROS2 RMW integration. | `peat-rmw/SKILL.md` | Active |
-| **peat-mavlink** | MavLink protocol integration. | `peat-mavlink/SKILL.md` | Active |
+The ecosystem comprises **one Rust workspace repo** (`peat`) plus several sibling repos. Internal workspace subcrates do **not** have separate per-repo skills — they share this file.
+
+**Sibling repos** (each its own git repo, each with its own per-repo skill):
+
+| Repo | Purpose | Skill |
+|---|---|---|
+| **peat** | Rust workspace. Hosts the ecosystem skill (this file) and the per-repo skill for the workspace. Active. | This file |
+| **peat-mesh** | Mesh networking; pluggable transport, peer discovery, topology, routing, optional Automerge/Iroh sync, optional HTTP/WS broker. **Top-tier active.** | `peat-mesh/SKILL.md` |
+| **peat-btle** | BLE transport bridge. M5Stack/ESP32 integration. | `peat-btle/SKILL.md` |
+| **peat-lite** | Lightweight implementation for constrained environments. | `peat-lite/SKILL.md` |
+| **peat-atak-plugin** | Android/Kotlin ATAK plugin. Pure Kotlin/Gradle — no Rust here. Consumes pre-built JNI/UniFFI bindings from `peat/peat-ffi`. | `peat-atak-plugin/SKILL.md` |
+| **peat-sim** | ContainerLab-based network simulation harness. Not on the production path. | `peat-sim/SKILL.md` |
+
+**Workspace subcrates** (members of the `peat` repo, share this skill):
+
+| Subcrate | Role |
+|---|---|
+| `peat` | Top-level crate; eventual home for shared types and traits. Currently a placeholder (see "`peat` repo-specific skill" below). |
+| `peat-schema` | Schema definitions. |
+| `peat-protocol` | Protocol logic (`Translator`, `ChangeEvent`, etc.). |
+| `peat-transport` | Transport abstractions used by the workspace. |
+| `peat-persistence` | Persistence layer. |
+| `peat-discovery` | Peer discovery used by the workspace. |
+| `peat-ffi` | FFI bindings for Kotlin/Swift (UniFFI 0.28, proc-macro mode) + direct `jni 0.21` for Android. The only routinely-unsafe Rust in the ecosystem. |
+
+**Status unknown — confirm with Kit before authoring skills.** The following were listed in earlier drafts but aren't currently visible from this checkout: `peat-registry`, `peat-node`, `peat-gateway`, `peat-rmw`, `peat-mavlink`. They may be planned, renamed, deprecated, or in private repos. Per the active-repos record, only `peat` and `peat-mesh` are currently top-tier active.
 
 ## Hard invariants (cross-cutting)
 
@@ -42,13 +56,21 @@ These rules apply in every repo. Violating one without explicit user approval is
 
 **Dependency flow.** `peat` is the dependency anchor. Common types, traits, error handling flow *down* from `peat`. Repos depend on `peat`, never on each other directly. Circular dependencies are rejected.
 
-**Transport agnosticism.** Peat protocol logic must not assume a transport. BLE, mesh, IP, serial are all interchangeable. Transport-specific code stays in transport repos (`peat-btle`, `peat-mesh`), never in `peat-node`, `peat-gateway`, or `peat` core.
+**Transport agnosticism.** Peat protocol logic must not assume a transport. BLE, mesh, IP, serial are all interchangeable. Transport-specific code stays in transport repos (`peat-btle`, `peat-mesh`) or the `peat-transport` workspace subcrate — never in core / protocol / persistence layers or non-transport sibling repos.
 
 **Interoperability first.** Every feature decision answers: does this make Peat more or less interoperable with external systems? Peat must never require a counterpart to run Peat software to integrate.
 
-**Unsafe Rust.** Requires explicit justification in a code comment. The FFI boundary in `peat-atak-plugin` is the only routinely legitimate unsafe zone.
+**Unsafe Rust.** Requires explicit justification in a code comment. The FFI boundary in `peat-ffi` (workspace subcrate inside the `peat` repo) is the only routinely legitimate unsafe zone.
 
-**FFI boundary direction.** All Peat protocol logic stays in Rust. Kotlin in `peat-atak-plugin` is UI and Android lifecycle only — never a destination for protocol, mesh, transport, registry, or serialization logic.
+**FFI boundary direction.** All Peat protocol logic stays in Rust (`peat-ffi` and the rest of the workspace). Kotlin in `peat-atak-plugin` is UI and Android lifecycle only — never a destination for protocol, mesh, transport, persistence, or serialization logic. Native libraries and Kotlin bindings flow from `peat-ffi` into `peat-atak-plugin`, not the reverse.
+
+**Async runtime.** Tokio is the ecosystem standard. The `peat` workspace pins `tokio = { version = "1", features = ["full"] }` (or feature subsets where appropriate); sibling repos do the same. Do not introduce alternative async runtimes (`async-std`, `smol`) without explicit user approval.
+
+**Error handling.** Library crates use `thiserror` for crate-level error enums. Application/binary code uses `anyhow` for ergonomic error chaining. Both are pinned at `1` in workspace deps and in sibling repos — use those, do not pull alternative error crates without justification.
+
+**Commit signing.** GPG-signed commits are required across the ecosystem. Do not configure git to bypass signing or use `--no-verify` to skip pre-commit hooks. Fix the signing setup; do not work around it.
+
+**Branch + merge convention.** Trunk-based development on `main` with short-lived feature branches. Every PR squash-merges to `main` — write the PR title as if it will become the merge commit subject (because it does).
 
 ## Workflow
 
@@ -123,47 +145,68 @@ Populate as sessions run. One line per gotcha plus a `Why:` line.
 
 # `peat` repo-specific skill
 
-The remainder of this file is the per-repo skill for the `peat` top-level crate, since this repo also hosts the ecosystem skill above.
+This repo is a **Rust workspace** with seven internal subcrates plus example crates. It also hosts the ecosystem skill above.
 
-## Status
+## Workspace members
 
-WIP / placeholder. Until `peat` core stabilizes, sessions should be conservative about adding dependencies on it and must flag any assumptions about peat-core types in PR descriptions.
+Subcrates inherit the workspace `Cargo.toml`'s pinned deps (Tokio, serde, thiserror, anyhow, etc.). Cross-subcrate changes coordinate **within** this repo; cross-repo changes follow the ecosystem skill's "one PR per repo" rule.
 
-## Intended contents
+- `peat` — top-level crate; eventual home for shared types and traits. Currently a placeholder (see below).
+- `peat-schema` — schema definitions.
+- `peat-protocol` — protocol logic (`Translator`, `ChangeEvent`, etc.).
+- `peat-transport` — transport abstractions used by the workspace.
+- `peat-persistence` — persistence layer.
+- `peat-discovery` — peer discovery used by the workspace.
+- `peat-ffi` — FFI bindings (see "FFI conventions" below).
+- `examples/peat-tak-bridge`, `examples/peat-ble-test` — workspace examples.
+- `examples/m5stack-core2-peat` is **excluded** from the workspace (separate toolchain — embedded ESP32 / xtensa-esp-none-elf).
 
+## `peat` top-level crate (placeholder)
+
+The `peat` subcrate is currently a placeholder. Its intended role is to be the shared dependency that gives the ecosystem a single source of truth for types, traits, and errors.
+
+**Intended contents:**
 - Core data types (messages, identities, capabilities)
-- Shared traits (`Transport`, `Node`, `Registry`)
+- Shared traits (e.g., `Transport`, `Node`)
 - Error types
 
-## Does NOT belong in `peat` core
-
-- Transport implementations
+**Does NOT belong in `peat` core:**
+- Transport implementations (live in `peat-transport`, `peat-mesh`, `peat-btle`)
 - Hardware-specific code
-- Platform-specific code (Android, ROS2, etc.)
+- Platform-specific code (Android, ROS2)
 
-## Workflow guard for changes to `peat` core
+Until `peat` core stabilizes, sessions should be conservative about adding dependencies on it and must flag any assumptions about peat-core types in PR descriptions.
 
-- Any new public type or trait requires a brief design note in the PR description.
-- Any breaking change to a public type requires a list of downstream repos that need updating, in the PR description.
-- Removing a public item requires confirming via `cargo check -p <consumer>` that no consumer in the workspace breaks (or coordinating an update PR in each consumer first).
+## `peat-ffi` subcrate — FFI conventions
+
+The FFI boundary uses two complementary tools:
+
+- **UniFFI 0.28 in proc-macro-only mode** (no UDL file) — generates Kotlin and Swift bindings from Rust types annotated via `#[uniffi::export]` etc. Async-supported via UniFFI's `tokio` feature.
+- **Direct `jni 0.21` bindings** for Android native methods that bypass JNA's symbol-lookup issues. These coexist with UniFFI; use UniFFI as the default and `jni` only where JNA fails.
+
+JNA (`net.java.dev.jna:jna:5.14.0@aar`) is the runtime layer UniFFI depends on at the Kotlin side and is required in `peat-atak-plugin/app/build.gradle.kts` — do not remove it.
+
+`peat-atak-plugin` consumes pre-built native libraries (copied into `app/libs`) and copied Kotlin bindings (into `app/src/main/java/uniffi/peat_ffi`) from this crate's build output. **Do not duplicate FFI types or bindings inside `peat-atak-plugin`** — `peat-ffi` is the single source of truth.
+
+## Workflow guards for changes to `peat` core or `peat-ffi`
+
+- Any new public type or trait in `peat` core requires a brief design note in the PR description.
+- Any breaking change to a public item in `peat` core or to `peat-ffi`'s FFI surface requires a list of downstream consumers that need updating, in the PR description.
+- Removing a public item requires confirming via `cargo check -p <consumer>` (and, for FFI, rebuilding `peat-atak-plugin`) that no consumer breaks, OR coordinating an update PR in each consumer first.
 
 ---
 
 # Open questions (for Kit)
 
-These are TODOs that block the skill set from being complete. They're listed here so they're visible, not to imply the agent should resolve them autonomously.
+Resolved in this PR: error handling (`thiserror` + `anyhow`), async runtime (Tokio), branch + merge convention (trunk-based + squash-merge), commit signing (GPG required), FFI tooling (UniFFI 0.28 + `jni 0.21`).
 
-- One-sentence statement on Peat's relationship to UDS (peer / complement vs. subset)
-- Status confirmation per repo (active / experimental / deprecated)
-- WearTAK integration location — inside `peat-atak-plugin` or separate repo
-- Any private/internal repos not listed in the router
-- Error handling conventions across the workspace (`thiserror` vs. `anyhow` vs. custom)
-- Async runtime choice and conventions (Tokio vs. async-std vs. other)
-- Branch naming convention for DU repos
-- Required reviewers per repo
-- FFI tooling for `peat-atak-plugin` (UniFFI vs. `jni` crate vs. manual bindings) — belongs in `peat-atak-plugin/SKILL.md` once decided
-- FFI error-crossing convention — same
-- FFI threading model (Kotlin coroutines ↔ Rust async) — same
+Still open:
+
+- One-sentence statement on Peat's relationship to UDS (peer / complement vs. subset).
+- Confirm status (active / planned / deprecated / renamed) for repos flagged **status unknown** in the router: `peat-registry`, `peat-node`, `peat-gateway`, `peat-rmw`, `peat-mavlink`. If they exist privately, the router should note that; if they were renamed, the router should reflect the current name; if deprecated, drop them.
+- WearTAK integration location — inside `peat-atak-plugin` or a separate repo?
+- FFI threading model — once stabilized, document the Kotlin-coroutine ↔ Rust-async convention via UniFFI's `tokio` feature in the `peat-ffi` section above.
+- Required reviewers per repo / CODEOWNERS — none currently in `peat` repo. Adopt CODEOWNERS, or document the review-routing convention in the ecosystem skill.
 
 ---
 *Last updated: 2026-05-05*
