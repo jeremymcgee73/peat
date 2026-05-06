@@ -1135,3 +1135,167 @@ The event keeps its 0.3.1 name and intent (operator-observable "no Rust-side con
 ### Supersedes
 
 - Amendment 2 §"Decision" / §"Implementation" *mechanism* — the wiring point stays plugin-side, but the cross-FFI shape moves from `DecodedDocumentJsonCallback` invocation to `DataReceivedResult.decoded_translator_frame` inspection. The `DecodedDocumentJsonCallback` trait shipped in peat-btle 0.3.1 is preserved for non-ATAK consumers and stays in the public API.
+
+---
+
+## Amendment 4 — Translator trait-impl placement: peat-mesh, not transport crates (cycle break)
+
+**Status**: Proposed
+**Date**: 2026-05-06
+**Authors**: Kit Plummer
+**Organization**: Defense Unicorns
+**Tracked by**: [defenseunicorns/peat#828](https://github.com/defenseunicorns/peat/issues/828) (cross-repo migration coordination)
+
+### Context
+
+The original §"Codec placement (where each `Translator` lives)" rule put both the wire codec **and** the `Translator` trait impl inside the transport crate — peat-btle owns `BleTranslator` (impl at `peat-btle/src/translator.rs:865`), peat-transport owns `CotTranslator` — gated behind a `mesh-translator` Cargo feature so standalone consumers (M5Stack on xtensa, peat-lite-only nodes, Bitchat-style sensors) could compile the transport crate without dragging peat-mesh into the dep graph.
+
+That rule satisfied the *standalone* requirement but created a circular dep edge that the rest of the codebase has been paying for since `BleTranslator` migrated under it (PR #807, 2026-04). Both halves are live in the manifests today:
+
+- **Forward edge.** `peat-mesh` has a `bluetooth` feature → optional dep on `peat-btle`. The adapter (`PeatBleTransport`) at `peat-mesh/src/transport/btle.rs` wraps `peat_btle::BluetoothLETransport` to implement `peat_mesh::Transport`. This is dependency inversion: peat-mesh consumes a transport plugin. Correct direction.
+- **Back edge.** `peat-btle` has a `mesh-translator` feature → optional dep on `peat-mesh`. `BleTranslator` reaches *up* into `peat_mesh::transport::Translator` to implement that trait inside peat-btle. The same anti-pattern exists in `peat/peat-transport/Cargo.toml::mesh-translator`, where `CotTranslator` does the same for the TAK path.
+
+The back edge does not produce a Cargo compile-time refusal — Cargo permits the optional-cycle. What it produces is a *coordination cost*: every change to either side's surface forces matched releases on the other. The git log makes the ladder visible. To land ADR-032 Amendment A (per-peer link state) in 2026-05, the project shipped:
+
+| Step | Release | What it shipped |
+|---|---|---|
+| 1 | peat-mesh 0.9.0-rc.5 | `Transport::peer_link_state` + `LinkState` / `LinkQuality` / `PathKind` types |
+| 2 | peat-btle 0.3.4-rc.3 | `peer_link_info` accessor consumed by the peat-mesh wrapper |
+| 3 | peat-mesh 0.9.0-rc.6 | "peat-btle =0.3.4-rc.4 lockstep coordination" (re-pin) |
+| 4 | peat-btle 0.3.4-rc.4 | "peat-mesh =0.9.0-rc.5 lockstep coordination" (re-pin) |
+| 5 | peat-btle 0.3.4-rc.5 | "relax peat-mesh dep to caret range (end rc-train ladder)" |
+| 6 | peat-mesh 0.9.0-rc.7 | "relax peat-btle dep to caret range (close rc-train loop)" |
+
+Six releases across two crates to land one feature, four of which exist solely to manage the cycle's pin coordination. The same shape occurred earlier in the ADR-059 Slice 1.b.x sequence. Both Cargo.toml files document the pain in long inline comments under their respective version pins.
+
+The relaxation in steps 5/6 (from `=`-exact to `>=…, <…` ranges) softens the symptoms but does not break the cycle — it merely tolerates rc-cycle motion within a fixed patch line. Any wire-shape change that crosses the patch line (`0.3.4 → 0.3.5`, `0.9.0 → 0.9.1`) re-imposes the lockstep ladder. The architectural fix is to delete the back edge.
+
+### The plugin requirement is the priority
+
+The standalone requirement (peat-btle works without peat-mesh) and the plugin requirement (third-party transport crates can plug into peat's transport interface) are both real, but **plugin extensibility is the priority** — it's what "transport plugin" *means* in ADR-032's framing, and it's what ADR-039, ADR-041, ADR-052, ADR-058, and the broader pluggable-transport story are predicated on. A plugin model whose plugins must reciprocally depend on the host is not a plugin model; it's a fork. Standalone is preserved by this amendment, but the rule that placed `Translator` impls inside transport crates is what made plugin extensibility brittle, and it goes.
+
+### Decision
+
+**Wire codec / typed-struct primitives stay in the transport crate. `Translator` trait impls move to peat-mesh.** Transport crates have **zero peat-mesh dep** — no optional, no feature-gated, no transitive. peat-mesh wraps each transport via an in-tree adapter module that depends on the transport crate one-way.
+
+The codec-placement rule splits:
+
+| Concern | Owner | Rationale |
+|---|---|---|
+| Wire format constants (markers, codes), framing, postcard/serde scaffolding, typed transport-side structs (`BlePosition`, `BlePeripheral`, etc.) | Transport crate, behind the existing `translator-codec`-shaped feature | Standalone consumers (M5Stack on xtensa, peat-lite-only nodes, Bitchat-style sensors) emit/parse the same bytes peat-mesh-using hosts do. Same wire shape, no peat-mesh dep. Unchanged from today. |
+| `impl peat_mesh::transport::Translator` for those types | peat-mesh transport-adapter module (when the transport is part of peat-mesh's universal-transport domain — BLE today, behind the existing `bluetooth` feature) **OR** a separate adapter crate that depends on peat-mesh + the codec crate one-way (when the transport is application-domain-specific — TAK in `peat-mesh-tak` per Slice 4.c). The placement test is "is this transport part of peat-mesh's core domain or someone else's?" The cycle break is preserved either way because the dep direction is plugin → peat-mesh, never reverse. | peat-mesh owns the trait. Where each impl lives depends on whether the transport belongs in peat-mesh's domain. The adapter pattern at `peat-mesh/src/transport/btle.rs` (`PeatBleTransport`) exemplifies the in-tree case; `peat-mesh-tak` exemplifies the out-of-tree case. |
+
+The two valid extensibility shapes for a transport plugin become:
+
+1. **Adapter-pattern plugin (current peat-btle, after this amendment).** External crate ships primitives + wire codec + a transport-trait surface (`MeshTransport` or its successor). peat-mesh provides the adapter — `Translator` impl, `Transport` trait, fan-out integration — in its own tree. The external crate has no peat-mesh dep and is fully usable standalone. peat-mesh treats the external crate the same way an OS ships a generic driver for vendor hardware: vendor (transport crate) supplies primitives; OS (peat-mesh) supplies the integration.
+2. **Self-implementing plugin.** External crate depends on peat-mesh (`default-features = false` to avoid pulling automerge / iroh / redb / kubernetes — peat-mesh's heavy backends stay gated) and implements `Transport` / `Translator` directly. This is a one-way dep: peat-mesh has no edge back, so no cycle is possible by construction. peat-mesh's `TransportManager` registers the external impl at runtime via `register_translator`. Suitable for transport authors who want a single crate for primitives + integration and don't mind the peat-mesh trait dep.
+
+Both shapes are permitted. The rule the back edge breaks is **"the transport crate may not depend on peat-mesh"** — it must not, because that's the back edge. Adapter-pattern plugins satisfy this trivially (no dep at all). Self-implementing plugins satisfy it because the dep direction is plugin → peat-mesh, never reverse.
+
+### Migration
+
+Three repos change. Each is a doc-shaped move + a small surgical code move + a feature/dep deletion. Cross-repo migration; one PR per repo per the ecosystem invariant.
+
+#### peat-btle
+
+1. Delete the `mesh-translator` feature from `peat-btle/Cargo.toml`.
+2. Delete the optional `peat-mesh` dep from `peat-btle/Cargo.toml`. Drop the version-range comment block under it (no longer load-bearing).
+3. Delete the `mesh-translator`-gated parts of `peat-btle/src/translator.rs` — the `impl Translator for BleTranslator` block at line 865. The wire codec scaffolding (`BlePosition`, `BlePeripheral`, `BleEmergencyEvent`, `BleCannedMessage`, postcard encode/decode helpers, the `*_to_*` JSON projection helpers, the 0xB6 / `code` framing) stays under `translator-codec`.
+4. **Refactor the inherent sync methods so they don't depend on `peat_mesh::sync::Document`.** `BleTranslator::encode_outbound_sync` and `decode_inbound_sync` (`peat-btle/src/translator.rs:940, 976`) currently take/return `MeshDocument` (the re-exported `peat_mesh::sync::Document`) under the `mesh-translator` feature. peat-btle's own receive dispatch at `peat-btle/src/peat_mesh.rs:783, 3809` calls these inherent methods. Slice 4.b changes their signatures to take/return `serde_json::Value` (or equivalent peat-mesh-free shape) — the same JSON projection that already crosses the FFI boundary via `DataReceivedResult.decoded_translator_frame.doc_json` (Amendment 3). peat-mesh's trait impl in Slice 4.a wraps these inherent methods and bridges `serde_json::Value ↔ peat_mesh::sync::Document` on the peat-mesh side. The receive dispatch and the polled-field FFI surface continue to work because their wire shape (JSON string) is unchanged.
+5. Delete the `mesh-translator`-gated `MeshDocument` re-export in `peat-btle/src/lib.rs:263` and the surrounding `#[cfg(feature = "mesh-translator")]` blocks in `lib.rs` that import from external `peat_mesh`.
+6. Keep the `translator-codec` feature exactly as it is. No standalone consumer sees a change; same wire bytes, same struct shapes.
+7. Drop `mesh-translator` from the `android` feature's includes (`peat-btle/Cargo.toml:63`). The architectural claim that this is safe rests on Amendment 3's polled-field FFI architecture, not on a casual layering assumption: peat-atak-plugin and equivalent UniFFI hosts consume decoded translator frames through `DataReceivedResult.decoded_translator_frame.doc_json` (a JSON-string field on a UniFFI record, populated inside peat-btle's own receive dispatch at `peat_mesh.rs`), then forward the JSON to peat-ffi's direct-JNI surface via `publishDocumentWithOriginJni(collection, doc_json, "ble")`. **No host or peat-ffi caller invokes `Translator` trait methods on a peat-btle-supplied object across the FFI boundary** — the trait surface lives entirely on the Rust side of peat-mesh, and the JSON projection (a codec concern, not a trait concern) is what crosses into Kotlin/Swift. Item 4's inherent-method refactor preserves the JSON projection; the `android` feature retains everything the AAR actually consumes (`translator-codec` + UniFFI bindings).
+
+#### peat-mesh
+
+1. Add `BleTranslator`'s `Translator` impl to peat-mesh — either as a new `peat-mesh/src/transport/btle_translator.rs` module or folded into the existing `peat-mesh/src/transport/btle.rs` adapter. Same containing module, same `bluetooth` feature gate. The peat-btle types (`BlePosition`, etc.) are imported from the existing `peat-btle` dep, which now needs `translator-codec` enabled on it: `peat-btle = { …, default-features = false, features = ["translator-codec"], optional = true }`.
+2. Relax the `peat-btle` version pin to a normal caret range (`peat-btle = { version = "^0.3", … }`). The wire-shape protection the explicit range provided for `mesh-translator` doesn't apply once peat-btle is consumed for codec primitives only — wire-format changes there break peat-mesh's adapter at compile time, not at runtime, which is the right blast radius.
+3. Re-export `BleTranslator` from `peat-mesh/src/transport/` so existing consumers keep their import paths working, or update consumers in lockstep — the latter is cleaner.
+
+#### peat-transport (in the peat repo)
+
+1. Same surgery: delete the `mesh-translator` feature from `peat/peat-transport/Cargo.toml`, delete the optional `peat-mesh` dep.
+2. **Move the `CotTranslator` `Translator` impl into a new `peat-mesh-tak` adapter crate.** peat-mesh has *no* TAK awareness — no `tak` feature, no TAK-named modules, no CoT types. TAK is an application-specific ecosystem (a third-party tactical UI / wire-format suite), not a universal transport like BLE; it does not belong in peat-mesh's core surface. The new `peat-mesh-tak` crate depends on peat-mesh (for the trait) and peat-transport (for the codec) one-way, mirroring the layering pattern this amendment establishes for BLE — except the wrapper lives outside peat-mesh's tree because the wrapper is domain-specific.
+
+   Layering principle this amendment commits to (and only this): for the cycle break itself, the trait impl for a transport that peat-mesh integrates can live either in peat-mesh's tree (when the transport is part of peat-mesh's universal-transport domain — currently only BLE meets this bar in the in-flight migration) or in a separate adapter crate that depends on peat-mesh + the codec crate one-way. The amendment does not pre-commit placement for transports it isn't migrating (LoRa per ADR-052, mavlink per ADR-058, SBD per ADR-051, future entrants); each future migration makes its own placement call against the same domain-vs-universal test, and the cycle-break property is preserved either way because the dep direction is plugin → peat-mesh, never reverse.
+3. The CoT codec itself (XML/protobuf parsing, typed CoT types) stays in peat-transport — same logic as keeping the BLE codec in peat-btle.
+
+#### After all three
+
+Both Cargo.toml back-edge pins disappear. The forward edges keep normal caret ranges:
+
+- `peat-mesh[bluetooth] → peat-btle` (in-tree adapter for the universal-transport BLE case)
+- `peat-mesh-tak → peat-mesh` and `peat-mesh-tak → peat-transport` (out-of-tree adapter for the domain-specific TAK case)
+
+Coordinated releases happen only when peat-mesh's adapter contract changes (the `Translator` trait or `TransportManager` registration surface) — there is no longer any path by which an upstream change forces a downstream re-pin in lockstep, because no downstream dep on peat-mesh exists from any transport crate.
+
+### Consequences
+
+#### Positive
+
+- **The rc-train ends.** Independent crate releases. peat-mesh re-pinning peat-btle is normal forward-edge dep maintenance; peat-btle never needs to re-pin peat-mesh because it doesn't depend on it.
+- **Plugin extensibility is structural, not aspirational.** Third-party transport crates have a clean integration story: provide primitives + codec, peat-mesh wraps them. No external crate has to take a peat-mesh dep unless it chooses the self-implementing shape.
+- **Standalone consumers unaffected.** M5Stack on xtensa-esp32, peat-lite-only nodes, Bitchat-style sensors compile peat-btle with `translator-codec` (or no features at all) and see no peat-mesh in their dep graph. Same property the original codec-placement rule was designed to protect; preserved here.
+- **One place owns the trait surface.** Today `peat_mesh::transport::Translator` is defined in peat-mesh and implemented in peat-btle / peat-transport. Searching for "where is Translator implemented" requires walking three repos. After this amendment, all impls live next to the trait.
+- **Wire-format ownership is unchanged.** Codec types and bytes still live in the transport crate. The amendment moves trait *integration*, not wire ownership.
+
+#### Negative
+
+- **Cross-repo migration cost.** Three PRs (peat-btle, peat-mesh, peat-transport) plus a tracking issue, plus consumer pin bumps in peat-ffi / peat-atak-plugin / wearos-tak-civ when the new peat-mesh ships. The ecosystem already absorbs this cost for any feature-shape change (Slice 1.b.x sequence proves it); this is one more cycle.
+- **peat-mesh grows transport-specific files for in-tree-eligible transports.** `btle_translator.rs` is the one this amendment lands. Future universal transports (LoRa, SBD if the migration places them in-tree) might add similar files, contained behind per-transport feature gates so no consumer compiles transports it doesn't use. Application-domain-specific transports (TAK and any future entrants of that shape) live in their own adapter crates outside peat-mesh per the layering principle in §Decision; peat-mesh's tree does not host TAK semantics.
+- **Upgrade ordering for in-flight consumers.** peat-atak-plugin and peat-ffi consume `BleTranslator` via peat-btle today. After the move, they consume it via peat-mesh. The migration PR for those consumers is mechanical (one import-path change) but real. ADR-059's existing "one PR per repo, linked through tracking issue" invariant covers the sequencing.
+- **Trait-crate split is deferred, not solved.** A future third-party transport author who finds peat-mesh too heavy as a trait dep — even with `default-features = false` — would benefit from a tiny `peat-transport-trait` crate factored out of peat-mesh. This amendment does not do that work; it is a separate refactor whose justification depends on future evidence (no current third-party transport author has reported the problem). The cycle break does not require it.
+
+#### Composes with
+
+- **ADR-032** (pluggable transport abstraction). Unchanged. The adapter-placement Amendment A already specified (`PeatBleTransport` in peat-mesh) is the same shape this amendment generalizes to translator impls.
+- **ADR-039 / ADR-041** (peat-btle dual-mode + multi-transport embedded integration). The "transport peripherals are sources of state, not consumers of it" carve-out is preserved verbatim. M5Stack-class peers consume `translator-codec` and emit 0xB6 frames; they have no peat-mesh dep and never did.
+- **ADR-049** (peat-mesh extraction). Unchanged. peat-mesh remains the orchestration host; this amendment removes the back edge that ADR-049 implicitly assumed away.
+- **ADR-052 / ADR-058 / ADR-051** (LoRa, mavlink, SBD). Future codec PRs inherit the cycle-break property: codec stays in the transport crate (no peat-mesh dep), `Translator` impl lives wherever the per-transport placement test puts it (in-tree under a peat-mesh feature for universal transports, in a separate adapter crate for application-domain-specific transports). This amendment does not pre-commit placement for those transports — each lands its own decision against the same test, and the cycle-break property holds either way.
+- **ADR-001** (peat-btle trust architecture). Unaffected. Trust markers and identity flow stay in peat-btle.
+- **ADR-059 §"Wire-format codec contract"** (transport ID stability, allowed_transports byte-encoding). Unchanged. The codec contract lives where the codec lives — in the transport crate.
+
+### Implementation
+
+Phased, one-PR-per-repo, gated by the ecosystem invariant on cross-repo changes:
+
+Cross-repo coordination tracked in [defenseunicorns/peat#828](https://github.com/defenseunicorns/peat/issues/828). Per-slice PR links land on the tracking issue as they open.
+
+1. **Slice 4.a — peat-mesh prepares the new home.** Add the `Translator` impl for `BleTranslator` to peat-mesh (`peat-mesh/src/transport/btle_translator.rs` or extend `btle.rs`). peat-mesh's `bluetooth` feature now enables peat-btle's `translator-codec` feature explicitly. Released as a new peat-mesh rc with no behavior change for consumers — they keep using `peat-btle::BleTranslator`'s trait impl until 4.b lands.
+
+   **Dual-registration is impossible by Rust's coherence rules — no runtime check needed.** Both impls — peat-btle's existing `impl peat_mesh::transport::Translator for BleTranslator` (gated by its `mesh-translator` feature) and peat-mesh's new `impl peat_mesh::transport::Translator for peat_btle::BleTranslator` (gated by its `bluetooth` feature) — implement the *same trait* for the *same concrete type*. Rust's orphan rule permits each side individually (peat-mesh owns the trait, peat-btle owns the type — each impl satisfies "owns one"), but the coherence rule ([E0119](https://doc.rust-lang.org/error_codes/E0119.html), no overlapping impls) forbids both impls existing in the same crate graph. A consumer enabling both features simultaneously gets a hard compile error:
+
+   ```
+   error[E0119]: conflicting implementations of trait
+                 `peat_mesh::transport::Translator`
+                 for type `peat_btle::BleTranslator`
+   ```
+
+   This is the structural guard the first-round QA review asked for, in the strongest possible form: not a runtime `Err`, not an "MUST register only one" release-note discipline, but a language-level refusal-to-link. It is the same mechanism the broader Rust ecosystem relies on for the foreign-trait-foreign-type situation — `serde::Serialize` impls for third-party types live in either the trait crate (rare) or the type crate (`chrono`'s `serde` feature, `uuid`'s `serde` feature), never both, because coherence makes "both" a compile error. tower / hyper, http / its consumers, futures / its impls — all rely on the same property.
+
+   The migration is therefore not a "duck the runtime collision" exercise. During the 4.a → 4.b window, a consumer chooses which side they get the `BleTranslator`-as-`Translator` impl from by enabling exactly one of `peat-mesh/bluetooth` or `peat-btle/mesh-translator`. Most consumers reach the impl implicitly through `TransportManager::register_translator` and only need to swap the feature flag (or its transitive enabler) on the `peat-mesh` ↔ `peat-btle` boundary. After 4.b, peat-btle's impl is gone and `peat-mesh/bluetooth` is the only path; coherence is moot because there is no second impl.
+
+   ADR-059 §"Invariants — Transport ID uniqueness" still applies as the runtime check for the *unrelated* case where an operator deliberately wants two distinct BLE transport *instances* (two physical radios, two `transport_id()`s like `"ble-hci0"` and `"ble-hci1"`) — that's a multi-instance scenario, not a duplicate-impl scenario, and that's where `register_translator`'s `Err`-on-duplicate contract earns its keep.
+2. **Slice 4.b — peat-btle drops the back edge.** Delete `mesh-translator` feature, delete optional peat-mesh dep, delete the `Translator` trait impl on `BleTranslator`. Codec scaffolding stays. Released as **`peat-btle 0.4.0`** — the public surface loses the `Translator` trait impl and the `mesh-translator` feature, both of which are breaking-surface changes per the [Cargo SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html). The project follows the standard pre-1.0 convention where breaking-surface changes increment the *minor* component on a `0.x` version (`0.3.4 → 0.4.0`), so this is a minor bump in the `0.x` sense, not a patch bump (`0.3.4 → 0.3.5`). Consumers see the canonical migration path `peat_mesh::transport::btle_translator::BleTranslator`-as-Translator, which is functionally the same surface at a different module path.
+3. **Slice 4.c — peat-transport drops the back edge; new `peat-mesh-tak` adapter crate hosts the TAK trait impl.** peat-transport: delete `mesh-translator` feature, delete optional `peat-mesh` dep, delete the `Translator` trait impl on `CotTranslator` — the CoT codec itself stays. New crate `peat-mesh-tak` (in a new repo or as a workspace member, dealer's choice for the slice's PR): depends on `peat-mesh` (for the trait) and `peat-transport` (for the codec) one-way; ships the `impl peat_mesh::transport::Translator for CotTranslator` block plus whatever lifecycle / registration glue is convenient. peat-mesh has no `tak` feature, no TAK-named modules, no CoT types — TAK is application-domain code and does not live in peat-mesh's tree. peat-transport's version bump follows the same pre-1.0 minor-on-breaking-surface convention as Slice 4.b; `peat-mesh-tak` debuts at `0.1.0`.
+4. **Slice 4.d — consumer pin bumps.** peat-ffi, peat-atak-plugin, wearos-tak-civ update import paths if any of them consume `peat_mesh::transport::Translator` impls directly. Most consume them implicitly via `TransportManager::register_translator`, in which case the change is a peat-mesh version bump only.
+
+Slice 4.a is independently shippable. 4.b and 4.c can land in either order after 4.a is on crates.io. 4.d is the cleanup. Cross-repo PR list and slice status are maintained on the tracking issue.
+
+#### Sequencing constraint: #829 must resolve before Slice 4.a's PR merges
+
+[Issue #829](https://github.com/defenseunicorns/peat/issues/829) tracks an asymmetric-sync regression in the AutomergeIrohBackend (writes from non-initiator nodes don't propagate). The integration test that catches it (`peat-protocol::multi_node_mesh_e2e::test_automerge_three_node_mesh`) is currently `#[ignore]`-gated against #829, so CI does not see the convergence invariant. Slice 4.a ships peat-mesh's adapter modules; without #829 resolved and the test re-enabled atomically with its fix, peat-mesh's adapter work proceeds against a broken invariant in the layer it bridges to. The sequencing is therefore: **#829 resolves and re-enables the test → Slice 4.a opens.** This is the operational expression of the doctrine that "papering over a flaky test with `#[ignore]` is a temporary unblock for shipping the *current* PR, not a license to keep building on the unverified path."
+
+The ignore on `test_automerge_three_node_mesh` exists for this PR (Amendment 4's docs land) and gets lifted in #829's PR. If #829's investigation surfaces that the ADR amendment itself needs adjustment (e.g., the asymmetric-sync root cause turns out to be load-bearing on the back-edge cycle in some way none of us currently see), this amendment is amended further before Slice 4.a opens.
+
+### Alternatives Considered
+
+- **Extract a `peat-transport-trait` crate (third crate, trait-only).** Standard ecosystem pattern (http vs hyper, tower-service vs tower). Rejected for this amendment: it solves a problem ("peat-mesh is too heavy as a trait dep") that doesn't have evidence behind it yet, and it adds a third crate to maintain when the cycle break only needs the back edge deleted. Reach for it if a future third-party transport author surfaces concrete dep-weight pain.
+- **Keep the back edge, accept the rc-train.** Rejected: six releases per landed feature is the cost in front of us, documented on this same project's git log. Three repos worth of explicit-range pin comments document operators making peace with it. The architectural objective at the top of this amendment names plugin extensibility as the priority; that's incompatible with a plugin model whose plugins reciprocally depend on the host.
+- **Make peat-btle vendor a copy of the `Translator` trait.** Rejected: drift hazard. Two trait definitions for what callers think is the same trait is the worst of both worlds. The trait is small; either vend it from peat-mesh (status quo plus this amendment) or factor it into a tiny crate (the trait-crate-split alternative above).
+- **Move the trait into peat-btle and have peat-mesh depend on peat-btle for it.** Rejected: inverts the layering. The trait is peat-mesh's contract for transport plugins; placing it in any single transport crate gives that crate veto power over the contract. Multiple transports means multiple traits-of-traits — exactly the divergence ADR-059 §"Sibling gateways" already rejected.
+
+### Supersedes
+
+- ADR-059 §"Codec placement (where each `Translator` lives)". The first paragraph's claim — "Each transport's `Translator` impl lives in **the same crate as that transport**, gated behind a `mesh-translator` Cargo feature" — is reversed: codec stays in the transport crate, `Translator` impl moves to peat-mesh. The two consequences worth naming below that paragraph in the original (forcing function on transport-side decoupling, codec naming tracks wire format) survive — they apply to the codec, which is unchanged in placement. The "Slice 1.5 (TAK trait-stability gate) lands the rule for `peat-transport`" sentence is superseded: Slice 1.5's TAK migration already shipped; this amendment's Slice 4.c is the corrected placement for that work.
+- The `mesh-translator` Cargo feature in `peat-btle/Cargo.toml` and `peat/peat-transport/Cargo.toml`. Both are deleted in Slice 4.b / 4.c respectively.
