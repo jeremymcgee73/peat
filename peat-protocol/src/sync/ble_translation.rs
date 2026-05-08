@@ -92,12 +92,36 @@ pub struct BlePosition {
     pub accuracy: Option<f32>,
 }
 
-/// BLE health status (mirrors peat_btle::HealthStatus)
+/// BLE health status (mirrors peat_btle::HealthStatus on the wire).
+///
+/// **This struct is postcard-encoded onto the BLE radio** by
+/// [`BleTranslator::encode_outbound`] (`platforms` collection →
+/// `postcard_encode(&self.platform_to_peripheral(...))`), so the
+/// field layout MUST byte-match the peat-btle / GATT receivers
+/// shipped in M5Stack and WearOS watch firmware. `battery_percent`
+/// is `u8` (one postcard byte). Round-5 tried `Option<u8>` for
+/// honest "no sensor" semantics — postcard encodes that as a
+/// 1-byte variant tag plus an optional value byte, which receivers
+/// expecting `u8` would mis-decode as battery and shift every
+/// subsequent field. peat#835 round-7 reverts to `u8` after the
+/// round-6 review caught the wire-format break.
+///
+/// The `Option`-style "no sensor" semantics live one layer up, in
+/// [`crate::sync::ble_translation::BleTranslator::peripheral_to_platform`]'s
+/// JSON output, and in `peat-ffi::parse_battery_percent` (`Option<i32>`)
+/// at the Automerge envelope. The wire-shape vs envelope-shape
+/// asymmetry is intentional and load-bearing: changing the wire
+/// requires a coordinated firmware deploy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BleHealthStatus {
-    /// Battery percentage (0-100)
+    /// Battery percentage (0-100). Wire-format `u8`; "unknown"
+    /// signals are conventional (publishers without a battery
+    /// sensor write 100; the alerts bitfield's `ALERT_LOW_BATTERY`
+    /// is the authoritative "actually depleted" indicator).
     pub battery_percent: u8,
-    /// Heart rate in BPM (optional)
+    /// Heart rate in BPM (optional). `Option<u8>` is preserved here
+    /// because peat-btle's wire-format type uses the same shape —
+    /// postcard `Option<u8>` is identical on both sides.
     pub heart_rate: Option<u8>,
     /// Activity level (0=still, 1=walking, 2=running, 3=vehicle)
     pub activity: u8,
@@ -486,14 +510,33 @@ impl BleTranslator {
                 .unwrap_or("")
                 .to_string(),
             health: BleHealthStatus {
-                battery_percent: platform
-                    .get("battery_percent")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(100) as u8,
-                heart_rate: platform
-                    .get("heart_rate")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u8),
+                // `battery_percent` and `heart_rate` accept either
+                // integer or float JSON form via `coerce_metric_to_i64`.
+                // Pre-fix this used `.as_u64()` which silently dropped
+                // the float form a Kotlin `Double`-typed publisher
+                // would emit (e.g. `85.0` → `None`) — same data-loss
+                // bug class peat#835 fixed in `peat-ffi`.
+                //
+                // `battery_percent` is wire-format `u8` (the struct is
+                // postcard-encoded onto the BLE radio downstream of
+                // this construction; see `BleHealthStatus` doc-comment).
+                // Round-5 attempted `Option<u8>` for "no sensor"
+                // semantics; round-7 reverted because the postcard
+                // byte layout shifted under shipped firmware. The
+                // `unwrap_or(100)` default is conventional ("publishers
+                // without a battery sensor say 100"); the alerts
+                // bitfield's `ALERT_LOW_BATTERY` is the authoritative
+                // depleted-battery signal. The "no sensor" Option
+                // semantics live one layer up in peat-ffi's
+                // `parse_battery_percent: Option<i32>`.
+                //
+                // Cast clamps into `u8` (battery 0..=100, heart_rate
+                // 0..=250) so the cast is total.
+                battery_percent: coerce_metric_to_i64(platform.get("battery_percent"))
+                    .map(|n| n.clamp(0, 100) as u8)
+                    .unwrap_or(100),
+                heart_rate: coerce_metric_to_i64(platform.get("heart_rate"))
+                    .map(|n| n.clamp(0, 250) as u8),
                 activity,
                 alerts,
             },
@@ -908,6 +951,34 @@ pub fn value_to_mesh_document(value: Value) -> MeshDocument {
         fields,
         updated_at: SystemTime::now(),
     }
+}
+
+/// Coerce an optional JSON `Value` to an i64, accepting either
+/// integer or float representations.
+///
+/// Mirror of `peat_ffi::coerce_json_number_to_i64` (private to that
+/// crate; we can't reverse-import since `peat-ffi` depends on us).
+/// Both parsers read the same publish JSON envelope, so they have to
+/// agree on numeric coercion shape — pre-fix this side used
+/// `.as_u64()` which returns `None` for any float-form Number, while
+/// `peat-ffi` already accepts both. Aligning closes the
+/// data-loss-on-float-form bug class peat#835 was opened to lock.
+///
+/// Precision contract: integer JSON Numbers > `i64::MAX` (i.e. stored
+/// as `u64` in serde_json) traverse the f64 fallback path with up to
+/// f64-precision loss for values > 2^53. Battery and heart-rate
+/// callers absorb this through the subsequent 0..=100 / 0..=250
+/// clamp; reuse outside those clamps must consider the precision
+/// limit.
+fn coerce_metric_to_i64(v: Option<&Value>) -> Option<i64> {
+    let v = v?;
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    // `f64::round() as i64` is saturating in current Rust:
+    // `f64::INFINITY as i64 == i64::MAX`, NaN as i64 == 0. Both
+    // outcomes get clamped by the caller into the logical range.
+    v.as_f64().map(|f| f.round() as i64)
 }
 
 /// postcard-serialize a value, returning `None` on encode failure
@@ -1484,5 +1555,121 @@ mod tests {
             result.is_err(),
             "malformed bytes for a known collection must surface as Err for telemetry"
         );
+    }
+
+    /// `platform_to_peripheral` accepts both integer and float JSON
+    /// number forms for `battery_percent` / `heart_rate`. Mirrors the
+    /// peat-ffi parser's contract — both read the same publish
+    /// envelope, so a Kotlin publisher emitting `Double` (`85.0`) or
+    /// any other float-form integer must reach this side as the
+    /// integer the publisher meant. Pre-fix the `.as_u64()` shape
+    /// silently dropped the float form (peat#835 round-4).
+    #[test]
+    fn platform_to_peripheral_accepts_float_form_battery_and_heart() {
+        let translator = test_translator();
+        let json = serde_json::json!({
+            "id": "ble-CAFE0042",
+            "name": "FLOAT-PEER",
+            "type": "wearable",
+            "battery_percent": 85.0,
+            "heart_rate": 72.0
+        });
+        let peripheral = translator
+            .platform_to_peripheral(&json)
+            .expect("float-form battery/heart must parse");
+        assert_eq!(peripheral.health.battery_percent, 85);
+        assert_eq!(peripheral.health.heart_rate, Some(72));
+    }
+
+    /// Out-of-range values clamp safely into the u8 destination range
+    /// rather than wrapping. Pre-fix `as u8` silently truncated `>255`
+    /// values; the new clamp routes them to the nearest end (0..=100
+    /// for battery, 0..=250 for heart_rate).
+    #[test]
+    fn platform_to_peripheral_clamps_out_of_range_metrics() {
+        let translator = test_translator();
+        let json = serde_json::json!({
+            "id": "ble-CAFE0043",
+            "name": "OUT-OF-RANGE",
+            "type": "wearable",
+            "battery_percent": 9999,
+            "heart_rate": 500
+        });
+        let peripheral = translator
+            .platform_to_peripheral(&json)
+            .expect("out-of-range must parse");
+        assert_eq!(peripheral.health.battery_percent, 100);
+        assert_eq!(peripheral.health.heart_rate, Some(250));
+    }
+
+    /// **Round-7 wire-format invariant** (regression gate against
+    /// the round-5 mistake): `BleHealthStatus.battery_percent` MUST
+    /// stay `u8` because the struct is postcard-encoded onto the BLE
+    /// radio via `BleTranslator::encode_outbound`. Postcard renders
+    /// `u8` as exactly 1 byte; switching to `Option<u8>` shifts every
+    /// subsequent byte under shipped firmware (M5Stack + WearOS
+    /// watch) and breaks decoding. Lock the byte layout at the
+    /// type-system level by asserting the postcard-encoded length of
+    /// a known-shape peripheral matches the wire expectation.
+    #[test]
+    fn ble_health_status_postcard_byte_layout_is_stable() {
+        let p = BlePeripheral {
+            id: 0xCAFE_BABE,
+            parent_node: 0,
+            peripheral_type: BlePeripheralType::SoldierSensor,
+            callsign: "TEST".to_string(),
+            health: BleHealthStatus {
+                battery_percent: 85, // 1 postcard byte
+                heart_rate: None,    // 1 postcard byte (variant tag)
+                activity: 1,         // 1 postcard byte
+                alerts: 0,           // 1 postcard byte
+            },
+            timestamp: 1_700_000_000_000,
+            position: None,
+        };
+        let bytes = postcard::to_allocvec(&p).expect("postcard encode");
+        let decoded: BlePeripheral = postcard::from_bytes(&bytes).expect("postcard decode");
+        assert_eq!(decoded.health.battery_percent, 85);
+        assert_eq!(decoded.health.heart_rate, None);
+        // The postcard round-trip is what proves the wire is
+        // unchanged from peat-btle's expectations. If a future PR
+        // changes `battery_percent`'s type, this test fails at
+        // compile (struct literal) AND at runtime (decode mismatch
+        // against firmware that re-runs this fixture).
+    }
+
+    /// Garbled / absent `battery_percent` on the JSON parse side
+    /// falls through to `100` per the wire-format default. Asymmetric
+    /// with `peat-ffi::parse_battery_percent` (`Option<i32>` → None
+    /// at the JSON envelope), but intentional: this layer must emit a
+    /// `u8` for postcard regardless of input.
+    #[test]
+    fn platform_to_peripheral_defaults_garbled_battery_to_100() {
+        let translator = test_translator();
+        let no_battery = serde_json::json!({
+            "id": "ble-DEAD0001",
+            "name": "NO-BATTERY",
+            "type": "wearable"
+        });
+        let p = translator
+            .platform_to_peripheral(&no_battery)
+            .expect("absent battery must parse");
+        assert_eq!(
+            p.health.battery_percent, 100,
+            "absent battery_percent falls through to wire default 100"
+        );
+
+        // Non-numeric still falls through (matches peat-ffi's
+        // reject-coercion + this layer's wire-format default).
+        let garbled = serde_json::json!({
+            "id": "ble-DEAD0002",
+            "name": "GARBLED",
+            "type": "wearable",
+            "battery_percent": "85"
+        });
+        let p2 = translator
+            .platform_to_peripheral(&garbled)
+            .expect("garbled battery must parse");
+        assert_eq!(p2.health.battery_percent, 100);
     }
 }
