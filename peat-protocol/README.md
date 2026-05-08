@@ -37,6 +37,7 @@ peat-protocol = "=0.9.0-rc.1"
 | `automerge-backend` | yes | Automerge CRDT over Iroh QUIC — the standard backend |
 | `lite-transport` | no | UDP-based [peat-lite](https://crates.io/crates/peat-lite) bridge for microcontrollers |
 | `bluetooth` | no | [peat-btle](https://crates.io/crates/peat-btle) BLE mesh transport |
+| `relay-n0-hosted` | no | Opt-in to n0's hosted iroh relay pool (`*.iroh.network`, `*.iroh-canary.iroh.link`) and DNS pkarr discovery. Off by default — tactical and edge builds must not phone home through third-party infrastructure. Enable only when n0-hosted NAT traversal and global discovery are explicitly wanted. See issue #833. |
 
 ## How it works
 

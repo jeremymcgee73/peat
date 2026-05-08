@@ -33,6 +33,45 @@
 //! │              │  │  Formation   │  │  Operations  │
 //! └──────────────┘  └──────────────┘  └──────────────┘
 //! ```
+//!
+//! ## Cargo features
+//!
+//! | Feature | Default | Purpose |
+//! |---------|---------|---------|
+//! | `automerge-backend` | yes | Automerge CRDT over Iroh QUIC — the standard backend. |
+//! | `lite-transport` | no | UDP-based `peat-lite` bridge for microcontrollers. |
+//! | `bluetooth` | no | `peat-btle` BLE mesh transport. |
+//! | `relay-n0-hosted` | **no** | Opt-in to n0's hosted iroh relay pool and DNS pkarr discovery. **See the security note below.** |
+//!
+//! ### Relay policy (`relay-n0-hosted`)
+//!
+//! By default, `peat-protocol`'s [`IrohTransport`](crate::network::iroh_transport::IrohTransport)
+//! constructors build endpoints with [`iroh::Endpoint::empty_builder`] — **no
+//! third-party relay servers, no DNS pkarr discovery via n0-hosted
+//! infrastructure**. NAT traversal relies on direct addresses or LAN
+//! discovery (mDNS via `address_lookup`). This is the correct posture for
+//! tactical, edge, and air-gapped deployments where peer traffic must not
+//! transit a third-party CDN.
+//!
+//! Enabling the `relay-n0-hosted` feature flips every `IrohTransport`
+//! constructor (and any code that calls them) to
+//! `iroh::Endpoint::builder(iroh::endpoint::presets::N0)`, which restores
+//! n0's hosted relay pool (`*.iroh.network`, `*.iroh-canary.iroh.link`) and
+//! DNS pkarr discovery. Use this only when you have explicit authorization
+//! to route peer traffic through n0's infrastructure.
+//!
+//! ```toml
+//! # Default — no n0 phone-home:
+//! peat-protocol = "=0.9.0-rc.1"
+//!
+//! # Opt-in — restores n0 hosted relay/DNS:
+//! peat-protocol = { version = "=0.9.0-rc.1", features = ["relay-n0-hosted"] }
+//! ```
+//!
+//! See issue [#833](https://github.com/defenseunicorns/peat/issues/833)
+//! for context.
+
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 pub mod cell;
 pub mod command; // Bidirectional command coordination
