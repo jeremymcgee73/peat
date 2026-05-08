@@ -8,6 +8,15 @@ repository.workspace = true
 description = "Peat Coordination Protocol — hierarchical capability composition over CRDTs for heterogeneous mesh networks"
 homepage = "https://github.com/defenseunicorns/peat"
 documentation = "https://docs.rs/peat-protocol"
+
+[package.metadata.docs.rs]
+# Build docs.rs with every feature enabled so the `relay-n0-hosted` opt-in
+# (and other gated items) render. `--cfg docsrs` enables the
+# `#[cfg_attr(docsrs, feature(doc_auto_cfg))]` attribute in `lib.rs`,
+# which makes rustdoc emit "Available on crate feature `X` only" badges
+# next to feature-gated items.
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 keywords = ["peat", "protocol", "mesh", "crdt", "coordination"]
 categories = ["network-programming"]
 
@@ -85,6 +94,11 @@ automerge-backend = ["automerge", "iroh", "iroh-blobs", "redb", "lru", "toml", "
 lite-transport = ["log", "peat-mesh/lite-bridge"]
 # Bluetooth LE transport - BLE mesh networking (ADR-032, ADR-039)
 bluetooth = ["peat-btle", "peat-mesh/bluetooth"]
+# Opt-in to n0's hosted relay pool and DNS pkarr discovery (issue #833).
+# Off by default: tactical/edge builds must not phone home through n0
+# infrastructure. Turn on only for environments that explicitly want
+# n0-hosted NAT traversal and global discovery.
+relay-n0-hosted = []
 
 [dev-dependencies]
 proptest = { workspace = true }

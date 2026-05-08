@@ -590,8 +590,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mdns_service_registration() {
-        // Test that mDNS service can be created and registered
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        // Test that mDNS service can be created and registered.
+        // Uses `empty_builder()` so the test does not depend on n0-hosted
+        // relay/DNS infrastructure (Issue #833).
+        let endpoint = iroh::Endpoint::empty_builder()
             .bind()
             .await
             .expect("Failed to create endpoint");

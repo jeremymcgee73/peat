@@ -12,6 +12,26 @@ This changelog covers the crates published to crates.io from this workspace:
 
 Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-discovery`, `peat-ffi`, `examples/*`) share the workspace version but are not published and are not documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (default behavior):** `peat-protocol` no longer enables n0's
+  hosted iroh relay pool or DNS pkarr discovery by default. All
+  `IrohTransport` constructors now use `Endpoint::empty_builder()`
+  instead of `iroh::endpoint::presets::N0`, so default builds never
+  reach `*.iroh.network` or `*.iroh-canary.iroh.link`. Cross-internet
+  hole-punching that implicitly relied on n0 relays will fail in
+  default builds; LAN/mDNS and direct addresses continue to work. See
+  issue #833.
+
+### Added
+
+- `peat-protocol` cargo feature `relay-n0-hosted` (off by default) as a
+  grep-able opt-in escape hatch that restores the previous behavior.
+  Build with `--features relay-n0-hosted` to re-enable n0's hosted
+  relay pool and DNS discovery.
+
 ## [0.9.0-rc.1] - 2026-04-23
 
 First public release candidate for the Peat workspace. Published to

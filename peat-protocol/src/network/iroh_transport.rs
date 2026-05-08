@@ -9,6 +9,26 @@
 //! - **Local network discovery**: Automatic peer discovery via mDNS-like protocol (Issue #226)
 //! - **Static peer configuration**: Connect to peers with known addresses
 //!
+//! # Relay policy (Issue #833)
+//!
+//! All `IrohTransport` constructors in this module build their underlying
+//! [`iroh::Endpoint`] through a single helper that respects the crate-level
+//! relay policy:
+//!
+//! - **Default (no `relay-n0-hosted` feature):** [`iroh::Endpoint::empty_builder`]
+//!   — no relay servers, no DNS pkarr discovery via n0-hosted
+//!   infrastructure. NAT traversal relies on direct addresses and LAN
+//!   discovery (mDNS via `address_lookup`). This is the required posture
+//!   for tactical and edge deployments; default builds will not transit
+//!   `*.iroh.network` or `*.iroh-canary.iroh.link`.
+//! - **With `--features relay-n0-hosted`:** `Endpoint::builder(iroh::endpoint::presets::N0)`
+//!   — restores n0's hosted relay pool and DNS discovery. Opt-in only.
+//!
+//! Implementers integrating `IrohTransport` should treat the default as the
+//! contract: do not assume relay-backed connectivity unless the consuming
+//! crate explicitly enables `relay-n0-hosted` (or, in the future, supplies
+//! a self-hosted relay configuration).
+//!
 //! # Local Discovery (Issue #226)
 //!
 //! Iroh's local network discovery uses swarm-discovery to automatically find peers
@@ -161,6 +181,29 @@ fn create_tactical_transport_config() -> iroh::endpoint::QuicTransportConfig {
 #[cfg(feature = "automerge-backend")]
 pub const CONNECTION_RECYCLE_INTERVAL_SECS: u64 = 60;
 
+/// Construct a fresh iroh `Endpoint` builder respecting the relay policy (Issue #833).
+///
+/// Default builds return `Endpoint::empty_builder()` — no relay servers, no
+/// pkarr/DNS discovery via n0-hosted infrastructure. NAT traversal then relies
+/// on direct addresses or LAN discovery (e.g., mDNS via `address_lookup`),
+/// which is the correct posture for tactical and defense edge deployments.
+///
+/// With the `relay-n0-hosted` cargo feature enabled, returns
+/// `Endpoint::builder(iroh::endpoint::presets::N0)`, restoring n0's hosted
+/// relay pool (`*.iroh.network`, `*.iroh-canary.iroh.link`) and DNS pkarr
+/// discovery. Opt-in only.
+#[cfg(feature = "automerge-backend")]
+fn relay_policy_builder() -> iroh::endpoint::Builder {
+    #[cfg(feature = "relay-n0-hosted")]
+    {
+        Endpoint::builder(iroh::endpoint::presets::N0)
+    }
+    #[cfg(not(feature = "relay-n0-hosted"))]
+    {
+        Endpoint::empty_builder()
+    }
+}
+
 /// Iroh QUIC transport for P2P connections
 ///
 /// Wraps Iroh Endpoint to provide CAP-specific networking.
@@ -212,7 +255,7 @@ impl IrohTransport {
     /// // transport.endpoint_addr() now contains ALL interface addresses
     /// ```
     pub async fn new() -> Result<Self> {
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .transport_config(create_tactical_transport_config())
             .bind()
@@ -270,7 +313,7 @@ impl IrohTransport {
             .context("Failed to create mDNS discovery")?;
 
         // Create endpoint with the same secret key and discovery enabled
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .secret_key(secret_key)
             .address_lookup(discovery.clone())
@@ -348,7 +391,7 @@ impl IrohTransport {
             "Created IrohTransport with deterministic key from seed"
         );
 
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .secret_key(secret_key)
             .transport_config(create_tactical_transport_config())
@@ -411,7 +454,7 @@ impl IrohTransport {
             "Created IrohTransport with deterministic key and mDNS discovery"
         );
 
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .secret_key(secret_key)
             .address_lookup(discovery.clone())
@@ -484,7 +527,7 @@ impl IrohTransport {
             "Created IrohTransport with deterministic key, mDNS discovery, and bind address"
         );
 
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .secret_key(secret_key)
             .address_lookup(discovery.clone())
@@ -563,7 +606,7 @@ impl IrohTransport {
             "Created IrohTransport with deterministic key (NO mDNS discovery - fast startup)"
         );
 
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .secret_key(secret_key)
             .bind_addr(bind_addr)
@@ -726,7 +769,7 @@ impl IrohTransport {
     /// let transport = IrohTransport::bind(addr).await?;
     /// ```
     pub async fn bind(bind_addr: SocketAddr) -> Result<Self> {
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
             .bind_addr(bind_addr)
             .context("Invalid bind address")?
