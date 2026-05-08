@@ -1852,9 +1852,48 @@ pub struct PlatformInfo {
     pub capabilities: Vec<String>,
     /// Cell membership (if any)
     pub cell_id: Option<String>,
-    /// Last heartbeat timestamp (Unix millis)
+    /// Battery / fuel percentage (0–100). Optional because not every
+    /// platform has a measurable battery (fixed sensors, pre-lock
+    /// watches), and legacy publishes from pre-2026-05-08 hosts didn't
+    /// carry the field. Wire key: `battery_percent`. See
+    /// [`parse_battery_percent`] for the clamp + None semantics.
+    pub battery_percent: Option<i32>,
+    /// Heart rate in BPM, sourced from wearable sensors (WearOS watch,
+    /// M5Stack health). Wire key: `heart_rate`. Required to surface a
+    /// vitals indicator on the operator card; absent on platform types
+    /// that don't carry a wearable. See [`parse_heart_rate`] for the
+    /// clamp + None semantics.
+    pub heart_rate: Option<i32>,
+    /// Last heartbeat timestamp (Unix millis). Defaults to `0` when
+    /// the publisher omits the field, surfaced to the UI as
+    /// "1970-01-01 stale" — different intent from `battery_percent`'s
+    /// `None` ("unknown sensor state"). Don't fold this into the same
+    /// `Option<T>` shape: a missing heartbeat *is* a stale-record
+    /// signal, not absence-of-data, and the platform-overlay code uses
+    /// the time delta directly without a None-check branch.
     pub last_heartbeat: i64,
 }
+
+// Wire-shape contract for `Option<T>` fields on `PlatformInfo`
+// (Rust-side emit/parse only; downstream consumers in other repos
+// have their own contracts).
+//
+// - **Emit:** `serialize_platform_json` and `serialize_platforms_get_json`
+//   both render `Option::None` as JSON `null` via `serde_json::json!`
+//   macro semantics. There is no second emit shape from this codec.
+//
+// - **Parse:** `parse_platform_json` and `parse_platform_publish_json`
+//   both treat JSON `null` AND a missing key the same way — both yield
+//   `None`. `serde_json::Value` indexing returns `Value::Null` for
+//   missing keys, and the typed accessors (`as_i64`, `as_str`, …)
+//   return `None` on a null variant. So receivers don't need to
+//   distinguish "absent" from "explicit null" — they're equivalent on
+//   the read side. Locked in by
+//   `legacy_json_without_battery_or_heart_parses_with_none` (absent)
+//   and `battery_and_heart_reject_non_numeric` (explicit null).
+//
+// - **Forward-compat:** parsers ignore unknown keys. Any wire shape a
+//   future-version peer adds passes through unchanged.
 
 /// Command status enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -2407,8 +2446,256 @@ fn parse_platform_json(id: &str, json: &str) -> Result<PlatformInfo, PeatError> 
             })
             .unwrap_or_default(),
         cell_id: v["cell_id"].as_str().map(|s| s.to_string()),
+        battery_percent: parse_battery_percent(&v["battery_percent"]),
+        heart_rate: parse_heart_rate(&v["heart_rate"]),
         last_heartbeat: v["last_heartbeat"].as_i64().unwrap_or(0),
     })
+}
+
+/// Parse a Kotlin-side `publishPlatformJni` payload into a
+/// `PlatformInfo`.
+///
+/// Distinct from `parse_platform_json` because the JNI publish path
+/// supplies a few different defaults: `platform_type` defaults to
+/// `"SOLDIER"` here vs `"unknown"` in the storage parser; `status`
+/// defaults to `"ACTIVE"` here vs `"OFFLINE"` for storage; `readiness`
+/// defaults to `1.0` here vs `0.0`. The `last_heartbeat` field is
+/// honored from the wire when present (with a `now() + 60s` clock-skew
+/// clamp via `parse_publish_last_heartbeat`); falls back to local
+/// `Utc::now()` only when the publisher omits it. See
+/// [`parse_publish_last_heartbeat`] for the full semantics.
+///
+/// Centralizing this in a free function makes it directly
+/// unit-testable and means the inline JNI path and the test suite
+/// share the exact codec implementation — the duplication that hid
+/// peat#835.
+///
+/// Errors:
+/// - `InvalidInput` if the JSON is malformed or `id` is missing/empty
+///   (consumed as the storage key downstream; an empty id would
+///   collide with `getPlatformsJni`'s scan results).
+fn parse_platform_publish_json(json_str: &str) -> Result<PlatformInfo, PeatError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| PeatError::InvalidInput {
+            msg: format!("publishPlatform: invalid JSON: {}", e),
+        })?;
+
+    let id = match v["id"].as_str() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            return Err(PeatError::InvalidInput {
+                msg: "publishPlatform: missing or empty 'id' field".to_string(),
+            });
+        }
+    };
+
+    Ok(PlatformInfo {
+        id,
+        platform_type: v["platform_type"].as_str().unwrap_or("SOLDIER").to_string(),
+        name: v["name"].as_str().unwrap_or("Unknown").to_string(),
+        status: PlatformStatus::from_str(v["status"].as_str().unwrap_or("ACTIVE")),
+        lat: v["lat"].as_f64().unwrap_or(0.0),
+        lon: v["lon"].as_f64().unwrap_or(0.0),
+        hae: v["hae"].as_f64(),
+        readiness: v["readiness"].as_f64().unwrap_or(1.0),
+        capabilities: v["capabilities"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["PLI".to_string()]),
+        cell_id: v["cell_id"].as_str().map(|s| s.to_string()),
+        battery_percent: parse_battery_percent(&v["battery_percent"]),
+        heart_rate: parse_heart_rate(&v["heart_rate"]),
+        last_heartbeat: parse_publish_last_heartbeat(&v["last_heartbeat"]),
+    })
+}
+
+/// Parse the `last_heartbeat` field on a publish-side JSON envelope.
+///
+/// Three intents we must honor faithfully:
+/// 1. **Wire absent → stamp `now()`.** Real publishers (Kotlin
+///    self-PLI, BLE-bridged peripheral relay) don't carry a
+///    timestamp; the JNI surface always meant "this publish is fresh."
+/// 2. **Wire `0` → preserve `0`.** Per `PlatformInfo`'s field doc,
+///    `last_heartbeat = 0` is the documented stale-record sentinel
+///    ("1970-01-01 stale"). The earlier `> 0` filter silently
+///    overrode this — a publisher sending the documented stale
+///    marker got `Utc::now()` back, the *opposite* signal. That was
+///    a writer/reader-asymmetry regression of the same class
+///    peat#835 was opened to fix; round-4 drops the filter.
+/// 3. **Wire absurdly far in the future → clamp to `now()`.** A peer
+///    with a future-skewed clock can publish `i64::MAX` or any
+///    timestamp ahead of local time; downstream Kotlin staleness UI
+///    consumes the value raw via `getStalenessString` and would
+///    show the platform as "always fresh." Cap acceptance at
+///    `now() + 60_000ms` (60 s grace for legitimate clock drift in
+///    distributed systems); beyond that, treat as adversarial /
+///    misconfigured and stamp local `now()`.
+///
+/// 4. **Wire negative → collapse to the stale-marker (`0`).** Round-4
+///    let negatives pass through with a doc-comment claiming downstream
+///    time-delta arithmetic still produced a sensible age; that's
+///    wrong: `now - i64::MIN` overflows i64, and Kotlin `Long`
+///    subtraction silently wraps, producing nonsense staleness output
+///    (or panic in Rust debug builds). Negative timestamps are
+///    pathological — pre-epoch publish makes no sense in this product
+///    — and collapsing them onto the documented stale-marker (`0`)
+///    keeps the UI's arithmetic safe while preserving the "very stale"
+///    intent.
+fn parse_publish_last_heartbeat(v: &serde_json::Value) -> i64 {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    // 60 s grace covers normal NTP drift between mobile devices on
+    // unrelated networks; beyond that, the value is broken.
+    const FUTURE_GRACE_MS: i64 = 60_000;
+    let max_acceptable = now_ms.saturating_add(FUTURE_GRACE_MS);
+    match v.as_i64() {
+        Some(n) if n > max_acceptable => now_ms,
+        // Collapse negatives to the documented stale-marker — both
+        // bound the downstream Long-subtraction and preserve the
+        // publisher's "very stale" intent unambiguously.
+        Some(n) if n < 0 => 0,
+        Some(n) => n,
+        None => now_ms,
+    }
+}
+
+/// Serialize a slice of `PlatformInfo` into the JSON-array shape
+/// `getPlatformsJni` returns to Kotlin.
+///
+/// Mirror of [`parse_platform_publish_json`] for the read-back path.
+/// Pre-round-3 this was inlined inside the JNI function — that's the
+/// duplicated-codec class peat#835 was opened to lock; extracting it
+/// here makes the emit-side schema directly testable and keeps
+/// writer/reader symmetry single-sourced.
+///
+/// Falls through to `"[]"` on serializer failure (the JNI surface
+/// returned the same string on `get_platforms` errors before the
+/// extraction; preserving that for back-compat).
+///
+/// Not gated on `feature = "sync"` even though the only caller
+/// (`getPlatformsJni`) is — the body operates on `PlatformInfo` and
+/// `serde_json` only, and the mirror parser `serialize_platform_json`
+/// is unconditional. Asymmetric gating between the pair would be
+/// confusing to maintainers and `cargo check --no-default-features`
+/// wouldn't catch the inconsistency.
+fn serialize_platforms_get_json(platforms: &[PlatformInfo]) -> String {
+    let json_array: Vec<serde_json::Value> = platforms
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "platform_type": p.platform_type,
+                "name": p.name,
+                "status": p.status.as_str(),
+                "lat": p.lat,
+                "lon": p.lon,
+                "hae": p.hae,
+                "readiness": p.readiness,
+                "capabilities": p.capabilities,
+                "cell_id": p.cell_id,
+                "battery_percent": p.battery_percent,
+                "heart_rate": p.heart_rate,
+                "last_heartbeat": p.last_heartbeat,
+            })
+        })
+        .collect();
+    serde_json::to_string(&json_array).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Coerce a JSON `Value` into a numeric value as i64.
+///
+/// Accepts both integer (`85`) and float (`85.0`, `85.5`) JSON
+/// numbers; floats round half-away-from-zero per `f64::round()`.
+/// Returns `None` for any other variant (string, null, array, object,
+/// missing key).
+///
+/// Why both forms: serde_json maps JSON numbers into one of three
+/// internal representations (i64 / u64 / f64), and `Value::as_i64`
+/// only matches the first. A Kotlin publisher serializing
+/// `Int.toDouble().toString()` (i.e. `"85.0"` reaches the parser as
+/// the float variant), or any platform whose JSON serializer renders
+/// integers with a trailing `.0`, would silently drop the field
+/// through the int-only path. That's the **same data-loss bug class
+/// peat#835 was opened to lock**: a publisher writes a value and the
+/// receiver decodes `None`, indistinguishable from "no sensor."
+/// Empirically `serde_json::json!(85.0).as_i64() == None`; the float
+/// fallback closes the gap.
+///
+/// **Precision contract — important for callers reusing this helper
+/// outside of `parse_battery_percent` / `parse_heart_rate`**:
+///
+/// JSON Numbers above `i64::MAX` (i.e. stored as `u64` in serde_json,
+/// 9.22e18..1.84e19) are unreachable by `as_i64()` and traverse the
+/// `as_f64()` fallback. f64 has only 53 bits of mantissa, so values
+/// above 2⁵³ (≈ 9.0e15) lose integer precision via that path —
+/// e.g. `9_007_199_254_740_993_u64` round-trips through f64 as
+/// `9_007_199_254_740_992`.
+///
+/// For `battery_percent` (0..=100) and `heart_rate` (0..=250) this is
+/// inconsequential: the subsequent `clamp` truncates any
+/// astronomically-large value to the same range end. Callers operating
+/// on a wider range or needing exact integer fidelity above 2⁵³ should
+/// pre-validate the wire shape (e.g. reject non-i64 Numbers explicitly)
+/// rather than reuse this helper.
+///
+/// **Rounding mode**: `f64::round()` rounds half-away-from-zero
+/// (`85.5 → 86`, `-85.5 → -86`). If a future caller depends on
+/// banker's-rounding or half-to-even semantics, switch to
+/// `f.round_ties_even()` (Rust 1.77+) and update tests accordingly.
+fn coerce_json_number_to_i64(v: &serde_json::Value) -> Option<i64> {
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    // `f64::round() as i64` is saturating in current Rust (1.45+):
+    // `f64::INFINITY as i64 == i64::MAX`, NaN as i64 == 0. Both
+    // outcomes get clamped by the caller into the logical range, so
+    // pathological floats fail-safe rather than panic.
+    v.as_f64().map(|f| f.round() as i64)
+}
+
+/// Parse a JSON `Value` into a battery percentage, clamping into the
+/// physical 0..=100 range.
+///
+/// - Accepts integer or float JSON numbers (`85`, `85.0`, `85.5` →
+///   `85`). See [`coerce_json_number_to_i64`] for why both forms.
+/// - Numeric values clamp on out-of-range. The silent-`None`-on-
+///   overflow shape `as_i64().and_then(|n| i32::try_from(n).ok())`
+///   produced was the same bug class peat#835 was opened to prevent:
+///   a pathological 2³² `battery_percent` becomes "no battery
+///   sensor," visually identical to the legitimate `None` case.
+///   Clamp fails-safe to 0 or 100 instead.
+/// - Non-numeric (string, object, missing key, JSON null) returns
+///   `None`. We accept "no battery sensor" but reject silent type
+///   coercion — a `"85"` *string* wire payload is a publisher bug,
+///   not a value to interpret.
+///
+/// Wire form: number in 0–100 (integer or float), or `null` / absent
+/// for "unknown."
+fn parse_battery_percent(v: &serde_json::Value) -> Option<i32> {
+    let n = coerce_json_number_to_i64(v)?;
+    Some(n.clamp(0, 100) as i32)
+}
+
+/// Parse a JSON `Value` into a heart rate (BPM), clamping into the
+/// 0..=250 range.
+///
+/// - Accepts integer or float JSON numbers; floats round.
+/// - Lower bound is **0**, not 30: athletic resting bradycardia can
+///   dip into the 20s, and a sensor reporting 0/asystole is a real
+///   emergency signal that the UI should surface, not silently
+///   round up. The earlier 30 floor masked these. Upper bound stays
+///   250 (well above maximal exertion ~220−age) to catch overflow
+///   payloads.
+/// - Non-numeric returns `None` ("no wearable sensor present").
+///
+/// Wire form: number in 0–250 (integer or float), or `null` / absent
+/// for "unknown."
+fn parse_heart_rate(v: &serde_json::Value) -> Option<i32> {
+    let n = coerce_json_number_to_i64(v)?;
+    Some(n.clamp(0, 250) as i32)
 }
 
 fn serialize_platform_json(platform: &PlatformInfo) -> Result<String, PeatError> {
@@ -2422,6 +2709,8 @@ fn serialize_platform_json(platform: &PlatformInfo) -> Result<String, PeatError>
         "readiness": platform.readiness,
         "capabilities": platform.capabilities,
         "cell_id": platform.cell_id,
+        "battery_percent": platform.battery_percent,
+        "heart_rate": platform.heart_rate,
         "last_heartbeat": platform.last_heartbeat,
     });
     serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
@@ -3721,6 +4010,594 @@ mod tests {
             );
         }
     }
+
+    /// Round-trip tests for the `PlatformInfo` JSON wire schema.
+    ///
+    /// Locks in the symmetry contract between `parse_platform_json`
+    /// (storage → struct) and `serialize_platform_json` (struct →
+    /// storage), and the parallel JNI inline encode/decode in
+    /// `Java_..._publishPlatformJni` / `Java_..._getPlatformsJni`. The
+    /// pre-2026-05-08 schema dropped `battery_percent` and `heart_rate`
+    /// silently across the FFI boundary: Kotlin published them, Rust
+    /// didn't extract them, the receiver's `getPlatformsJni` didn't
+    /// emit them, the Kotlin parser saw them as `null`, and operator
+    /// cards on remote peers showed no battery/heart indicators.
+    /// Without a Rust-side test the bug compile-cleaned and only
+    /// surfaced via three-device on-hardware UAT. Each assertion below
+    /// corresponds to one optional field; future schema additions
+    /// should add a parallel assertion + bump
+    /// `every_optional_field_round_trips_through_storage` so the
+    /// matrix stays exhaustive.
+    #[cfg(feature = "sync")]
+    mod platform_tests {
+        use super::*;
+
+        fn fixture(battery: Option<i32>, heart: Option<i32>) -> PlatformInfo {
+            PlatformInfo {
+                id: "ANDROID-fixture".to_string(),
+                platform_type: "SOLDIER".to_string(),
+                name: "HOBO".to_string(),
+                status: PlatformStatus::Active,
+                lat: 33.71576,
+                lon: -84.41152,
+                hae: Some(305.0),
+                readiness: 1.0,
+                capabilities: vec!["PLI".to_string()],
+                cell_id: Some("BRAVO".to_string()),
+                battery_percent: battery,
+                heart_rate: heart,
+                last_heartbeat: 1_700_000_000_000,
+            }
+        }
+
+        /// `serialize_platform_json` → `parse_platform_json` is the
+        /// path `put_platform` / `get_platforms` traverse via the
+        /// AutomergeBackend storage. Every field a `PlatformInfo`
+        /// carries today must round-trip; if a future field is added
+        /// to the struct without being added to either codec function,
+        /// this assertion catches it before the FFI consumer does.
+        #[test]
+        fn every_optional_field_round_trips_through_storage_codec() {
+            let original = fixture(Some(85), Some(72));
+            let json = serialize_platform_json(&original).expect("serialize");
+            let parsed = parse_platform_json(&original.id, &json).expect("parse");
+
+            assert_eq!(parsed.id, original.id);
+            assert_eq!(parsed.platform_type, original.platform_type);
+            assert_eq!(parsed.name, original.name);
+            assert_eq!(parsed.lat, original.lat);
+            assert_eq!(parsed.lon, original.lon);
+            assert_eq!(parsed.hae, original.hae);
+            assert_eq!(parsed.readiness, original.readiness);
+            assert_eq!(parsed.capabilities, original.capabilities);
+            assert_eq!(parsed.cell_id, original.cell_id);
+            assert_eq!(parsed.battery_percent, original.battery_percent);
+            assert_eq!(parsed.heart_rate, original.heart_rate);
+            assert_eq!(parsed.last_heartbeat, original.last_heartbeat);
+        }
+
+        /// `battery_percent: None` must serialize to a JSON `null` (or
+        /// absent) and parse back to `None` — not silently fill 0,
+        /// which the dropdown UI would render as "battery dead" on
+        /// platforms that simply have no battery sensor (fixed
+        /// sensors, demo nodes).
+        #[test]
+        fn battery_none_round_trips_as_none() {
+            let original = fixture(None, None);
+            let json = serialize_platform_json(&original).expect("serialize");
+            let parsed = parse_platform_json(&original.id, &json).expect("parse");
+
+            assert!(parsed.battery_percent.is_none());
+            assert!(parsed.heart_rate.is_none());
+        }
+
+        /// Schema is forward-compatible: a JSON written by a newer
+        /// peer that adds a field we don't know yet must still parse,
+        /// dropping the unknown key. Conversely, a JSON written by an
+        /// older peer that lacks `battery_percent` / `heart_rate`
+        /// must parse with those fields as `None` rather than failing.
+        #[test]
+        fn legacy_json_without_battery_or_heart_parses_with_none() {
+            let legacy_json = serde_json::json!({
+                "platform_type": "SOLDIER",
+                "name": "LEGACY-PEER",
+                "status": "ACTIVE",
+                "lat": 33.71,
+                "lon": -84.41,
+                "hae": null,
+                "readiness": 1.0,
+                "capabilities": ["PLI"],
+                "cell_id": "BRAVO",
+                "last_heartbeat": 1_700_000_000_000_i64,
+            })
+            .to_string();
+
+            let parsed =
+                parse_platform_json("LEGACY-PEER", &legacy_json).expect("legacy json must parse");
+
+            assert!(parsed.battery_percent.is_none());
+            assert!(parsed.heart_rate.is_none());
+            assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
+        }
+
+        /// `put_platform` → `get_platforms` is the actual storage
+        /// path the JNI layer exposes. Bypassing the codec helpers
+        /// and going through `node.put_platform(...)` exercises the
+        /// AutomergeBackend serialize/scan/deserialize loop end-to-end
+        /// — which is exactly where peat#832 (BLE-bridged tracks
+        /// losing body fields) demonstrated the codec helpers can
+        /// look correct in isolation while still dropping data
+        /// across the storage round-trip.
+        #[test]
+        fn put_platform_get_platforms_preserves_battery_and_heart() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(NodeConfig {
+                app_id: "platform-rt-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: tmp.path().to_str().unwrap().to_string(),
+                transport: None,
+            })
+            .expect("create_node");
+
+            let original = fixture(Some(85), Some(72));
+            node.put_platform(original.clone()).expect("put_platform");
+
+            let listed = node.get_platforms().expect("get_platforms");
+            let found = listed
+                .iter()
+                .find(|p| p.id == original.id)
+                .expect("published platform must appear in get_platforms");
+
+            assert_eq!(
+                found.battery_percent,
+                Some(85),
+                "battery_percent dropped between put_platform and get_platforms"
+            );
+            assert_eq!(
+                found.heart_rate,
+                Some(72),
+                "heart_rate dropped between put_platform and get_platforms"
+            );
+            assert_eq!(found.cell_id.as_deref(), Some("BRAVO"));
+        }
+
+        /// JNI inline-parser path: the publish surface ATAK actually
+        /// hits. Builds a JSON envelope shaped exactly like
+        /// `SelfPositionBroadcaster.broadcastNow` would publish, runs
+        /// it through the same `parse_platform_publish_json` helper
+        /// `publishPlatformJni` invokes, and verifies battery + heart
+        /// land in the resulting `PlatformInfo`. Locks the duplicated
+        /// codec — pre-2026-05-08 this was inlined inside the JNI
+        /// function and unit tests couldn't reach it, which is how
+        /// peat#835's bug class (silent field drop on the publish
+        /// path) shipped without a CI signal.
+        #[test]
+        fn publish_json_inline_parser_extracts_battery_and_heart() {
+            let json = r#"{
+                "id": "ANDROID-abc123",
+                "name": "HOBO",
+                "platform_type": "SOLDIER",
+                "lat": 33.71576,
+                "lon": -84.41152,
+                "hae": 305.0,
+                "status": "ACTIVE",
+                "capabilities": ["PLI"],
+                "readiness": 1.0,
+                "cell_id": "BRAVO",
+                "battery_percent": 85,
+                "heart_rate": 72
+            }"#;
+
+            let parsed = parse_platform_publish_json(json).expect("parse");
+
+            assert_eq!(parsed.id, "ANDROID-abc123");
+            assert_eq!(parsed.battery_percent, Some(85));
+            assert_eq!(parsed.heart_rate, Some(72));
+            assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
+            assert!(parsed.capabilities.contains(&"PLI".to_string()));
+        }
+
+        /// Reject an empty `id` at the publish boundary — the id is
+        /// the storage key downstream. The pre-extraction inline code
+        /// returned 0/JNI_FALSE on this case; the test pins the
+        /// equivalent error contract.
+        #[test]
+        fn publish_json_rejects_missing_id() {
+            let json = r#"{"name":"HOBO","platform_type":"SOLDIER","lat":33.7,"lon":-84.4}"#;
+            assert!(parse_platform_publish_json(json).is_err());
+
+            let empty_id = r#"{"id":"","name":"HOBO","lat":33.7,"lon":-84.4}"#;
+            assert!(parse_platform_publish_json(empty_id).is_err());
+        }
+
+        /// Out-of-range numeric values clamp to the logical end of
+        /// the range rather than silently dropping to `None`. The
+        /// silent-`None`-on-overflow shape is the same bug class
+        /// peat#835 exists to lock — a pathological 2³² battery
+        /// becoming "no sensor" is visually identical to the
+        /// legitimate None case, which is exactly the data-loss
+        /// failure mode the PR exists to prevent.
+        #[test]
+        fn battery_and_heart_clamp_out_of_range_numbers() {
+            // Battery above 100 clamps to 100.
+            let high = serde_json::json!(9999);
+            assert_eq!(parse_battery_percent(&high), Some(100));
+
+            // Negative battery clamps to 0.
+            let neg = serde_json::json!(-50);
+            assert_eq!(parse_battery_percent(&neg), Some(0));
+
+            // i64::MAX clamps to 100 — the silent-None-on-overflow
+            // case the pre-clamp `as_i64().and_then(i32::try_from)`
+            // chain produced None for. After clamp, fail-safe.
+            let huge = serde_json::json!(i64::MAX);
+            assert_eq!(parse_battery_percent(&huge), Some(100));
+
+            // Heart rate above 250 clamps to 250 (max plausible BPM).
+            let bpm_high = serde_json::json!(500);
+            assert_eq!(parse_heart_rate(&bpm_high), Some(250));
+
+            // Heart rate below 0 clamps to 0; legitimate low BPM
+            // (bradycardia, asystole) passes through unchanged. The
+            // 30-floor was lowered in round-3 — see
+            // `heart_rate_preserves_bradycardia_below_30`.
+            let bpm_neg = serde_json::json!(-50);
+            assert_eq!(parse_heart_rate(&bpm_neg), Some(0));
+            let bpm_low_real = serde_json::json!(10);
+            assert_eq!(parse_heart_rate(&bpm_low_real), Some(10));
+        }
+
+        /// Non-numeric values (publisher serialization bug, hostile
+        /// peer, schema drift) parse as `None` rather than coercing.
+        /// We accept "no sensor" but reject silent type coercion —
+        /// `"85"` as a JSON string is a publisher bug, not a value
+        /// to interpret.
+        #[test]
+        fn battery_and_heart_reject_non_numeric() {
+            let s = serde_json::json!("85");
+            assert!(parse_battery_percent(&s).is_none());
+            assert!(parse_heart_rate(&s).is_none());
+
+            let null = serde_json::Value::Null;
+            assert!(parse_battery_percent(&null).is_none());
+            assert!(parse_heart_rate(&null).is_none());
+
+            let arr = serde_json::json!([85]);
+            assert!(parse_battery_percent(&arr).is_none());
+        }
+
+        /// Forward-compat: a peer running a future schema that adds
+        /// fields we don't know about must still parse cleanly,
+        /// silently dropping the unknowns. Locks the existing
+        /// `unwrap_or` / `optional`-style behavior so a future
+        /// stricter parser doesn't regress this on accident.
+        #[test]
+        fn parse_silently_drops_unknown_future_fields() {
+            let json = r#"{
+                "platform_type": "SOLDIER",
+                "name": "FUTURE-PEER",
+                "status": "ACTIVE",
+                "lat": 33.71,
+                "lon": -84.41,
+                "readiness": 1.0,
+                "capabilities": ["PLI"],
+                "cell_id": "BRAVO",
+                "battery_percent": 90,
+                "last_heartbeat": 1700000000000,
+
+                "future_v2_field_one": "should be ignored",
+                "future_v2_struct": { "nested": 42 },
+                "future_v2_array": [1, 2, 3]
+            }"#;
+
+            let parsed =
+                parse_platform_json("FUTURE-PEER", json).expect("future-shaped json must parse");
+            assert_eq!(parsed.battery_percent, Some(90));
+            assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
+            // No assertion about the unknown fields — they're
+            // intentionally dropped on the floor. The test exists to
+            // keep us honest if anyone tries to switch to a stricter
+            // `serde_json::from_str::<TypedStruct>` shape.
+        }
+
+        /// **Round-3 / peat#835 review item P2-1**: float-typed
+        /// numeric wire payloads must not silently drop. The
+        /// pre-round-3 implementation used `as_i64()?` which returns
+        /// `None` for any JSON Number stored as float — a Kotlin
+        /// publisher serializing `battery_percent` as `Double`
+        /// (`85.0`), or any platform whose JSON serializer renders
+        /// integers with a trailing `.0`, would silently lose the
+        /// field. That's the same data-loss bug class peat#835 was
+        /// opened to lock in the first place.
+        #[test]
+        fn battery_accepts_float_form() {
+            assert_eq!(parse_battery_percent(&serde_json::json!(85.0)), Some(85));
+            // Fractional rounds to nearest.
+            assert_eq!(parse_battery_percent(&serde_json::json!(85.7)), Some(86));
+            assert_eq!(parse_battery_percent(&serde_json::json!(85.4)), Some(85));
+            // Float still clamps.
+            assert_eq!(parse_battery_percent(&serde_json::json!(150.0)), Some(100));
+            assert_eq!(parse_battery_percent(&serde_json::json!(-10.5)), Some(0));
+        }
+
+        #[test]
+        fn heart_rate_accepts_float_form() {
+            assert_eq!(parse_heart_rate(&serde_json::json!(72.0)), Some(72));
+            assert_eq!(parse_heart_rate(&serde_json::json!(72.6)), Some(73));
+            assert_eq!(parse_heart_rate(&serde_json::json!(300.0)), Some(250));
+        }
+
+        /// Bradycardia: athletic resting HR can dip into the 20s,
+        /// asystole reads as 0. Round-3 lowered the floor from 30 to
+        /// 0 so the UI gets the truth and can decide what to flag.
+        /// The pre-round-3 floor of 30 silently rounded these up,
+        /// hiding the very signal a heart-rate indicator should
+        /// surface.
+        #[test]
+        fn heart_rate_preserves_bradycardia_below_30() {
+            assert_eq!(parse_heart_rate(&serde_json::json!(25)), Some(25));
+            assert_eq!(parse_heart_rate(&serde_json::json!(0)), Some(0));
+            // Negative still clamps to 0 — sensor noise / signed-int
+            // serialization bug.
+            assert_eq!(parse_heart_rate(&serde_json::json!(-5)), Some(0));
+        }
+
+        /// **Round-3**: extracted emit-side codec
+        /// `serialize_platforms_get_json` mirrors the parse-side
+        /// extraction (`parse_platform_publish_json`). Without the
+        /// extraction, the inline `getPlatformsJni` json! macro was a
+        /// duplicated codec the test suite couldn't reach — same
+        /// drift class peat#835 originally exposed on the parse side.
+        /// This test pins the emit shape end-to-end.
+        #[test]
+        fn serialize_platforms_get_json_round_trips_through_parser() {
+            let original = PlatformInfo {
+                id: "ANDROID-emit".to_string(),
+                platform_type: "SOLDIER".to_string(),
+                name: "EMIT-TEST".to_string(),
+                status: PlatformStatus::Active,
+                lat: 33.71576,
+                lon: -84.41152,
+                hae: Some(305.0),
+                readiness: 1.0,
+                capabilities: vec!["PLI".to_string()],
+                cell_id: Some("BRAVO".to_string()),
+                battery_percent: Some(85),
+                heart_rate: Some(72),
+                last_heartbeat: 1_700_000_000_000,
+            };
+
+            let emitted = serialize_platforms_get_json(std::slice::from_ref(&original));
+            let arr: Vec<serde_json::Value> = serde_json::from_str(&emitted).expect("array");
+            assert_eq!(arr.len(), 1);
+
+            // Parse the emitted JSON back through the storage parser
+            // (the path `getPlatforms` consumers' downstream Kotlin
+            // parsers mirror) and assert symmetry.
+            let obj_str = serde_json::to_string(&arr[0]).expect("obj");
+            let parsed = parse_platform_json(&original.id, &obj_str).expect("parse");
+            assert_eq!(parsed.battery_percent, Some(85));
+            assert_eq!(parsed.heart_rate, Some(72));
+            assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
+            assert_eq!(parsed.last_heartbeat, 1_700_000_000_000);
+        }
+
+        /// **Round-3 P3-1**: when a publisher provides a
+        /// `last_heartbeat` on the wire, the publish-path parser
+        /// honors it instead of stamping `Utc::now()`. Resolves the
+        /// doc-comment-vs-behavior tension: the field doc-comment
+        /// describes a "0 means stale" convention that the publish
+        /// path was actively preventing from ever shipping.
+        #[test]
+        fn publish_json_honors_wire_last_heartbeat() {
+            let supplied: i64 = 1_700_000_123_456;
+            let json = format!(
+                r#"{{
+                    "id": "ANDROID-replay",
+                    "name": "REPLAY",
+                    "platform_type": "SOLDIER",
+                    "lat": 0.0, "lon": 0.0,
+                    "status": "ACTIVE",
+                    "last_heartbeat": {}
+                }}"#,
+                supplied
+            );
+            let parsed = parse_platform_publish_json(&json).expect("parse");
+            assert_eq!(parsed.last_heartbeat, supplied);
+        }
+
+        /// And: when the wire omits `last_heartbeat`, fall back to
+        /// `now()` (preserving back-compat with publishers that don't
+        /// stamp the field).
+        #[test]
+        fn publish_json_stamps_now_when_last_heartbeat_absent() {
+            let before = chrono::Utc::now().timestamp_millis();
+            let json = r#"{
+                "id": "ANDROID-no-stamp",
+                "name": "FRESH",
+                "platform_type": "SOLDIER",
+                "lat": 0.0, "lon": 0.0,
+                "status": "ACTIVE"
+            }"#;
+            let parsed = parse_platform_publish_json(json).expect("parse");
+            let after = chrono::Utc::now().timestamp_millis();
+            assert!(
+                parsed.last_heartbeat >= before && parsed.last_heartbeat <= after,
+                "last_heartbeat ({}) should be in [{}, {}]",
+                parsed.last_heartbeat,
+                before,
+                after
+            );
+        }
+
+        /// **Round-4 P1**: wire `last_heartbeat: 0` is the documented
+        /// stale-record sentinel per the `PlatformInfo` field doc;
+        /// must round-trip unchanged. Round-3's `> 0` filter
+        /// inverted this contract, silently replacing the
+        /// stale-marker with `Utc::now()`. Test pins the corrected
+        /// behavior so the regression can't recur.
+        #[test]
+        fn publish_json_preserves_wire_last_heartbeat_zero_as_stale_marker() {
+            let json = r#"{
+                "id": "ANDROID-stale",
+                "name": "STALE",
+                "platform_type": "SOLDIER",
+                "lat": 0.0, "lon": 0.0,
+                "status": "ACTIVE",
+                "last_heartbeat": 0
+            }"#;
+            let parsed = parse_platform_publish_json(json).expect("parse");
+            assert_eq!(
+                parsed.last_heartbeat, 0,
+                "wire `last_heartbeat: 0` must pass through as the stale-record sentinel"
+            );
+        }
+
+        /// **Round-4 P1 / P2**: smallest non-zero positive timestamp
+        /// (`1`) and a small value (`12345`) both pass through as-is.
+        /// These are the boundary values around the prior `> 0`
+        /// filter; round-4 dropped the filter, so all positive values
+        /// short of the future-skew clamp must round-trip.
+        #[test]
+        fn publish_json_preserves_small_positive_last_heartbeat() {
+            for wire in [1_i64, 12_345, 1_700_000_000_000] {
+                let json = format!(
+                    r#"{{"id":"ANDROID-{w}","name":"X","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{w}}}"#,
+                    w = wire,
+                );
+                let parsed = parse_platform_publish_json(&json).expect("parse");
+                assert_eq!(
+                    parsed.last_heartbeat, wire,
+                    "wire `{}` must round-trip",
+                    wire
+                );
+            }
+        }
+
+        /// **Round-4 P2 #4**: clock-skew injection guard. A peer with
+        /// a far-future-skewed clock can publish `i64::MAX` (or any
+        /// timestamp beyond `now() + 60s` grace); the parser caps to
+        /// `now()` so downstream staleness UI can't be gamed into
+        /// "always fresh." Negative values pass through (very stale,
+        /// but not absurd).
+        #[test]
+        fn publish_json_clamps_far_future_last_heartbeat_to_now() {
+            let json = r#"{
+                "id": "ANDROID-malicious",
+                "name": "MALICIOUS",
+                "platform_type": "SOLDIER",
+                "lat": 0.0, "lon": 0.0,
+                "status": "ACTIVE",
+                "last_heartbeat": 9223372036854775807
+            }"#;
+            let before = chrono::Utc::now().timestamp_millis();
+            let parsed = parse_platform_publish_json(json).expect("parse");
+            let after = chrono::Utc::now().timestamp_millis();
+            assert!(
+                parsed.last_heartbeat >= before && parsed.last_heartbeat <= after,
+                "i64::MAX must clamp to now(), got {}",
+                parsed.last_heartbeat
+            );
+        }
+
+        /// **Round-5**: negative `last_heartbeat` collapses to the
+        /// stale-marker (`0`) rather than passing through. Round-4
+        /// let negatives through with a doc-comment claim that
+        /// downstream Long arithmetic produced a "sensible large
+        /// positive age" — that was wrong: `now - i64::MIN`
+        /// overflows, and the Kotlin `Long` subtraction silently
+        /// wraps. Pin the corrected behavior so a malicious peer
+        /// publishing `last_heartbeat: i64::MIN` can't game the
+        /// staleness UI in the opposite direction from the
+        /// `i64::MAX` case.
+        #[test]
+        fn publish_json_clamps_negative_last_heartbeat_to_zero() {
+            for wire in [-1_i64, -1_700_000_000_000, i64::MIN] {
+                let json = format!(
+                    r#"{{"id":"ANDROID-neg-{w}","name":"NEG","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{w}}}"#,
+                    w = wire,
+                );
+                let parsed = parse_platform_publish_json(&json)
+                    .unwrap_or_else(|e| panic!("wire {} must parse: {:?}", wire, e));
+                assert_eq!(
+                    parsed.last_heartbeat, 0,
+                    "negative wire `{}` must collapse to stale-marker `0`",
+                    wire
+                );
+            }
+        }
+
+        /// Wire timestamp within the 60-second future-grace window
+        /// passes through (legitimate clock drift between mobile
+        /// devices on unrelated networks). Beyond grace, clamp.
+        #[test]
+        fn publish_json_within_grace_window_passes_through_then_clamps_beyond() {
+            let now = chrono::Utc::now().timestamp_millis();
+            // 30 s in the future — within grace.
+            let in_grace = now + 30_000;
+            let json = format!(
+                r#"{{"id":"ANDROID-grace","name":"G","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{}}}"#,
+                in_grace
+            );
+            let parsed = parse_platform_publish_json(&json).expect("parse");
+            assert_eq!(parsed.last_heartbeat, in_grace);
+
+            // 5 minutes in the future — beyond 60 s grace, clamp.
+            let beyond = chrono::Utc::now().timestamp_millis() + 5 * 60 * 1000;
+            let json2 = format!(
+                r#"{{"id":"ANDROID-skew","name":"S","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{}}}"#,
+                beyond
+            );
+            let parsed2 = parse_platform_publish_json(&json2).expect("parse");
+            assert!(
+                parsed2.last_heartbeat < beyond,
+                "5min-future must clamp ({} should be << {})",
+                parsed2.last_heartbeat,
+                beyond
+            );
+        }
+
+        /// **Round-4 P3 #7**: float rounding mode is half-away-from-zero
+        /// per `f64::round()`. Pin the contract so a future refactor to
+        /// `round_ties_even` (banker's) doesn't silently change the
+        /// emitted i32 by ±1 for half-values.
+        #[test]
+        fn battery_percent_rounds_halves_away_from_zero() {
+            assert_eq!(parse_battery_percent(&serde_json::json!(85.5)), Some(86));
+            assert_eq!(parse_battery_percent(&serde_json::json!(84.5)), Some(85));
+            // 0.5 rounds to 1, not 0 (half-away-from-zero, not
+            // banker's-rounding).
+            assert_eq!(parse_battery_percent(&serde_json::json!(0.5)), Some(1));
+        }
+
+        /// **Round-4 P3 #9**: forward-compat for the publish parser.
+        /// Mirror of `parse_silently_drops_unknown_future_fields`
+        /// for the storage parser; both share the
+        /// `serde_json::Value`-indexing pattern but the contract
+        /// should be locked separately so a future refactor of
+        /// either to a typed `serde::Deserialize` doesn't regress
+        /// half the surface unnoticed.
+        #[test]
+        fn publish_json_silently_drops_unknown_future_fields() {
+            let json = r#"{
+                "id": "ANDROID-future",
+                "name": "FUTURE",
+                "platform_type": "SOLDIER",
+                "lat": 33.71, "lon": -84.41,
+                "status": "ACTIVE",
+                "battery_percent": 90,
+
+                "future_v2_field_one": "should be ignored",
+                "future_v2_struct": { "nested": 42 },
+                "future_v2_array": [1, 2, 3]
+            }"#;
+            let parsed =
+                parse_platform_publish_json(json).expect("future-shaped publish must parse");
+            assert_eq!(parsed.battery_percent, Some(90));
+            assert_eq!(parsed.id, "ANDROID-future");
+        }
+    }
 }
 
 // =============================================================================
@@ -4467,27 +5344,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getPlatformsJn
 
     let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
     let result = match node.get_platforms() {
-        Ok(platforms) => {
-            let json_array: Vec<serde_json::Value> = platforms
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "id": p.id,
-                        "platform_type": p.platform_type,
-                        "name": p.name,
-                        "status": p.status.as_str(),
-                        "lat": p.lat,
-                        "lon": p.lon,
-                        "hae": p.hae,
-                        "readiness": p.readiness,
-                        "capabilities": p.capabilities,
-                        "cell_id": p.cell_id,
-                        "last_heartbeat": p.last_heartbeat,
-                    })
-                })
-                .collect();
-            serde_json::to_string(&json_array).unwrap_or_else(|_| "[]".to_string())
-        }
+        Ok(platforms) => serialize_platforms_get_json(&platforms),
         Err(_) => "[]".to_string(),
     };
 
@@ -4601,43 +5458,16 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatfor
     #[cfg(target_os = "android")]
     android_log(&format!("publishPlatformJni: Received JSON: {}", json_str));
 
-    // Parse JSON to validate and extract platform info
-    let platform: PlatformInfo = match serde_json::from_str::<serde_json::Value>(&json_str) {
-        Ok(v) => {
-            // Extract platform ID - required field
-            let id = match v["id"].as_str() {
-                Some(id) if !id.is_empty() => id.to_string(),
-                _ => {
-                    #[cfg(target_os = "android")]
-                    android_log("publishPlatformJni: Missing or empty 'id' field");
-                    return 0; // JNI_FALSE
-                }
-            };
-
-            PlatformInfo {
-                id,
-                platform_type: v["platform_type"].as_str().unwrap_or("SOLDIER").to_string(),
-                name: v["name"].as_str().unwrap_or("Unknown").to_string(),
-                status: PlatformStatus::from_str(v["status"].as_str().unwrap_or("ACTIVE")),
-                lat: v["lat"].as_f64().unwrap_or(0.0),
-                lon: v["lon"].as_f64().unwrap_or(0.0),
-                hae: v["hae"].as_f64(),
-                readiness: v["readiness"].as_f64().unwrap_or(1.0),
-                capabilities: v["capabilities"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_else(|| vec!["PLI".to_string()]),
-                cell_id: v["cell_id"].as_str().map(|s| s.to_string()),
-                last_heartbeat: chrono::Utc::now().timestamp_millis(),
-            }
-        }
+    // Parse JSON via the shared helper so the test suite exercises the
+    // same code the JNI surface does. Pre-2026-05-08 this was inlined
+    // here, which made it a duplicated codec the unit tests didn't
+    // reach — the silent-field-drop bug class peat#835 exists to lock
+    // in came in through this exact site.
+    let platform: PlatformInfo = match parse_platform_publish_json(&json_str) {
+        Ok(p) => p,
         Err(e) => {
             #[cfg(target_os = "android")]
-            android_log(&format!("publishPlatformJni: Invalid JSON: {:?}", e));
+            android_log(&format!("publishPlatformJni: {}", e));
             return 0; // JNI_FALSE
         }
     };

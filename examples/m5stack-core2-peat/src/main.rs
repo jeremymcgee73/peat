@@ -1225,6 +1225,20 @@ fn main() -> anyhow::Result<()> {
                             peripheral_type: BlePeripheralType::SoldierSensor,
                             callsign: callsign.clone(),
                             health: BleHealthStatus {
+                                // `BleHealthStatus` here is the
+                                // **peat-btle::translator** type (line
+                                // 45 import), not peat-protocol's. The
+                                // wire-format type's `battery_percent`
+                                // is `u8` and is stable — peat-btle
+                                // ships independently from this PR
+                                // and the GATT / postcard byte layout
+                                // a peripheral broadcasts must keep
+                                // `battery_percent: u8` for receivers
+                                // to decode. The peat#835 round-5
+                                // change to `Option<u8>` only applies
+                                // to peat-protocol's mirror type used
+                                // for the Automerge JSON envelope
+                                // upstream of the wire decode.
                                 battery_percent,
                                 heart_rate: None,
                                 activity: activity_u8,
