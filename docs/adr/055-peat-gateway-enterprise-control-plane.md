@@ -6,6 +6,9 @@
 **Organization**: (r)evolve - Revolve Team LLC (https://revolveteam.com)
 **Relates To**: ADR-043 (Consumer Interface Adapters), ADR-045 (Zarf/UDS Integration), ADR-048 (Membership Certificates), ADR-049 (Peat-Mesh Extraction), ADR-050 (SDK Integration), ADR-054 (UDS Registry Replication)
 
+**Amendments**:
+- **2026-05-08 — Amendment A: Full-duplex NATS flow.** Adds control-plane ingress (subscriber path) alongside the original CDC egress (publisher) treatment. NATS becomes a bidirectional channel; Kafka and Redis Streams remain egress-only. See "2a. Control-Plane Ingress (Amendment A — NATS)" below. Tracking: peat#839, peat-gateway#91, peat-gateway#94.
+
 ---
 
 ## Executive Summary
@@ -21,6 +24,8 @@
 - **Identity federation**: Enrollment and access control must delegate to enterprise IDAM/ICAM (Keycloak, Okta, Azure AD) rather than static bootstrap tokens.
 - **Operational visibility**: Administrators need a UI to inspect mesh topology, peer health, document state, enrollment status, and certificate lifecycle across all managed formations.
 - **Packaging and delivery**: The gateway must be deployable as a Zarf package into UDS clusters, including air-gapped environments, with SSO, monitoring, and policy enforcement out of the box.
+
+**Amended 2026-05-08 (Amendment A)**: The gateway is also a *consumer* of control-plane events on NATS — formation lifecycle, peer enrollment requests, certificate revocations, and IdP claim refreshes can originate from external orchestration systems and arrive over the same broker the gateway publishes CDC events to. NATS therefore needs to be designed as a bidirectional integration, not a one-way sink.
 
 None of these belong in `peat-mesh-node` — they require a dedicated service.
 
@@ -96,13 +101,15 @@ Gateway Instance
 │  │  • Audit log viewer          • Cross-org analytics           ││
 │  └──────────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────────┘
-          │               │                 │
-          ▼               ▼                 ▼
+          │             ▼ ▲                 │
+          ▼             │ │                 ▼
    ┌────────────┐  ┌────────────┐   ┌──────────────┐
    │ Mesh Nodes │  │ Kafka/NATS │   │ Keycloak/    │
    │ (tactical) │  │ Redis Strm │   │ Okta/AzureAD │
    └────────────┘  └────────────┘   └──────────────┘
 ```
+
+> **Amendment A (2026-05-08)**: The dual `▼ ▲` arrow on the middle column reflects NATS as bidirectional — CDC events flow *out* (publisher) and control-plane events flow *in* (subscriber). Kafka and Redis Streams remain egress-only. Subscriber connection is gateway-initiated, so the existing outbound NATS path carries traffic in both directions. See "2a. Control-Plane Ingress" below.
 
 ### Component Details
 
@@ -167,6 +174,52 @@ struct CdcEvent {
 - **stdout/file** — for debugging and log aggregation
 
 **Delivery guarantees**: At-least-once. Each sink tracks its cursor (last emitted change hash per document). On restart, replays from cursor. Cursors are stored alongside formation state in the persistent backend.
+
+#### 2a. Control-Plane Ingress (Amendment A — NATS)
+
+*Added 2026-05-08. Tracking: peat#839, peat-gateway#91, peat-gateway#94.*
+
+NATS is bidirectional. The CDC Engine above publishes change events outbound; the gateway also **subscribes** to a parallel set of NATS subjects to receive control-plane events from external orchestration systems — formation lifecycle requests, peer enrollment intents, certificate revocations, IdP claim refreshes.
+
+**Subject schema** (separate namespace from CDC egress):
+
+| Direction | Pattern | Example |
+|---|---|---|
+| Egress (existing — CDC) | `{org}.{app}.docs.>` | `acme.logistics.docs.changes` |
+| Ingress — org-level lifecycle | `{org}.ctl.>` | `acme.ctl.formations.create` |
+| Ingress — per-formation control | `{org}.{app}.ctl.>` | `acme.logistics.ctl.peers.enroll` |
+
+The leaf discriminator (`docs` vs `ctl`) is what separates egress from ingress within a single org's namespace. This shape preserves the per-org NATS account model: an org's account can be granted publish rights on its own `{org}.*.ctl.>` and *only* its own — there is no cross-org subject path.
+
+**Initial event classes** (non-exhaustive — handlers register subjects at runtime; payload schemas are deferred to peat-gateway#91):
+
+| Subject (template) | Purpose |
+|---|---|
+| `{org}.ctl.formations.create` | Provision a new formation under an existing org |
+| `{org}.ctl.formations.suspend` | Suspend an active formation |
+| `{org}.ctl.formations.destroy` | Tear down a formation and its key material |
+| `{org}.{app}.ctl.peers.enroll.request` | External system asks the gateway to issue a mesh certificate for a peer |
+| `{org}.{app}.ctl.peers.revoke.request` | Revoke a peer's membership |
+| `{org}.{app}.ctl.certificates.revoke.request` | Revoke a specific certificate by serial / fingerprint |
+| `{org}.ctl.idp.claims.refresh` | Force a re-introspection / claim refresh against the org's IdP |
+
+**Tenant isolation guarantees** (extending the org isolation model from the Tenancy section):
+
+- Subscriptions are *strictly* scoped to subjects under `{org}.>` for orgs the gateway instance manages — no wildcard `>` and no cross-org subscriptions
+- Subscription lifecycle is bound to org/formation lifecycle: subscribe on create, unsubscribe on suspend/destroy. Orphan subscriptions are an isolation bug
+- Per-org NATS account / permission rules MUST grant publish on `{org}.*.ctl.>` only — gateway integration tests assert that a publish to another org's subject is rejected at the broker
+- Inbound payloads are tagged with `org_id` extracted from the subject and re-validated against tenant-manager state before any handler runs (defence in depth — broker ACL is primary, in-process check catches misconfiguration)
+- Ingress events do NOT bypass the AuthZ Proxy: any event that mutates state runs through the same policy engine as the equivalent REST call
+
+**Delivery & connection model**:
+
+- Subscriber connection is initiated from the gateway → broker (same TCP direction as the publisher), so no new NetworkPolicy ingress rule is required (see UDS Package CR below)
+- JetStream durable consumers per `(gateway-instance, org)` for replay and at-least-once delivery — ephemeral subscriptions are not used for state-changing events
+- Reconnect on broker bounce; replay from the durable consumer cursor
+
+**Out of scope for this amendment** (tracked separately):
+- Migration from current core-NATS publish to JetStream — peat-gateway#92
+- NATS as an IDAM federation provider — peat-gateway#93
 
 #### 3. AuthZ Proxy
 
@@ -284,11 +337,11 @@ spec:
         host: peat
         port: 8080
     allow:
-      # Outbound to NATS (in-cluster)
+      # Outbound to NATS (in-cluster) — bidirectional via subscription (Amendment A)
       - direction: Egress
         remoteNamespace: nats
         port: 4222
-        description: "CDC events to NATS JetStream"
+        description: "CDC egress + control-plane ingress (subscription is gateway-initiated, no separate Ingress rule needed)"
       # Outbound to Kafka (in-cluster or external)
       - direction: Egress
         remoteNamespace: kafka
@@ -383,6 +436,21 @@ cdc:
   nats:
     url: "nats://nats.nats.svc:4222"
 
+# Amendment A (2026-05-08): NATS as control-plane ingress.
+# Reuses the broker URL from `cdc.nats.url` above. The implementation PR
+# (peat-gateway#91) may unify these into a single top-level `nats:` block
+# with `egress`/`ingress` subkeys; the surface is intentionally minimal here.
+nats:
+  ingress:
+    enabled: true
+    # Subjects are auto-derived from registered orgs/formations:
+    #   {org}.ctl.>           — org-scoped lifecycle events
+    #   {org}.{app}.ctl.>     — per-formation control events
+    # Per-org overrides may be supplied if non-default scoping is needed:
+    overrides: {}
+    # Durable JetStream consumer name template; one per (instance, org):
+    consumerNameTemplate: "peat-gateway-{instance}-{org}-ctl"
+
 monitoring:
   serviceMonitor:
     enabled: true
@@ -439,7 +507,7 @@ Base image: Chainguard `glibc-dynamic` for minimal CVE surface (consistent with 
 |---------|----------------|
 | `gateway` | Tenant manager, formation lifecycle, admin API |
 | `kafka` | Kafka CDC sink (rdkafka) |
-| `nats` | NATS JetStream CDC sink |
+| `nats` | NATS JetStream CDC sink (egress) + control-plane ingress subscriber (Amendment A) |
 | `redis-streams` | Redis Streams CDC sink |
 | `webhook` | HTTP webhook CDC sink |
 | `oidc` | OIDC token introspection |
@@ -468,6 +536,7 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - Full Zarf/UDS packaging makes the gateway deployable in air-gapped DoD environments
 - Admin UI reduces operational burden and enables non-CLI users
 - Consistent with DU ecosystem (Chainguard images, Pepr policies, Keycloak SSO, Grafana monitoring)
+- *(Amendment A)* Gateway is reachable from external orchestration systems via the existing NATS broker — no additional inbound port, no new NetworkPolicy ingress rule
 
 ### Negative
 
@@ -476,6 +545,7 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - Leader election / formation sharding adds operational complexity
 - Admin UI is a separate frontend stack (SvelteKit) to maintain
 - Zarf packaging and UDS integration adds CI/CD complexity
+- *(Amendment A)* NATS surface is now bidirectional — per-org broker ACL discipline becomes a tenant isolation boundary, increasing operational and review burden
 
 ### Risks
 
@@ -483,6 +553,7 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - IDAM integration latency could slow enrollment in high-churn scenarios
 - Multi-org key management (many root keypairs) increases blast radius of gateway compromise — mitigate with KMS delegation
 - Org isolation bugs could leak data across tenants — requires thorough integration testing
+- *(Amendment A)* Misconfigured per-org NATS ACLs could enable cross-tenant control-plane writes — mitigated by defence in depth (broker ACL + in-process `org_id` revalidation) and asserted in functional tests
 
 ## Implementation Phases
 
@@ -494,12 +565,18 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - [ ] Health and Prometheus metrics endpoints
 - [ ] Dockerfile (multi-arch, Chainguard base)
 
-### Phase 2: CDC
+### Phase 2: CDC + NATS Full-Duplex (Amendment A)
 - [ ] CDC event model and watcher (Automerge document change subscription)
 - [ ] Sink trait with cursor tracking and at-least-once delivery
-- [ ] NATS JetStream sink
+- [ ] NATS JetStream sink (egress)
 - [ ] Kafka sink
 - [ ] Webhook sink
+- [ ] **NATS control-plane ingress subscriber** (Amendment A — peat-gateway#91)
+  - [ ] Tenant-scoped subject schema: `{org}.ctl.>`, `{org}.{app}.ctl.>`
+  - [ ] Subscription lifecycle bound to org/formation lifecycle (subscribe on create, unsubscribe on suspend/destroy)
+  - [ ] Per-tenant ACL enforcement at the broker + in-process `org_id` revalidation (defence in depth)
+  - [ ] Reconnect / replay against JetStream durable consumer cursor
+  - [ ] Functional tests: happy path, tenant isolation, reconnect (uses harness from peat-gateway#90)
 
 ### Phase 3: Identity Federation
 - [ ] OIDC token introspection and claim extraction
