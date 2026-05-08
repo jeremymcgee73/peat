@@ -2024,20 +2024,33 @@ impl PeatNode {
     // Track Operations
     // -------------------------------------------------------------------------
 
-    /// Get all tracks from the sync document
+    /// Get all tracks from the sync document.
+    ///
+    /// Reads via `peat_mesh::Node::query(...)` so the writer/reader API
+    /// stays consistent with `ingest_position_via_translator`'s
+    /// `Node::publish_with_origin` path. The earlier implementation
+    /// scanned `AutomergeBackend::collection(...).scan()` directly,
+    /// expecting the bytes to be flat JSON of the original body — but
+    /// `publish_with_origin` writes a Document whose Automerge map
+    /// shape doesn't match that expectation, so every body field came
+    /// back at `parse_track_json`'s `unwrap_or` defaults (peat#832).
+    /// Going through `Node::query` decodes the Document fields
+    /// properly and the read result matches what the writer published.
+    /// The `track_tests::ingest_position_via_translator_then_get_tracks_preserves_body`
+    /// test locks this in.
     pub fn get_tracks(&self) -> Result<Vec<TrackInfo>, PeatError> {
+        use peat_mesh::sync::types::Query;
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::TRACKS);
-
-            let docs = coll
-                .scan()
+            let docs = self
+                .node
+                .query(collections::TRACKS, &Query::All)
+                .await
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
 
-            let mut tracks = Vec::new();
-            for (id, data) in docs {
-                if let Ok(json) = String::from_utf8(data) {
-                    if let Ok(track) = parse_track_json(&id, &json) {
+            let mut tracks = Vec::with_capacity(docs.len());
+            for doc in docs {
+                if let Some(id) = doc.id.clone() {
+                    if let Ok(track) = track_from_document(&id, &doc) {
                         tracks.push(track);
                     }
                 }
@@ -2046,33 +2059,42 @@ impl PeatNode {
         })
     }
 
-    /// Get a specific track by ID
+    /// Get a specific track by ID. Routes through `Node::get` for the
+    /// same writer/reader symmetry reason as `get_tracks` (peat#832).
     pub fn get_track(&self, track_id: &str) -> Result<Option<TrackInfo>, PeatError> {
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::TRACKS);
-
-            match coll.get(track_id) {
-                Ok(Some(data)) => {
-                    let json = String::from_utf8(data).map_err(|e| PeatError::StorageError {
-                        msg: format!("Invalid UTF-8: {}", e),
-                    })?;
-                    let track = parse_track_json(track_id, &json)?;
-                    Ok(Some(track))
-                }
+            let id = track_id.to_string();
+            match self.node.get(collections::TRACKS, &id).await {
+                Ok(Some(doc)) => Ok(Some(track_from_document(track_id, &doc)?)),
                 Ok(None) => Ok(None),
                 Err(e) => Err(PeatError::StorageError { msg: e.to_string() }),
             }
         })
     }
 
-    /// Store a track
+    /// Store a track. Publishes through `Node::publish` so the
+    /// resulting Document lives in the same storage namespace
+    /// `Node::query` / `Node::get` read from — the BLE-bridged
+    /// `ingest_position_via_translator` path already publishes this
+    /// way, so unifying the typed `put_track` path keeps writer/reader
+    /// symmetric for both publish surfaces (peat#832).
+    ///
+    /// Behavioral change vs pre-#836: this now fires through
+    /// `TransportManager` fan-out (the `Node::publish` path emits a
+    /// `ChangeEvent` that BLE / iroh transport drains observe), where
+    /// the pre-fix `coll.upsert(json_bytes)` only emitted the
+    /// in-process observer broadcast. No production caller exists
+    /// today (production tracks come in via `ingestPositionJni`), so
+    /// the change is observable only via UniFFI Kotlin / Swift
+    /// consumers if any appear later. Documented here so the next
+    /// reader doesn't have to re-trace the change to find out.
     pub fn put_track(&self, track: TrackInfo) -> Result<(), PeatError> {
-        let json = serialize_track_json(&track)?;
+        let doc = track_to_document(&track)?;
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::TRACKS);
-            coll.upsert(&track.id, json.into_bytes())
+            self.node
+                .publish(collections::TRACKS, doc)
+                .await
+                .map(|_id| ())
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })
         })
     }
@@ -2365,6 +2387,54 @@ fn serialize_cell_json(cell: &CellInfo) -> Result<String, PeatError> {
         "scenario_command": cell.scenario_command,
     });
     serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
+}
+
+/// Adapt a `TrackInfo` into a `peat_mesh::Document` for publishing.
+///
+/// Routes through the existing `serialize_track_json` so the body-field
+/// encoding rules stay in one place — re-deserializing the JSON into a
+/// `Map<String, Value>` and stuffing into `Document.fields` is the same
+/// shape `peat_protocol::sync::ble_translation::value_to_mesh_document`
+/// produces from the translator path. One extra serde round-trip per
+/// `put_track`; acceptable for the consumer counts the plugin handles.
+fn track_to_document(track: &TrackInfo) -> Result<peat_mesh::sync::types::Document, PeatError> {
+    let json = serialize_track_json(track)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| PeatError::EncodingError {
+            msg: format!("track_to_document: re-parse failed: {}", e),
+        })?;
+    let fields: std::collections::HashMap<String, serde_json::Value> = match value {
+        serde_json::Value::Object(map) => map.into_iter().collect(),
+        _ => std::collections::HashMap::new(),
+    };
+    Ok(peat_mesh::sync::types::Document {
+        id: Some(track.id.clone()),
+        fields,
+        updated_at: std::time::SystemTime::now(),
+    })
+}
+
+/// Adapt a `peat_mesh::Document` into a `TrackInfo`.
+///
+/// Routes through the existing `parse_track_json` so the body-field
+/// mapping rules stay in one place — `Document.fields` is a flat
+/// `HashMap<String, Value>`, so re-emitting them as a JSON object is
+/// a one-step adapter rather than a full reimplementation. The cost
+/// is one extra serde_json round-trip per track on read; acceptable
+/// for the consumer counts the plugin handles (single-digit
+/// platforms × tens of tracks).
+fn track_from_document(
+    id: &str,
+    doc: &peat_mesh::sync::types::Document,
+) -> Result<TrackInfo, PeatError> {
+    let body: serde_json::Map<String, serde_json::Value> = doc
+        .fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let json = serde_json::to_string(&serde_json::Value::Object(body))
+        .map_err(|e| PeatError::EncodingError { msg: e.to_string() })?;
+    parse_track_json(id, &json)
 }
 
 fn parse_track_json(id: &str, json: &str) -> Result<TrackInfo, PeatError> {
@@ -4596,6 +4666,321 @@ mod tests {
                 parse_platform_publish_json(json).expect("future-shaped publish must parse");
             assert_eq!(parsed.battery_percent, Some(90));
             assert_eq!(parsed.id, "ANDROID-future");
+        }
+    }
+
+    /// End-to-end round-trip tests for the track storage path that
+    /// `Java_..._ingestPositionJni` and `Java_..._getTracksJni` expose
+    /// to the ATAK plugin.
+    ///
+    /// peat#832 (open as of 2026-05-08) reports the BLE-bridged tracks
+    /// surface every body field at `parse_track_json`'s `unwrap_or`
+    /// default (lat/lon=0.0, classification="a-u-G", confidence=0.5,
+    /// source_platform="unknown") even though `ingest_position_via_translator`
+    /// publishes valid coordinates. The hypothesis the issue records:
+    /// the writer publishes via `peat_mesh::Node::publish_with_origin`
+    /// (Document API → Automerge map storage), but the reader uses
+    /// `AutomergeBackend::collection().scan()` which returns bytes the
+    /// reader assumes are flat JSON. The two APIs disagree on the
+    /// on-disk shape, so body fields don't survive the round-trip.
+    ///
+    /// Existing `ingest_position_tests` (line ~2520) wires
+    /// `peat_mesh::Node` against an `InMemoryBackend` from peat-mesh —
+    /// that backend doesn't carry the AutomergeBackend / Collection
+    /// scan asymmetry, so it has no way to reproduce the bug. The
+    /// tests below use `create_node()` (the same factory the JNI
+    /// surface uses) so the AutomergeBackend disagreement is in scope.
+    ///
+    /// `ingest_position_via_translator_then_get_tracks_preserves_body`
+    /// is the regression gate: pre-fix it failed deterministically,
+    /// post-fix it locks the symmetry. The dev-team-owns-validation
+    /// memory captures the broader pattern.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    mod track_tests {
+        use super::*;
+        use peat_protocol::sync::ble_translation::{
+            value_to_mesh_document, BlePosition, BleTranslator,
+        };
+
+        /// Test fixture that holds both the constructed node and the
+        /// tempdir backing its storage. Bind both via `let _node_fx =
+        /// ingest_position_test_node();` and let the drop order do the
+        /// right thing — `Drop for PeatNode` (and its inner
+        /// `AutomergeStore`) runs first, then the tempdir's
+        /// `Drop for TempDir` removes the on-disk directory.
+        ///
+        /// Earlier this fixture used `std::mem::forget(tmp)` on the
+        /// `TempDir` with a comment claiming "Tempdirs are nuked at
+        /// process exit anyway" — that's wrong: `tempfile::TempDir`
+        /// cleanup runs in its `Drop` impl, which `mem::forget` skips,
+        /// and process exit doesn't trigger OS-level `/tmp` cleanup.
+        /// Re-running `cargo test track_tests` locally accumulated
+        /// `/tmp/.tmpXXXXXX` directories until reboot.
+        struct TrackFixture {
+            node: Arc<PeatNode>,
+            // Field is read via the binding lifetime (Drop runs after
+            // `node`), not by the test body. `dead_code` would lint
+            // otherwise — `_tmp` makes the role explicit.
+            #[allow(dead_code)]
+            _tmp: tempfile::TempDir,
+        }
+
+        fn ingest_position_test_node() -> TrackFixture {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.path().to_str().expect("tempdir path utf-8").to_string();
+
+            let node = create_node(NodeConfig {
+                app_id: "track-rt-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: path,
+                transport: None,
+            })
+            .expect("create_node");
+
+            TrackFixture { node, _tmp: tmp }
+        }
+
+        /// Sanity check the **flat-JSON** path: `put_track` →
+        /// `serialize_track_json` → `coll.upsert(json_bytes)` → `coll.scan()`
+        /// → `parse_track_json` → `get_tracks`. Both writer and reader
+        /// use the same flat-JSON shape, so this should round-trip
+        /// today. If this ever fails, the asymmetry has spread to
+        /// even the typed-API path.
+        #[test]
+        fn put_track_get_tracks_preserves_body() {
+            let fx = ingest_position_test_node();
+            let pn = &fx.node;
+
+            let original = TrackInfo {
+                id: "manual-001".to_string(),
+                source_platform: "ANDROID-tablet".to_string(),
+                cell_id: Some("BRAVO".to_string()),
+                formation_id: None,
+                lat: 33.71576,
+                lon: -84.41152,
+                hae: Some(305.0),
+                cep: Some(5.0),
+                heading: Some(87.5),
+                speed: Some(1.2),
+                classification: "a-f-G-U-C-I".to_string(),
+                confidence: 0.9,
+                category: TrackCategory::Person,
+                created_at: 1_700_000_000_000,
+                last_update: 1_700_000_000_000,
+                attributes: std::collections::HashMap::new(),
+            };
+
+            pn.put_track(original.clone()).expect("put_track");
+            let listed = pn.get_tracks().expect("get_tracks");
+            let found = listed
+                .iter()
+                .find(|t| t.id == "manual-001")
+                .expect("track must appear");
+
+            assert!(
+                (found.lat - original.lat).abs() < 1e-9,
+                "lat dropped via put_track/get_tracks: got {}",
+                found.lat
+            );
+            assert!(
+                (found.lon - original.lon).abs() < 1e-9,
+                "lon dropped via put_track/get_tracks: got {}",
+                found.lon
+            );
+            assert_eq!(found.cell_id.as_deref(), Some("BRAVO"));
+            assert_eq!(found.source_platform, original.source_platform);
+            assert_eq!(found.classification, original.classification);
+        }
+
+        /// peat#832 regression gate: the **BLE-bridged path** that
+        /// `ingestPositionJni` exercises on every BLE peer's position
+        /// advert. Writer goes through `Node::publish_with_origin`
+        /// (Document API); the original reader went through
+        /// `AutomergeBackend::collection().scan()` (flat-JSON API),
+        /// and the two storage-API namespaces disagreed — every body
+        /// field came back as a `parse_track_json` `unwrap_or`
+        /// default (lat/lon=0.0, source_platform="unknown",
+        /// classification="a-u-G"). Fix routes `get_tracks` through
+        /// `Node::query` so writer and reader share the Document API,
+        /// and `put_track` was migrated to `Node::publish` to keep
+        /// the typed-API path consistent. If either path breaks, this
+        /// test catches it before on-device UAT does.
+        #[test]
+        fn ingest_position_via_translator_then_get_tracks_preserves_body() {
+            let fx = ingest_position_test_node();
+            let pn = &fx.node;
+            let translator = BleTranslator::with_defaults();
+
+            const PERIPHERAL: u32 = 0xCAFE_0001;
+            let position = BlePosition {
+                latitude: 33.71576,
+                longitude: -84.41152,
+                altitude: Some(305.0),
+                accuracy: Some(5.0),
+            };
+            let value = translator.position_to_track_in_cell(
+                &position,
+                PERIPHERAL,
+                Some("SCOUT-CAFE"),
+                Some("BRAVO"),
+            );
+            let doc = value_to_mesh_document(value);
+
+            pn.runtime.block_on(async {
+                pn.node
+                    .publish_with_origin(
+                        translator.tracks_collection(),
+                        doc,
+                        Some("ble".to_string()),
+                    )
+                    .await
+                    .expect("publish_with_origin");
+            });
+
+            let tracks = pn.get_tracks().expect("get_tracks");
+            let found = tracks
+                .iter()
+                .find(|t| t.id.contains("CAFE0001"))
+                .expect("BLE-bridged track must appear in get_tracks output");
+
+            assert!(
+                (found.lat - 33.71576).abs() < 1e-4,
+                "peat#832: lat dropped — got {} (expected ~33.71576)",
+                found.lat
+            );
+            assert!(
+                (found.lon - (-84.41152)).abs() < 1e-4,
+                "peat#832: lon dropped — got {} (expected ~-84.41152)",
+                found.lon
+            );
+            assert_eq!(
+                found.cell_id.as_deref(),
+                Some("BRAVO"),
+                "peat#832: cell_id dropped"
+            );
+            assert!(
+                !found.source_platform.is_empty() && found.source_platform != "unknown",
+                "peat#832: source_platform reverted to default — got {:?}",
+                found.source_platform
+            );
+            assert_ne!(
+                found.classification, "a-u-G",
+                "peat#832: classification reverted to default a-u-G"
+            );
+        }
+
+        /// Single-id read path: `get_track(id)` migrated to
+        /// `Node::get` along with `get_tracks` (PR #836). Without
+        /// this test the per-id path was silent in the regression
+        /// suite — same bug class could re-emerge on it without a
+        /// signal.
+        #[test]
+        fn ingest_position_then_get_track_single_id_preserves_body() {
+            let fx = ingest_position_test_node();
+            let pn = &fx.node;
+            let translator = BleTranslator::with_defaults();
+
+            const PERIPHERAL: u32 = 0xCAFE_0002;
+            let position = BlePosition {
+                latitude: 33.71576,
+                longitude: -84.41152,
+                altitude: Some(305.0),
+                accuracy: Some(5.0),
+            };
+            let value = translator.position_to_track_in_cell(
+                &position,
+                PERIPHERAL,
+                Some("SCOUT-ID-2"),
+                Some("BRAVO"),
+            );
+            let track_id = value
+                .get("id")
+                .and_then(|v| v.as_str())
+                .expect("translator stamps id")
+                .to_string();
+            let doc = value_to_mesh_document(value);
+
+            pn.runtime.block_on(async {
+                pn.node
+                    .publish_with_origin(
+                        translator.tracks_collection(),
+                        doc,
+                        Some("ble".to_string()),
+                    )
+                    .await
+                    .expect("publish_with_origin");
+            });
+
+            let single = pn
+                .get_track(&track_id)
+                .expect("get_track")
+                .expect("track must exist for known id");
+
+            assert!((single.lat - 33.71576).abs() < 1e-4);
+            assert!((single.lon - (-84.41152)).abs() < 1e-4);
+            assert_eq!(single.cell_id.as_deref(), Some("BRAVO"));
+            assert_eq!(single.id, track_id);
+        }
+
+        /// Pre-fix-shape entries (written via `coll.upsert(json_bytes)`
+        /// before this PR) won't decode through `Node::query`'s
+        /// `serde_json::from_slice::<Document>` reader and are silently
+        /// dropped. Codifies the migration story: devices upgrading to
+        /// a new `libpeat_ffi.so` will *not* see pre-fix tracks until
+        /// the BLE peer republishes (every ~5 s in normal operation),
+        /// but they also won't crash on the stale bytes.
+        ///
+        /// Test writes a fake old-shape entry directly through the
+        /// untyped Collection surface, then calls `get_tracks` and
+        /// asserts (a) it doesn't error, (b) the legacy entry is
+        /// invisible. `put_track` itself can't be used here because
+        /// PR #836 migrated it to `Node::publish` (correctly), so
+        /// reaching the old shape requires going through
+        /// `storage_backend.collection().upsert(...)` directly.
+        #[test]
+        fn pre_fix_flat_json_entries_are_silently_dropped_not_crashed() {
+            let fx = ingest_position_test_node();
+            let pn = &fx.node;
+
+            // Old-shape: flat JSON of the body, written via the
+            // untyped Collection upsert (the pre-#836 `put_track`
+            // codepath). Bytes are intentionally well-formed JSON so
+            // any *parse* error that fires would be in the Document
+            // deserialization step, not in JSON tokenization.
+            let legacy = serde_json::json!({
+                "source_platform": "ble-DEAD0001",
+                "lat": 33.0,
+                "lon": -84.0,
+                "classification": "a-f-G-U-C-I",
+                "confidence": 0.9,
+                "category": "PERSON",
+                "created_at": 1_700_000_000_000_i64,
+                "last_update": 1_700_000_000_000_i64,
+            })
+            .to_string()
+            .into_bytes();
+
+            // `pn.storage_backend` is `Arc<AutomergeBackend>` from
+            // `peat_protocol::storage`; its `StorageBackend::collection`
+            // returns the untyped `Arc<dyn Collection>` whose
+            // `upsert(doc_id, Vec<u8>)` is the pre-#836 write path the
+            // bug originally lived in.
+            let coll = pn.storage_backend.collection(collections::TRACKS);
+            coll.upsert("legacy-track-DEAD0001", legacy)
+                .expect("legacy upsert must succeed");
+
+            // get_tracks must not error.
+            let listed = pn.get_tracks().expect("get_tracks must not panic");
+
+            // The legacy entry must NOT appear via the Node::query
+            // path — its bytes don't decode as a Document, so it's
+            // silently dropped per the documented migration semantics.
+            assert!(
+                listed.iter().all(|t| t.id != "legacy-track-DEAD0001"),
+                "pre-fix legacy entry must be silently invisible after migration: {:?}",
+                listed.iter().map(|t| &t.id).collect::<Vec<_>>()
+            );
         }
     }
 }
