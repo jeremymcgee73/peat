@@ -8,6 +8,7 @@
 
 **Amendments**:
 - **2026-05-08 — Amendment A: Full-duplex NATS flow.** Adds control-plane ingress (subscriber path) alongside the original CDC egress (publisher) treatment. NATS becomes a bidirectional channel; Kafka and Redis Streams remain egress-only. See "2a. Control-Plane Ingress (Amendment A — NATS)" below. Tracking: peat#839, peat-gateway#91, peat-gateway#94.
+- **2026-05-09 — Amendment B: Subject-schema clarification.** Supersedes Amendment A's two-pattern subject design (`{org}.ctl.>` + `{org}.{app}.ctl.>`), which JetStream rejects with error 10052 because the two patterns overlap (`{org}.ctl.ctl.<x>` matches both). Replaces them with a single per-org pattern `{org}.{app}.ctl.>` plus a reserved sentinel `app_id = "_org"` for org-level lifecycle events (e.g. `acme._org.ctl.formations.create`). The reservation is enforced at the tenant-manager layer — see "2a. Control-Plane Ingress" below for the revised tables. Tracking: peat#842, peat-gateway#91, peat-gateway#106.
 
 ---
 
@@ -183,31 +184,34 @@ NATS is bidirectional. The CDC Engine above publishes change events outbound; th
 
 **Subject schema** (separate namespace from CDC egress):
 
+*Revised by Amendment B (2026-05-09).* The original Amendment A design listed two ingress patterns (`{org}.ctl.>` for org-level and `{org}.{app}.ctl.>` for per-formation). Those two patterns overlap at the JetStream pattern layer — `{org}.ctl.ctl.<x>` matches both with `{app} = ctl` — and the broker refuses to put both into a single stream config (error 10052 unless `no_ack` is set, which would cost at-least-once delivery). The revised schema collapses to a single per-org pattern with a reserved sentinel `app_id = "_org"` carrying org-level events:
+
 | Direction | Pattern | Example |
 |---|---|---|
 | Egress (existing — CDC) | `{org}.{app}.docs.>` | `acme.logistics.docs.changes` |
-| Ingress — org-level lifecycle | `{org}.ctl.>` | `acme.ctl.formations.create` |
 | Ingress — per-formation control | `{org}.{app}.ctl.>` | `acme.logistics.ctl.peers.enroll` |
+| Ingress — org-level lifecycle | `{org}._org.ctl.>` | `acme._org.ctl.formations.create` |
 
-The leaf discriminator (`docs` vs `ctl`) is what separates egress from ingress within a single org's namespace. This shape preserves the per-org NATS account model: an org's account can be granted publish rights on its own `{org}.*.ctl.>` and *only* its own — there is no cross-org subject path.
+The leaf discriminator (`docs` vs `ctl`) still separates egress from ingress within a single org's namespace. The `_org` sentinel is **reserved at the tenant-manager layer** — `app_id = "_org"` is rejected by `validate_identifier` (peat-gateway#106), so a tenant cannot create a real formation that would collide with the org-level lifecycle subject space. This shape preserves the per-org NATS account model: an org's account can be granted publish rights on its own `{org}.*.ctl.>` (covering both per-formation events and the `_org` sentinel) and *only* its own — there is no cross-org subject path.
 
-**Initial event classes** (non-exhaustive — handlers register subjects at runtime; payload schemas are deferred to peat-gateway#91):
+**Initial event classes** (non-exhaustive — handlers register subjects at runtime; payload schemas are deferred to peat-gateway#91). *Org-level subjects revised by Amendment B to use the `_org` sentinel app_id:*
 
 | Subject (template) | Purpose |
 |---|---|
-| `{org}.ctl.formations.create` | Provision a new formation under an existing org |
-| `{org}.ctl.formations.suspend` | Suspend an active formation |
-| `{org}.ctl.formations.destroy` | Tear down a formation and its key material |
+| `{org}._org.ctl.formations.create` | Provision a new formation under an existing org |
+| `{org}._org.ctl.formations.suspend` | Suspend an active formation |
+| `{org}._org.ctl.formations.destroy` | Tear down a formation and its key material |
 | `{org}.{app}.ctl.peers.enroll.request` | External system asks the gateway to issue a mesh certificate for a peer |
 | `{org}.{app}.ctl.peers.revoke.request` | Revoke a peer's membership |
 | `{org}.{app}.ctl.certificates.revoke.request` | Revoke a specific certificate by serial / fingerprint |
-| `{org}.ctl.idp.claims.refresh` | Force a re-introspection / claim refresh against the org's IdP |
+| `{org}._org.ctl.idp.claims.refresh` | Force a re-introspection / claim refresh against the org's IdP |
 
 **Tenant isolation guarantees** (extending the org isolation model from the Tenancy section):
 
 - Subscriptions are *strictly* scoped to subjects under `{org}.>` for orgs the gateway instance manages — no wildcard `>` and no cross-org subscriptions
 - Subscription lifecycle is bound to org/formation lifecycle: subscribe on create, unsubscribe on suspend/destroy. Orphan subscriptions are an isolation bug
 - Per-org NATS account / permission rules MUST grant publish on `{org}.*.ctl.>` only — gateway integration tests assert that a publish to another org's subject is rejected at the broker
+- The `_org` sentinel `app_id` is **reserved at the tenant-manager layer** (Amendment B). Any attempt to create a formation with `app_id = "_org"` is rejected with a "reserved by the gateway" error — preventing a tenant from registering a real formation whose subject space would collide with the org-level lifecycle subjects
 - Inbound payloads are tagged with `org_id` extracted from the subject and re-validated against tenant-manager state before any handler runs (defence in depth — broker ACL is primary, in-process check catches misconfiguration)
 - Ingress events do NOT bypass the AuthZ Proxy: any event that mutates state runs through the same policy engine as the equivalent REST call
 
@@ -443,9 +447,11 @@ cdc:
 nats:
   ingress:
     enabled: true
-    # Subjects are auto-derived from registered orgs/formations:
-    #   {org}.ctl.>           — org-scoped lifecycle events
+    # Subjects are auto-derived from registered orgs/formations
+    # (revised by Amendment B 2026-05-09):
     #   {org}.{app}.ctl.>     — per-formation control events
+    #   {org}._org.ctl.>      — org-scoped lifecycle events
+    #                           (reserved `_org` sentinel app_id)
     # Per-org overrides may be supplied if non-default scoping is needed:
     overrides: {}
     # Durable JetStream consumer name template; one per (instance, org):
@@ -571,8 +577,8 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - [ ] NATS JetStream sink (egress)
 - [ ] Kafka sink
 - [ ] Webhook sink
-- [ ] **NATS control-plane ingress subscriber** (Amendment A — peat-gateway#91)
-  - [ ] Tenant-scoped subject schema: `{org}.ctl.>`, `{org}.{app}.ctl.>`
+- [ ] **NATS control-plane ingress subscriber** (Amendments A & B — peat-gateway#91)
+  - [ ] Tenant-scoped subject schema: `{org}.{app}.ctl.>` (per-formation) and `{org}._org.ctl.>` (org-level, reserved `_org` sentinel app_id — peat-gateway#106)
   - [ ] Subscription lifecycle bound to org/formation lifecycle (subscribe on create, unsubscribe on suspend/destroy)
   - [ ] Per-tenant ACL enforcement at the broker + in-process `org_id` revalidation (defence in depth)
   - [ ] Reconnect / replay against JetStream durable consumer cursor
