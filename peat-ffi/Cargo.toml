@@ -34,6 +34,24 @@ sync = ["peat-protocol/automerge-backend", "dep:peat-mesh", "peat-mesh/automerge
 # Bluetooth LE transport - BLE mesh networking (ADR-039)
 # Enables peat-btle integration via TransportManager
 bluetooth = ["peat-protocol/bluetooth", "dep:peat-btle"]
+# Universal Document transport over peat-lite envelope (ADR-035 + ADR-059
+# Slice 1.b "scope #3"). Pulls in peat-mesh's lite-bridge feature so the
+# `LiteBridgeTranslator` is available for registration alongside the typed
+# 0xB6 `BleTranslator`. Both translators register on the same physical
+# wire (BLE) under distinct transport_ids ("ble" vs "ble-lite") so
+# origin-skip can disambiguate echo-loops between them. The Kotlin AAR
+# build enables this on Android; non-BLE consumers leave it off.
+#
+# **Hard-requires `bluetooth`.** Every concrete item this feature gates
+# (`CollectionGatedLiteBridge`, `LITE_BRIDGE_COLLECTIONS`, the JNI
+# subscribe additions) is `cfg(all(feature = "sync", feature = "bluetooth",
+# feature = "lite-bridge"))`. Without `bluetooth`, the feature would
+# enable `peat-mesh/lite-bridge` transitively but compile no wrapper, no
+# allow-list, and no registration — a silent no-op. Listing `"bluetooth"`
+# in the deps surfaces the requirement at the feature surface so a
+# consumer that asks for `lite-bridge` actually gets the wiring.
+# (Round-2 QA review on PR #841 flagged this as [WARNING].)
+lite-bridge = ["sync", "bluetooth", "peat-mesh/lite-bridge"]
 
 [dependencies]
 # UniFFI for cross-language bindings (proc-macro only mode)
