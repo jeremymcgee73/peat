@@ -56,6 +56,22 @@ jobs:
              - Protocol/schema: backward-compatible with cap-schema; check ADR decisions
              - peat-mesh: must not break Automerge sync semantics or Iroh peer discovery
              - peat-ffi / peat-btle: FFI/BLE changes must validate all platform bindings (Android JNI, iOS UniFFI, Linux BlueZ, aarch64)
+             - Test surface coverage: changes that add or modify a public API surface (UniFFI export,
+               JNI extern fn, Translator trait impl, Kotlin AAR public method, native lib symbol,
+               OutboundSink, fanout registration, codec adapter fn) MUST include bidirectional E2E
+               tests at the surface tier consumers actually hit, not just internal-struct unit tests.
+               If a method or field is added to a UniFFI / JNI / FFI wrapper, the test must exercise
+               the wrapper round-trip — encode-via-wrapper AND decode-via-wrapper. Internal-struct
+               tests verify the codec; surface-tier tests verify the actual exposed API consumers
+               will use. Reference shape: peat-btle's `tests/peat_lite_uniffi_e2e.rs` (PR #57)
+               instantiates the UniFFI-wrapped `PeatMesh` and exercises both directions through the
+               wrapper, so wrapper-vs-internal gaps fail at compile/test time, not at downstream
+               link time. peat-ffi's `lite_bridge_outbound_frame_tests` (PR #841) does the same at
+               the JNI tier — registers translators on a real TransportManager, fans out via the
+               same path the JNI consumer uses, asserts the OutboundSink saw the right bytes.
+                 - Missing surface-tier E2E on a new exposed method/field → [BLOCKER]
+                 - Missing receive-side test on a round-trippable API → [BLOCKER]
+                 - Coverage on one direction only (encode-only, decode-only) → [WARNING]
              - Security primitives: Ed25519/X25519/ChaCha20/HMAC-SHA256 — flag any deviation as [BLOCKER]
              - Performance: flag anything likely to increase convergence latency >20% or bandwidth beyond baselines
              - peat-lite: must maintain OTA safety and A/B partition integrity
