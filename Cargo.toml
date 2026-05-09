@@ -61,19 +61,25 @@ exclude = ["examples/m5stack-core2-peat"]
 # change this workspace's transitive deps and CI behavior. Bumping
 # to a later main commit is an explicit edit here, not implicit.
 # The pinned revs are:
-#   peat-mesh 77823a9 — defenseunicorns/peat-mesh PR #101 merge
-#     ("chore: bump peat-btle pin to >=0.4.0, <0.4.1
-#      (post-Slice-4.b follow-up)")
-#   peat-btle b4b43e5 — defenseunicorns/peat-btle PR #50 merge
-#     ("feat: drop mesh-translator back-edge to peat-mesh
-#      (ADR-059 Amendment 4 Slice 4.b)")
+#   peat-mesh 9a92e7c — defenseunicorns/peat-mesh PR #104 merge
+#     ("feat(transport): LiteBridgeTranslator — universal Document
+#      Translator impl"). Bumped from PR #101 to pull in #103
+#     (universal Document codec adapter) + #104 (the `Translator`
+#     impl + `BLE_LITE_BRIDGE` const) needed by peat-ffi's new
+#     `lite-bridge` feature.
+#   peat-btle d96c4da — defenseunicorns/peat-btle PR #56 merge
+#     ("feat(peat-lite-frame): codec scaffold for universal
+#      Document carrier"). Bumped from PR #50 to pull in
+#     `PeatMesh::publish_peat_lite_document` + `peat_lite_document`
+#     field on `DataReceivedResult` + Android feature flip-on of
+#     the `peat-lite-frame` feature.
 #
 # Once the demo UAT clears, this section gets ripped out and the
 # workspace.dependencies pins below get bumped to whatever versions
 # the post-UAT release cuts hit on crates.io.
 [patch.crates-io]
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "77823a9908146d82bb32e9e1635d1d0a5b0970ec" }
-peat-btle = { git = "https://github.com/defenseunicorns/peat-btle", rev = "b4b43e5cf767d78cd4c4de54ad2e6b6a2d551a56" }
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "9a92e7cac274e7ed25f72570f87e3e5d8ea23d9a" }
+peat-btle = { git = "https://github.com/defenseunicorns/peat-btle", rev = "d96c4da577887a75353e6e0abd4865ebd9b9cea0" }
 
 [workspace.package]
 version = "0.9.0-rc.1"

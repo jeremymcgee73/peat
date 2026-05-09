@@ -3684,6 +3684,341 @@ mod tests {
         }
     }
 
+    /// Universal-Document path coexistence with the typed BLE path.
+    /// Locks the load-bearing invariant for ADR-035 / ADR-059 Slice 1.b
+    /// "scope #3": both translators register on the same physical wire
+    /// under distinct transport_ids, the catch-all `LiteBridgeTranslator`
+    /// is gated by `CollectionGatedLiteBridge` so it doesn't double-emit
+    /// on the typed BleTranslator's collections, and origin-skip
+    /// disambiguates each codec's emission independently.
+    #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+    mod lite_bridge_outbound_frame_tests {
+        use super::*;
+        use peat_mesh::sync::traits::DataSyncBackend;
+        use peat_mesh::sync::InMemoryBackend;
+        use peat_mesh::transport::{
+            FanoutHandle, OutboundSink, TranslationContext, Translator,
+            TranslatorRegistrationConfig, BLE_LITE_BRIDGE,
+        };
+        use peat_protocol::sync::ble_translation::BleTranslator;
+        use peat_protocol::transport::{TransportManager, TransportManagerConfig};
+        use std::sync::Mutex as StdMutex;
+        use tokio::time::{timeout, Duration};
+
+        /// Like the typed-BLE `RecordingSink`, but stores its own
+        /// transport_id so two parallel sinks can be told apart.
+        struct TaggedRecordingSink {
+            transport_id: &'static str,
+            frames: StdMutex<Vec<(String, String, Vec<u8>)>>,
+        }
+
+        #[async_trait::async_trait]
+        impl OutboundSink for TaggedRecordingSink {
+            async fn send_outbound(
+                &self,
+                bytes: Vec<u8>,
+                ctx: &TranslationContext,
+            ) -> anyhow::Result<()> {
+                let collection = ctx.collection.clone().unwrap_or_default();
+                self.frames.lock().unwrap().push((
+                    self.transport_id.to_string(),
+                    collection,
+                    bytes,
+                ));
+                Ok(())
+            }
+        }
+
+        impl TaggedRecordingSink {
+            fn new(transport_id: &'static str) -> Arc<Self> {
+                Arc::new(Self {
+                    transport_id,
+                    frames: StdMutex::new(Vec::new()),
+                })
+            }
+
+            fn snapshot(&self) -> Vec<(String, String, Vec<u8>)> {
+                self.frames.lock().unwrap().clone()
+            }
+        }
+
+        async fn wait_for_any(sinks: &[&Arc<TaggedRecordingSink>], min_total: usize) {
+            let _ = timeout(Duration::from_secs(1), async {
+                loop {
+                    let total: usize = sinks.iter().map(|s| s.snapshot().len()).sum();
+                    if total >= min_total {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        }
+
+        struct CoexistenceFixture {
+            node: Arc<peat_mesh::Node>,
+            transport_manager: TransportManager,
+            ble_sink: Arc<TaggedRecordingSink>,
+            lite_sink: Arc<TaggedRecordingSink>,
+        }
+
+        async fn coexistence_fixture() -> (CoexistenceFixture, FanoutHandle) {
+            let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
+            let node = Arc::new(peat_mesh::Node::new(backend));
+            let mgr = TransportManager::new(TransportManagerConfig::default());
+
+            let ble_translator = Arc::new(BleTranslator::with_defaults());
+            let ble_sink = TaggedRecordingSink::new("ble");
+            let ble_translator_dyn: Arc<dyn Translator> = ble_translator.clone();
+            let ble_sink_dyn: Arc<dyn OutboundSink> = ble_sink.clone();
+            mgr.register_translator(
+                ble_translator_dyn,
+                ble_sink_dyn,
+                TranslatorRegistrationConfig::ble(),
+            )
+            .await
+            .expect("register typed BLE");
+
+            let lite_translator: Arc<dyn Translator> = Arc::new(
+                CollectionGatedLiteBridge::for_ble_with_collections(LITE_BRIDGE_COLLECTIONS),
+            );
+            let lite_sink = TaggedRecordingSink::new(BLE_LITE_BRIDGE);
+            let lite_sink_dyn: Arc<dyn OutboundSink> = lite_sink.clone();
+            mgr.register_translator(
+                lite_translator,
+                lite_sink_dyn,
+                TranslatorRegistrationConfig::ble(),
+            )
+            .await
+            .expect("register lite-bridge");
+
+            // Observe both typed and universal-Document collections —
+            // matches the production `subscribeOutboundFramesJni` shape.
+            let mut collections = vec![
+                ble_translator.tracks_collection().to_string(),
+                ble_translator.platforms_collection().to_string(),
+            ];
+            for c in LITE_BRIDGE_COLLECTIONS {
+                collections.push((*c).to_string());
+            }
+
+            let handle = mgr
+                .start_fanout(Arc::clone(&node), collections)
+                .expect("start_fanout");
+
+            (
+                CoexistenceFixture {
+                    node,
+                    transport_manager: mgr,
+                    ble_sink,
+                    lite_sink,
+                },
+                handle,
+            )
+        }
+
+        fn marker_doc(uuid: &str) -> peat_mesh::sync::types::Document {
+            let mut fields = std::collections::HashMap::new();
+            fields.insert("type".to_string(), serde_json::json!("a-f-G-U-C"));
+            fields.insert("lat".to_string(), serde_json::json!(33.71));
+            fields.insert("lon".to_string(), serde_json::json!(-84.41));
+            peat_mesh::sync::types::Document::with_id(uuid.to_string(), fields)
+        }
+
+        fn track_doc(uuid: &str) -> peat_mesh::sync::types::Document {
+            // Minimum field set BleTranslator's track-encode requires.
+            let mut f = std::collections::HashMap::new();
+            f.insert("lat".to_string(), serde_json::json!(40.0));
+            f.insert("lon".to_string(), serde_json::json!(-74.0));
+            f.insert("source_platform".to_string(), serde_json::json!("iroh-1"));
+            f.insert("hae".to_string(), serde_json::json!(0.0));
+            f.insert("cep".to_string(), serde_json::json!(0.0));
+            f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
+            f.insert("confidence".to_string(), serde_json::json!(0.5));
+            f.insert("category".to_string(), serde_json::json!("friendly"));
+            f.insert("callsign".to_string(), serde_json::json!("ALPHA-1"));
+            f.insert(
+                "created_at".to_string(),
+                serde_json::json!(1_700_000_000_000_i64),
+            );
+            f.insert(
+                "last_update".to_string(),
+                serde_json::json!(1_700_000_000_000_i64),
+            );
+            peat_mesh::sync::types::Document::with_id(uuid.to_string(), f)
+        }
+
+        /// A doc on `"markers"` (universal-Document collection) reaches
+        /// the lite-bridge sink only — the typed BleTranslator declines
+        /// the unknown collection silently, so the typed sink stays
+        /// empty. The lite-bridge sink's bytes round-trip back through
+        /// the codec to the original Document fields.
+        #[tokio::test]
+        async fn marker_publish_reaches_only_lite_bridge_sink() {
+            let (fx, _h) = coexistence_fixture().await;
+
+            let doc = marker_doc("marker-uuid-001");
+            let original_fields = doc.fields.clone();
+            fx.node
+                .publish_with_origin("markers", doc, Some("self".to_string()))
+                .await
+                .expect("publish marker");
+
+            wait_for_any(&[&fx.ble_sink, &fx.lite_sink], 1).await;
+
+            let ble_frames = fx.ble_sink.snapshot();
+            let lite_frames = fx.lite_sink.snapshot();
+
+            assert!(
+                ble_frames.is_empty(),
+                "typed BLE sink MUST decline 'markers' (unknown collection); \
+                 got {} frames",
+                ble_frames.len()
+            );
+            assert_eq!(
+                lite_frames.len(),
+                1,
+                "lite-bridge sink should see exactly one envelope for the marker"
+            );
+            let (transport_id, collection, bytes) = &lite_frames[0];
+            assert_eq!(transport_id, BLE_LITE_BRIDGE);
+            assert_eq!(collection, "markers");
+
+            // Round-trip the bytes back through the codec — proves the
+            // wire frame is well-formed and reconstructs the original
+            // Document fields.
+            let (envelope_collection, decoded) =
+                peat_mesh::transport::document_codec::decode_document(bytes)
+                    .expect("decode envelope");
+            assert_eq!(envelope_collection, "markers");
+            assert_eq!(decoded.id.as_deref(), Some("marker-uuid-001"));
+            assert_eq!(decoded.fields, original_fields);
+        }
+
+        /// A doc on `"tracks"` (typed BLE collection) reaches the typed
+        /// BLE sink only — the gating wrapper declines the
+        /// non-allow-list collection, so the lite-bridge sink stays
+        /// empty. This is the load-bearing assertion that the gate
+        /// prevents double emission on typed-BLE collections.
+        #[tokio::test]
+        async fn track_publish_reaches_only_typed_ble_sink() {
+            let (fx, _h) = coexistence_fixture().await;
+
+            let doc = track_doc("ble-CAFE0001");
+            fx.node.publish("tracks", doc).await.expect("publish track");
+
+            wait_for_any(&[&fx.ble_sink, &fx.lite_sink], 1).await;
+
+            let ble_frames = fx.ble_sink.snapshot();
+            let lite_frames = fx.lite_sink.snapshot();
+
+            assert_eq!(
+                ble_frames.len(),
+                1,
+                "typed BLE sink should see the track frame"
+            );
+            assert!(
+                lite_frames.is_empty(),
+                "lite-bridge sink MUST decline 'tracks' (not in \
+                 LITE_BRIDGE_COLLECTIONS allow-list); got {} frames",
+                lite_frames.len()
+            );
+        }
+
+        /// Origin-skip is independent per codec: a marker published
+        /// with `origin = Some(BLE_LITE_BRIDGE)` (i.e. just received
+        /// from BLE via the universal-Document path) must NOT
+        /// re-emit through the lite-bridge sink. The typed BLE sink is
+        /// unaffected — it would have declined the unknown collection
+        /// regardless.
+        #[tokio::test]
+        async fn ble_lite_origin_marker_does_not_re_emit_to_lite_bridge() {
+            let (fx, _h) = coexistence_fixture().await;
+
+            // Skip-origin doc.
+            let skip_doc = marker_doc("marker-skip");
+            fx.node
+                .publish_with_origin("markers", skip_doc, Some(BLE_LITE_BRIDGE.to_string()))
+                .await
+                .expect("publish skip");
+
+            // Barrier doc with non-skip origin — when this lands at the
+            // lite-bridge sink we know the prior skip-origin doc was
+            // already processed (and correctly suppressed) by the
+            // FIFO observer.
+            let barrier_doc = marker_doc("marker-barrier");
+            fx.node
+                .publish_with_origin("markers", barrier_doc, Some("self".to_string()))
+                .await
+                .expect("publish barrier");
+
+            wait_for_any(&[&fx.lite_sink], 1).await;
+
+            let lite_frames = fx.lite_sink.snapshot();
+            assert_eq!(
+                lite_frames.len(),
+                1,
+                "lite-bridge sink MUST receive only the barrier doc; \
+                 the BLE_LITE_BRIDGE-origin doc must be suppressed by \
+                 origin-skip (echo-loop break)"
+            );
+            // Confirm the captured doc is the barrier, not the
+            // skip-origin one — defends against an inverted-skip bug.
+            let bytes = &lite_frames[0].2;
+            let (_collection, decoded) =
+                peat_mesh::transport::document_codec::decode_document(bytes)
+                    .expect("decode envelope");
+            assert_eq!(decoded.id.as_deref(), Some("marker-barrier"));
+        }
+
+        /// Re-register after teardown succeeds — both translators get
+        /// torn down + re-registered cleanly. Mirrors the
+        /// unsubscribe → subscribe JNI flow with the lite-bridge
+        /// branch active.
+        #[tokio::test]
+        async fn re_register_with_lite_bridge_after_unregister_succeeds() {
+            let (fx, h1) = coexistence_fixture().await;
+            drop(h1);
+            fx.transport_manager
+                .unregister_translator(BLE_LITE_BRIDGE)
+                .await
+                .expect("unregister lite-bridge");
+            fx.transport_manager
+                .unregister_translator("ble")
+                .await
+                .expect("unregister typed BLE");
+
+            // Second register pass on the same TransportManager must
+            // succeed (no transport_id collision left over).
+            let ble_translator = Arc::new(BleTranslator::with_defaults());
+            let ble_sink = TaggedRecordingSink::new("ble");
+            let ble_translator_dyn: Arc<dyn Translator> = ble_translator.clone();
+            let ble_sink_dyn: Arc<dyn OutboundSink> = ble_sink.clone();
+            fx.transport_manager
+                .register_translator(
+                    ble_translator_dyn,
+                    ble_sink_dyn,
+                    TranslatorRegistrationConfig::ble(),
+                )
+                .await
+                .expect("re-register typed BLE");
+
+            let lite_translator: Arc<dyn Translator> = Arc::new(
+                CollectionGatedLiteBridge::for_ble_with_collections(LITE_BRIDGE_COLLECTIONS),
+            );
+            let lite_sink = TaggedRecordingSink::new(BLE_LITE_BRIDGE);
+            let lite_sink_dyn: Arc<dyn OutboundSink> = lite_sink.clone();
+            fx.transport_manager
+                .register_translator(
+                    lite_translator,
+                    lite_sink_dyn,
+                    TranslatorRegistrationConfig::ble(),
+                )
+                .await
+                .expect("re-register lite-bridge");
+        }
+    }
+
     #[cfg(feature = "sync")]
     mod blob_tests {
         use super::*;
@@ -6663,11 +6998,94 @@ fn dispatch_document_error(message: &str) {
 /// `OutboundSink` implementation that forwards encoded bytes into the
 /// registered Kotlin listener. One instance is registered with
 /// `TransportManager` per `transport_id` we want to fan out — currently
-/// just `"ble"`, but the structure generalizes to LoRa/SBD/etc.
+/// `"ble"` for typed 0xB6 frames and (with `lite-bridge` on) `"ble-lite"`
+/// for universal Document envelopes. The structure generalizes to
+/// LoRa/SBD/etc.
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 struct JniOutboundSink {
     transport_id: &'static str,
 }
+
+/// `Translator` wrapper that gates `encode_outbound` by collection.
+/// Wraps a [`peat_mesh::transport::LiteBridgeTranslator`] (catch-all
+/// codec — encodes any collection it's handed) with a peat-ffi-policy
+/// allow-list, so the universal-Document fan-out only fires for
+/// collections explicitly opted in.
+///
+/// Without this wrapper, registering both the typed `BleTranslator`
+/// (which encodes `"tracks"`/`"platforms"`/`"alerts"`/`"canned_messages"`
+/// to compact 0xB6 frames) AND the catch-all `LiteBridgeTranslator` on
+/// the same `TransportManager` would cause **double emission** for the
+/// typed collections — both translators would encode the same doc and
+/// dispatch separate frames to Kotlin. The plugin would receive
+/// duplicate copies, and BLE-link bandwidth doubles for no gain. The
+/// gate stays in peat-ffi (the consumer that owns the policy decision)
+/// rather than in `LiteBridgeTranslator` itself, matching ADR-059's
+/// "policy lives at the consumer, codec is generic" direction.
+///
+/// Slice 2's per-doc `allowed_transports` will eventually replace this
+/// with a runtime annotation on each Document; until then, the
+/// peat-ffi-static allow-list is the right shape.
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+struct CollectionGatedLiteBridge {
+    inner: peat_mesh::transport::LiteBridgeTranslator,
+    allowed: std::collections::HashSet<&'static str>,
+}
+
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+impl CollectionGatedLiteBridge {
+    fn for_ble_with_collections(collections: &'static [&'static str]) -> Self {
+        Self {
+            inner: peat_mesh::transport::LiteBridgeTranslator::for_ble(),
+            allowed: collections.iter().copied().collect(),
+        }
+    }
+}
+
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+#[async_trait::async_trait]
+impl peat_mesh::transport::Translator for CollectionGatedLiteBridge {
+    fn transport_id(&self) -> &'static str {
+        self.inner.transport_id()
+    }
+
+    async fn encode_outbound(
+        &self,
+        doc: &peat_mesh::sync::types::Document,
+        ctx: &peat_mesh::transport::TranslationContext,
+    ) -> Option<Vec<u8>> {
+        // Decline silently for collections outside the allow-list.
+        // This is the policy filter, not a codec error — matches the
+        // BleTranslator decline behaviour for unknown collections.
+        let collection = ctx.collection.as_deref()?;
+        if !self.allowed.contains(collection) {
+            return None;
+        }
+        self.inner.encode_outbound(doc, ctx).await
+    }
+
+    async fn decode_inbound(
+        &self,
+        bytes: &[u8],
+        ctx: &peat_mesh::transport::TranslationContext,
+    ) -> anyhow::Result<Option<peat_mesh::sync::types::Document>> {
+        // Inbound is collection-agnostic at this codec level (the
+        // envelope carries the collection). The receive-side policy
+        // decision (which collections to publish_with_origin) lives
+        // in the consumer (plugin Kotlin), so the gate doesn't apply
+        // here.
+        self.inner.decode_inbound(bytes, ctx).await
+    }
+}
+
+/// Universal-Document collections that ride the `"ble-lite"` codec
+/// instead of the typed 0xB6 path. Add new entries here when a new
+/// collection joins the universal transport (chats, alerts-v2, etc.).
+/// Keep the list tight — every entry is one more codec the universal
+/// path encodes for, and double-emission with the typed BleTranslator
+/// would result if both lists overlap.
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+const LITE_BRIDGE_COLLECTIONS: &[&str] = &["markers"];
 
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[async_trait::async_trait]
@@ -6755,7 +7173,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutbo
     // accessors so this call site stays aligned with the translator's
     // coverage. Hardcoded literals would silently drift if the collection
     // names change or new ones (e.g. chat) are added.
-    let collections = vec![
+    let mut collections = vec![
         node_owner.ble_translator.tracks_collection().to_string(),
         node_owner.ble_translator.platforms_collection().to_string(),
         node_owner.ble_translator.alerts_collection().to_string(),
@@ -6764,6 +7182,26 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutbo
             .canned_messages_collection()
             .to_string(),
     ];
+
+    // Universal Document transport (ADR-035 + ADR-059 Slice 1.b "scope #3").
+    // Register a second translator + sink for the peat-lite envelope path,
+    // gated on `lite-bridge`. transport_id `"ble-lite"` is distinct from
+    // the typed-frame translator's `"ble"` so origin-skip and per-doc
+    // `allowed_transports` can disambiguate the two codecs sharing the
+    // BLE physical wire. Universal-Document collections extend the
+    // fanout list so peat-mesh's observer fires for them; the
+    // `CollectionGatedLiteBridge` wrapper then declines any non-allow-list
+    // collection at encode_outbound, ensuring the lite-bridge path doesn't
+    // double-emit on typed BLE collections. Future entries live in
+    // `LITE_BRIDGE_COLLECTIONS`.
+    #[cfg(feature = "lite-bridge")]
+    let lite_bridge_translator_id = peat_mesh::transport::BLE_LITE_BRIDGE;
+    #[cfg(feature = "lite-bridge")]
+    {
+        for c in LITE_BRIDGE_COLLECTIONS {
+            collections.push((*c).to_string());
+        }
+    }
 
     // Compose register + start + on-failure-rollback inside one
     // `block_on` so a `start_fanout` failure unregisters the translator
@@ -6782,12 +7220,53 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutbo
                     peat_mesh::transport::TranslatorRegistrationConfig::ble(),
                 )
                 .await?;
+
+            // lite-bridge: register the universal-Document translator
+            // alongside the typed BLE one. The wrapper gates encode by
+            // the static `LITE_BRIDGE_COLLECTIONS` allow-list so the
+            // catch-all codec doesn't double-emit on the typed
+            // BleTranslator's collections. On failure, roll back the
+            // typed-BLE registration too so we don't leave a
+            // half-wired state.
+            #[cfg(feature = "lite-bridge")]
+            {
+                let lite_translator: Arc<dyn peat_mesh::transport::Translator> = Arc::new(
+                    CollectionGatedLiteBridge::for_ble_with_collections(LITE_BRIDGE_COLLECTIONS),
+                );
+                let lite_sink: Arc<dyn peat_mesh::transport::OutboundSink> =
+                    Arc::new(JniOutboundSink {
+                        transport_id: lite_bridge_translator_id,
+                    });
+                if let Err(e) = node_owner
+                    .transport_manager
+                    .register_translator(
+                        lite_translator,
+                        lite_sink,
+                        peat_mesh::transport::TranslatorRegistrationConfig::ble(),
+                    )
+                    .await
+                {
+                    let _ = node_owner
+                        .transport_manager
+                        .unregister_translator("ble")
+                        .await;
+                    return Err(e);
+                }
+            }
+
             match node_owner
                 .transport_manager
                 .start_fanout(Arc::clone(&node_owner.node), collections)
             {
                 Ok(handle) => Ok(handle),
                 Err(e) => {
+                    #[cfg(feature = "lite-bridge")]
+                    {
+                        let _ = node_owner
+                            .transport_manager
+                            .unregister_translator(lite_bridge_translator_id)
+                            .await;
+                    }
                     let _ = node_owner
                         .transport_manager
                         .unregister_translator("ble")
@@ -6838,9 +7317,23 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeOut
 
     if handle != 0 {
         let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
-        let _ = node_owner
-            .runtime
-            .block_on(node_owner.transport_manager.unregister_translator("ble"));
+        node_owner.runtime.block_on(async {
+            // Unregister both translators that the lite-bridge build
+            // registered (ble + ble-lite). Each call independently
+            // rejects "translator not registered", so the order doesn't
+            // matter and a missing entry on either side is benign.
+            #[cfg(feature = "lite-bridge")]
+            {
+                let _ = node_owner
+                    .transport_manager
+                    .unregister_translator(peat_mesh::transport::BLE_LITE_BRIDGE)
+                    .await;
+            }
+            let _ = node_owner
+                .transport_manager
+                .unregister_translator("ble")
+                .await;
+        });
         std::mem::forget(node_owner);
     }
 
