@@ -621,10 +621,9 @@ impl SyncCapable for AutomergeBackend {
         // log trail). 5s is comfortably wider than the observed race
         // window without suppressing legitimate reconnect-after-recycle
         // events (those are >50s apart).
-        let recent_connects: Arc<std::sync::RwLock<std::collections::HashMap<
-            EndpointId,
-            std::time::Instant,
-        >>> = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        let recent_connects: Arc<
+            std::sync::RwLock<std::collections::HashMap<EndpointId, std::time::Instant>>,
+        > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
         const CONNECTED_DEDUP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
         tokio::spawn(async move {
