@@ -1656,6 +1656,12 @@ pub mod collections {
     pub const CAPABILITIES: &str = "capabilities";
     /// Collection for commands (C2 messages)
     pub const COMMANDS: &str = "commands";
+    /// Collection for operator-placed map markers (CoT pins synced
+    /// across the mesh via the universal-Document transport,
+    /// ADR-035). Receiver renders consistently regardless of which
+    /// peer originated the marker — the doc store is the source of
+    /// truth, transport is invisible to consumers.
+    pub const MARKERS: &str = "markers";
 }
 
 /// Cell status enumeration
@@ -1872,6 +1878,61 @@ pub struct PlatformInfo {
     /// signal, not absence-of-data, and the platform-overlay code uses
     /// the time delta directly without a None-check branch.
     pub last_heartbeat: i64,
+}
+
+/// Operator-placed map marker — the typed shape every peer renders
+/// in the Peat Markers panel and on the MapView (ADR-035 Universal
+/// Document transport, "markers" collection).
+///
+/// Origin-agnostic: this struct is what the local doc store holds,
+/// independent of which peer published it. The plugin's mental model
+/// is "created somewhere, synced everywhere, displayed consistently"
+/// — `MarkerInfo` is the synced shape, the wire transport is
+/// invisible above this surface.
+///
+/// Wire-key parity with the JSON the legacy `MarkerPublisher`
+/// produced (uid, type, lat, lon, hae, ts, callsign, color), so the
+/// migration to the typed API is wire-compatible: docs published by
+/// the old raw-JSON path round-trip cleanly into `MarkerInfo`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MarkerInfo {
+    /// Unique marker identifier — the operator-placed UID. UUID-shaped
+    /// for ATAK-dropped pins (e.g. `4ae7b0a0-1995-447c-...`).
+    pub uid: String,
+    /// CoT 2525-style type code (e.g. `"a-f-G-U-C"` for friendly
+    /// ground unit combat, `"b-m-p-w"` for waypoint).
+    pub marker_type: String,
+    /// Latitude (WGS84).
+    pub lat: f64,
+    /// Longitude (WGS84).
+    pub lon: f64,
+    /// Height above ellipsoid (meters). `None` when the publisher's
+    /// ATAK had no altitude fix; receivers render at ground level.
+    pub hae: Option<f64>,
+    /// Unix epoch milliseconds — the publisher's clock at marker
+    /// drop time. Receivers DON'T treat this as a presence-staleness
+    /// timestamp (markers persist until deleted, unlike platforms);
+    /// it's purely "when did the operator drop this pin."
+    pub ts: i64,
+    /// Operator callsign of the publisher. `None` when ATAK didn't
+    /// stamp it (rare).
+    pub callsign: Option<String>,
+    /// ATAK marker color (Android `Color` int, sign-extended). `None`
+    /// when default coloring applies.
+    pub color: Option<i32>,
+    /// Cell membership (organizational unit within mesh), if scoped.
+    /// `None` for cell-agnostic markers.
+    pub cell_id: Option<String>,
+    /// Soft-delete sentinel. When `true`, the marker is a tombstone
+    /// — peers sync the deletion (CRDT keeps the entry so concurrent
+    /// edits resolve consistently) but consumer UIs filter it out
+    /// of "current markers" views. peat-mesh's fan-out today does
+    /// NOT propagate `ChangeEvent::Removed` (Slice 2 work), so the
+    /// soft-delete-sentinel pattern is the only way to communicate
+    /// deletions across the mesh until that lands. Wire key: `_deleted`
+    /// (matches the peat-mesh `transport::document_codec` synthesis
+    /// convention from PR #103).
+    pub deleted: bool,
 }
 
 // Wire-shape contract for `Option<T>` fields on `PlatformInfo`
@@ -2132,6 +2193,63 @@ impl PeatNode {
             let backend = &self.storage_backend;
             let coll = backend.collection(collections::PLATFORMS);
             coll.upsert(&platform.id, json.into_bytes())
+                .map_err(|e| PeatError::StorageError { msg: e.to_string() })
+        })
+    }
+
+    // -------------------------------------------------------------------------
+    // Marker Operations (operator-placed map pins, synced via ADR-035
+    // Universal Document transport)
+    // -------------------------------------------------------------------------
+
+    /// Get all markers from the sync document.
+    ///
+    /// Returns the canonical typed list of operator-placed pins
+    /// across the mesh. Origin-agnostic — locally-created and
+    /// peer-synced markers are indistinguishable in the result.
+    /// Plugin consumers (PeatMapComponent's periodic refresh, the
+    /// Peat Markers panel readout) call this and render every entry
+    /// with the same code path.
+    pub fn get_markers(&self) -> Result<Vec<MarkerInfo>, PeatError> {
+        self.runtime.block_on(async {
+            let backend = &self.storage_backend;
+            let coll = backend.collection(collections::MARKERS);
+
+            let docs = coll
+                .scan()
+                .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
+
+            let mut markers = Vec::new();
+            for (id, data) in docs {
+                let json_str = String::from_utf8_lossy(&data);
+                match parse_marker_publish_json(&id, &json_str) {
+                    Ok(m) => markers.push(m),
+                    Err(_) => {
+                        // Malformed entry — skip silently. Same shape
+                        // as get_platforms / get_commands handle parse
+                        // errors: don't poison the whole list with one
+                        // bad doc.
+                    }
+                }
+            }
+            Ok(markers)
+        })
+    }
+
+    /// Store a marker.
+    ///
+    /// Persists into the `markers` collection. peat-mesh's fan-out
+    /// observes the change and routes via the registered transports
+    /// (universal-Document path on BLE via LiteBridgeTranslator,
+    /// iroh sync for cross-mesh peers). Receivers see the same
+    /// `MarkerInfo` shape on their side.
+    pub fn put_marker(&self, marker: MarkerInfo) -> Result<(), PeatError> {
+        let json = serialize_marker_json(&marker)?;
+        let uid = marker.uid.clone();
+        self.runtime.block_on(async {
+            let backend = &self.storage_backend;
+            let coll = backend.collection(collections::MARKERS);
+            coll.upsert(&uid, json.into_bytes())
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })
         })
     }
@@ -2766,6 +2884,143 @@ fn parse_battery_percent(v: &serde_json::Value) -> Option<i32> {
 fn parse_heart_rate(v: &serde_json::Value) -> Option<i32> {
     let n = coerce_json_number_to_i64(v)?;
     Some(n.clamp(0, 250) as i32)
+}
+
+/// Parse a `MarkerInfo` from the wire JSON (publish-side), with
+/// graceful field absence: missing optional fields → `None`, missing
+/// required geo (`uid`/`type`/`lat`/`lon`) → `InvalidInput`.
+///
+/// The parser is wire-compatible with the JSON the legacy
+/// `MarkerPublisher.serializeMarker` produced — see the field comments
+/// on `MarkerInfo` for key-by-key parity. The `id` argument lets the
+/// scan-side caller supply the doc id (the doc store's key) when
+/// it's not in the body; we accept either source as the `uid`.
+fn parse_marker_publish_json(id: &str, json_str: &str) -> Result<MarkerInfo, PeatError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| PeatError::InvalidInput {
+            msg: format!("marker JSON: {}", e),
+        })?;
+
+    let uid = v["uid"]
+        .as_str()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| id.to_string());
+    if uid.is_empty() {
+        return Err(PeatError::InvalidInput {
+            msg: "marker missing uid (and no doc-store id supplied)".to_string(),
+        });
+    }
+
+    // Deletion-sentinel detection. A tombstone marker is just
+    // `{uid, _deleted: true}` — type/lat/lon optional. Receivers
+    // know to filter the entry out of "current markers" views. We
+    // need the deletion to ride the same wire envelope as a normal
+    // marker (peat-mesh fan-out doesn't propagate Removed events
+    // today), so the doc-store retains the tombstone for CRDT
+    // consistency.
+    let deleted = v["_deleted"].as_bool().unwrap_or(false);
+
+    let marker_type = if deleted {
+        v["type"]
+            .as_str()
+            .unwrap_or("a-u-G") // placeholder for tombstones
+            .to_string()
+    } else {
+        v["type"]
+            .as_str()
+            .ok_or_else(|| PeatError::InvalidInput {
+                msg: format!("marker {uid} missing CoT type"),
+            })?
+            .to_string()
+    };
+    let lat = if deleted {
+        v["lat"].as_f64().unwrap_or(0.0)
+    } else {
+        v["lat"].as_f64().ok_or_else(|| PeatError::InvalidInput {
+            msg: format!("marker {uid} missing lat"),
+        })?
+    };
+    let lon = if deleted {
+        v["lon"].as_f64().unwrap_or(0.0)
+    } else {
+        v["lon"].as_f64().ok_or_else(|| PeatError::InvalidInput {
+            msg: format!("marker {uid} missing lon"),
+        })?
+    };
+    let hae = v["hae"].as_f64();
+    let ts = v["ts"].as_i64().unwrap_or(0);
+    let callsign = v["callsign"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let color = coerce_json_number_to_i64(&v["color"]).map(|n| n as i32);
+    let cell_id = v["cell_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    Ok(MarkerInfo {
+        uid,
+        marker_type,
+        lat,
+        lon,
+        hae,
+        ts,
+        callsign,
+        color,
+        cell_id,
+        deleted,
+    })
+}
+
+/// Serialize the typed list to the JSON shape `getMarkersJni`
+/// returns. Wire-key parity with `serialize_marker_json` so a doc
+/// round-trips through the get path identically to the put path.
+fn serialize_markers_get_json(markers: &[MarkerInfo]) -> String {
+    let json_array: Vec<serde_json::Value> = markers
+        .iter()
+        .map(|m| {
+            let mut obj = serde_json::json!({
+                "uid": m.uid,
+                "type": m.marker_type,
+                "lat": m.lat,
+                "lon": m.lon,
+                "hae": m.hae,
+                "ts": m.ts,
+                "callsign": m.callsign,
+                "color": m.color,
+                "cell_id": m.cell_id,
+            });
+            if m.deleted {
+                obj["_deleted"] = serde_json::Value::Bool(true);
+            }
+            obj
+        })
+        .collect();
+    serde_json::to_string(&json_array).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Serialize a single marker for `put_marker` storage. Wire-key
+/// parity with `serialize_markers_get_json` (single object instead
+/// of array — same key set, same shapes) so a doc written via
+/// `put_marker` reads identically through `get_markers`.
+fn serialize_marker_json(marker: &MarkerInfo) -> Result<String, PeatError> {
+    let mut v = serde_json::json!({
+        "uid": marker.uid,
+        "type": marker.marker_type,
+        "lat": marker.lat,
+        "lon": marker.lon,
+        "hae": marker.hae,
+        "ts": marker.ts,
+        "callsign": marker.callsign,
+        "color": marker.color,
+        "cell_id": marker.cell_id,
+    });
+    if marker.deleted {
+        v["_deleted"] = serde_json::Value::Bool(true);
+    }
+    serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
 }
 
 fn serialize_platform_json(platform: &PlatformInfo) -> Result<String, PeatError> {
@@ -5318,6 +5573,174 @@ mod tests {
             );
         }
     }
+
+    /// Marker tombstone schema. peat-mesh's fan-out skips
+    /// `ChangeEvent::Removed` today (Slice-2 work), so deletion of
+    /// a synced marker is communicated via a `_deleted: true`
+    /// sentinel ridden on the Updated channel. The plugin's
+    /// `MarkerPublisher.dispatchRemove` writes the tombstone, the
+    /// plugin's `renderAllMarkersFromDocStore` filters it out of
+    /// the rendered set and removes any prior MapView entry. These
+    /// tests pin the wire shape so a future schema change has to
+    /// pass through the test gate first.
+    mod marker_tombstone {
+        use super::*;
+
+        /// A minimum-viable tombstone publish carries `uid` +
+        /// `_deleted: true` only — the publisher omits type/lat/lon
+        /// to keep the BLE frame small. The parser must accept this
+        /// shape (placeholders for the absent geo fields), set
+        /// `deleted = true`, and round-trip cleanly.
+        #[test]
+        fn parse_minimal_tombstone() {
+            let json = r#"{"uid":"abc-123","_deleted":true,"ts":1700000000000}"#;
+            let m = parse_marker_publish_json("", json).expect("minimal tombstone parses");
+            assert!(m.deleted, "deleted flag set");
+            assert_eq!(m.uid, "abc-123");
+            assert_eq!(m.ts, 1700000000000);
+        }
+
+        /// A live (non-tombstone) marker still requires type/lat/lon.
+        /// Drops `_deleted` from the body — the parser must default
+        /// `deleted = false` and enforce the required-fields contract
+        /// it enforced before the tombstone shape was added.
+        #[test]
+        fn parse_live_marker_requires_geo() {
+            let no_type = r#"{"uid":"x","lat":1.0,"lon":2.0}"#;
+            assert!(parse_marker_publish_json("", no_type).is_err());
+
+            let no_lat = r#"{"uid":"x","type":"a-f-G","lon":2.0}"#;
+            assert!(parse_marker_publish_json("", no_lat).is_err());
+
+            let no_lon = r#"{"uid":"x","type":"a-f-G","lat":1.0}"#;
+            assert!(parse_marker_publish_json("", no_lon).is_err());
+
+            let ok = r#"{"uid":"x","type":"a-f-G","lat":1.0,"lon":2.0}"#;
+            let m = parse_marker_publish_json("", ok).expect("live marker parses");
+            assert!(!m.deleted);
+        }
+
+        /// `serialize_marker_json` round-trips a tombstone. The
+        /// `_deleted: true` key MUST appear in the output (otherwise
+        /// peers receiving the doc see a normal-looking marker and
+        /// re-render it after a refresh tick — the deletion would
+        /// "un-do" itself).
+        #[test]
+        fn serialize_tombstone_includes_deleted_key() {
+            let m = MarkerInfo {
+                uid: "abc-123".to_string(),
+                marker_type: "a-u-G".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                hae: None,
+                ts: 1700000000000,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: true,
+            };
+            let json = serialize_marker_json(&m).expect("serializes");
+            assert!(
+                json.contains("\"_deleted\":true"),
+                "tombstone serialization must include _deleted key, got: {json}"
+            );
+        }
+
+        /// A live marker's serialization MUST NOT include `_deleted`
+        /// (saves bytes on the wire AND avoids ambiguity for
+        /// receivers running an older parser that does a strict
+        /// `_deleted == true` check).
+        #[test]
+        fn serialize_live_marker_omits_deleted_key() {
+            let m = MarkerInfo {
+                uid: "abc-123".to_string(),
+                marker_type: "a-f-G-U-C".to_string(),
+                lat: 33.71,
+                lon: -84.41,
+                hae: Some(312.4),
+                ts: 1700000000000,
+                callsign: Some("ALPHA-1".to_string()),
+                color: Some(-65536),
+                cell_id: None,
+                deleted: false,
+            };
+            let json = serialize_marker_json(&m).expect("serializes");
+            assert!(
+                !json.contains("_deleted"),
+                "live marker must not emit _deleted key, got: {json}"
+            );
+        }
+
+        /// `serialize_markers_get_json` (the get_markers / scan-side
+        /// shape, an array) preserves the tombstone flag when the
+        /// doc store contains both live and deleted entries. The
+        /// plugin's `renderAllMarkersFromDocStore` reads this output
+        /// and must be able to identify which entries are tombstones.
+        #[test]
+        fn scan_serializes_tombstones_in_array() {
+            let live = MarkerInfo {
+                uid: "live".to_string(),
+                marker_type: "a-f-G".to_string(),
+                lat: 1.0,
+                lon: 2.0,
+                hae: None,
+                ts: 1,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: false,
+            };
+            let dead = MarkerInfo {
+                deleted: true,
+                ..live.clone()
+            };
+            let mut dead = dead;
+            dead.uid = "dead".to_string();
+
+            let json = serialize_markers_get_json(&[live, dead]);
+            let arr: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let arr = arr.as_array().unwrap();
+            assert_eq!(arr.len(), 2);
+            // Find by uid; can't rely on order.
+            let live_obj = arr.iter().find(|v| v["uid"] == "live").unwrap();
+            let dead_obj = arr.iter().find(|v| v["uid"] == "dead").unwrap();
+            assert!(
+                live_obj.get("_deleted").is_none(),
+                "live entry has no _deleted"
+            );
+            assert_eq!(
+                dead_obj["_deleted"].as_bool(),
+                Some(true),
+                "dead entry has _deleted: true"
+            );
+        }
+
+        /// Round-trip: serialize → parse → serialize. The two
+        /// serialized strings must be byte-identical. Catches
+        /// codec drift (e.g., one side adds a field the other
+        /// drops, or `Option<i64> 0` vs absent disagreements).
+        #[test]
+        fn tombstone_round_trip_is_stable() {
+            let m = MarkerInfo {
+                uid: "round-trip-uid".to_string(),
+                marker_type: "a-u-G".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                hae: None,
+                ts: 1700000000000,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: true,
+            };
+            let s1 = serialize_marker_json(&m).unwrap();
+            let parsed = parse_marker_publish_json("", &s1).expect("parses tombstone");
+            assert!(parsed.deleted, "deleted flag preserved through round-trip");
+            assert_eq!(parsed.uid, m.uid);
+            let s2 = serialize_marker_json(&parsed).unwrap();
+            assert_eq!(s1, s2, "round-trip must produce byte-identical output");
+        }
+    }
 }
 
 // =============================================================================
@@ -6216,6 +6639,124 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatfor
     // Don't drop the Arc - we're just borrowing
     std::mem::forget(node);
 
+    result
+}
+
+/// JNI: Get all markers as JSON array string
+///
+/// Kotlin signature: `external fun getMarkersJni(handle: Long): String`
+/// Returns JSON array of marker objects, or `"[]"` on error.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getMarkersJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    if handle == 0 {
+        return env
+            .new_string("[]")
+            .expect("Failed to create Java string")
+            .into_raw();
+    }
+
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = match node.get_markers() {
+        Ok(markers) => serialize_markers_get_json(&markers),
+        Err(_) => "[]".to_string(),
+    };
+
+    // Don't drop the Arc - we're just borrowing
+    std::mem::forget(node);
+
+    env.new_string(&result)
+        .expect("Failed to create Java string")
+        .into_raw()
+}
+
+/// JNI: Publish a marker into the doc store. Routes through the
+/// universal-Document transport on every registered radio
+/// (LiteBridgeTranslator on BLE, iroh sync for cross-mesh peers).
+///
+/// Kotlin signature: `external fun publishMarkerJni(handle: Long, markerJson: String): Boolean`
+/// Returns `1` (JNI_TRUE) on success, `0` (JNI_FALSE) on failure
+/// (invalid handle, malformed JSON, missing required fields, storage
+/// error). The Kotlin caller maps the boolean return back to a
+/// success / "publish failed" log path — same shape as
+/// `publishPlatformJni`.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishMarkerJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    marker_json: JString,
+) -> jboolean {
+    if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("publishMarkerJni: Invalid handle (0)");
+        return 0;
+    }
+
+    let json_str: String = match env.get_string(&marker_json) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "publishMarkerJni: Failed to get JSON string: {:?}",
+                e
+            ));
+            let _ = e;
+            return 0;
+        }
+    };
+
+    #[cfg(target_os = "android")]
+    android_log(&format!("publishMarkerJni: Received JSON: {}", json_str));
+
+    // Parse — uid is read from the body (no doc-store id available
+    // pre-storage). parse_marker_publish_json's `id` parameter is
+    // accepted for the scan-side path; on publish we pass the
+    // body's uid and reject if absent.
+    let marker: MarkerInfo = match parse_marker_publish_json("", &json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("publishMarkerJni: parse error: {:?}", e));
+            let _ = e;
+            return 0;
+        }
+    };
+
+    #[cfg(target_os = "android")]
+    if marker.deleted {
+        android_log(&format!(
+            "publishMarkerJni: Publishing TOMBSTONE for uid={}",
+            marker.uid
+        ));
+    } else {
+        android_log(&format!(
+            "publishMarkerJni: Publishing marker uid={}, type={}, lat={}, lon={}",
+            marker.uid, marker.marker_type, marker.lat, marker.lon
+        ));
+    }
+
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = match node.put_marker(marker) {
+        Ok(_) => {
+            #[cfg(target_os = "android")]
+            android_log("publishMarkerJni: Marker published successfully");
+            1
+        }
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("publishMarkerJni: Failed to publish: {:?}", e));
+            let _ = e;
+            0
+        }
+    };
+
+    std::mem::forget(node);
     result
 }
 
@@ -7759,6 +8300,18 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
+            name: "getMarkersJni".into(),
+            sig: "(J)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getMarkersJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "publishMarkerJni".into(),
+            sig: "(JLjava/lang/String;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishMarkerJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
             name: "publishDocumentJni".into(),
             sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
             fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni as *mut c_void,
@@ -8075,6 +8628,19 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "getCommandsJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getCommandsJni as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "getMarkersJni".into(),
+                    sig: "(J)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getMarkersJni as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "publishMarkerJni".into(),
+                    sig: "(JLjava/lang/String;)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishMarkerJni
+                        as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
