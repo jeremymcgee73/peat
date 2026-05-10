@@ -82,7 +82,7 @@ pub mod discovery;
 pub mod distribution; // AI model distribution (manifests, updates, requirements)
 pub mod error;
 pub mod event; // Event routing and aggregation (ADR-027)
-pub mod ffi; // FFI bindings for ATAK and other native consumers (Issue #258)
+pub mod ffi; // FFI bindings for native consumers (Issue #258)
 pub mod geohash; // Vendored geohash algorithm (supply chain audit)
 pub mod hierarchy;
 pub mod mesh_integration;

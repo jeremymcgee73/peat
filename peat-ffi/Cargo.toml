@@ -14,8 +14,8 @@ name = "uniffi-bindgen"
 path = "src/uniffi_bindgen.rs"
 
 [[example]]
-name = "peat_tak_client"
-path = "examples/peat_tak_client.rs"
+name = "peat_cot_client"
+path = "examples/peat_cot_client.rs"
 required-features = ["sync"]
 
 [[example]]

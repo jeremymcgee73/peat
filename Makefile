@@ -55,11 +55,11 @@ help:
 	@echo "  build                    - Build all Rust crates"
 	@echo "  build-docker             - Build Docker image (run once before tests)"
 	@echo ""
-	@echo "Android (ATAK Plugin):"
+	@echo "Android (Consumer Plugin):"
 	@echo "  build-android            - Cross-compile peat-ffi for Android"
-	@echo "  build-atak-plugin        - Build ATAK plugin APK (includes native libs)"
-	@echo "  deploy-atak-plugin       - Deploy APK to connected device"
-	@echo "  android                  - Build and deploy ATAK plugin"
+	@echo "  build-consumer-plugin        - Build consumer plugin APK (includes native libs)"
+	@echo "  deploy-consumer-plugin       - Deploy APK to connected device"
+	@echo "  android                  - Build and deploy consumer plugin"
 	@echo "  clean-android            - Clean Android build artifacts"
 	@echo ""
 	@echo "BLE Functional Test (Pi-to-Android):"
@@ -407,99 +407,99 @@ matrix-analyze:
 
 # Build peat-ffi native library for Android
 # Requires: cargo-ndk (cargo install cargo-ndk)
-# Outputs to: atak-plugin/app/libs/{arm64-v8a,armeabi-v7a}/libpeat_ffi.so
+# Outputs to: peat-atak-plugin/app/libs/{arm64-v8a,armeabi-v7a}/libpeat_ffi.so
 build-android:
 	@echo "Building peat-ffi for Android..."
 	@command -v cargo-ndk >/dev/null 2>&1 || { echo "Error: cargo-ndk not found. Install with: cargo install cargo-ndk"; exit 1; }
 	@export PATH="$$HOME/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin:$$PATH" && \
-		cargo ndk -t arm64-v8a -t armeabi-v7a -o atak-plugin/app/libs build --release -p peat-ffi --features bluetooth
+		cargo ndk -t arm64-v8a -t armeabi-v7a -o peat-atak-plugin/app/libs build --release -p peat-ffi --features bluetooth
 	@echo "✓ Native libraries built:"
-	@ls -la atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
+	@ls -la peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so peat-atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
 
-# Build ATAK plugin with native libs
+# Build consumer plugin with native libs
 # Kotlin 2.1.x can't parse Java 25 version strings, so pin to JDK 21
-ATAK_JAVA_HOME ?= /usr/lib/jvm/java-21-openjdk
-build-atak-plugin: build-android
-	@echo "Building ATAK plugin (JDK 21)..."
-	@cd atak-plugin && JAVA_HOME=$(ATAK_JAVA_HOME) ./gradlew assembleCivDebug
-	@echo "✓ ATAK plugin built"
+CONSUMER_JAVA_HOME ?= /usr/lib/jvm/java-21-openjdk
+build-consumer-plugin: build-android
+	@echo "Building consumer plugin (JDK 21)..."
+	@cd peat-atak-plugin && JAVA_HOME=$(CONSUMER_JAVA_HOME) ./gradlew assembleCivDebug
+	@echo "✓ consumer plugin built"
 
-# Deploy ATAK plugin to connected device
-deploy-atak-plugin:
-	@echo "Deploying ATAK plugin..."
-	@adb install -r atak-plugin/app/build/outputs/apk/civ/debug/ATAK-Plugin-Peat-*.apk
+# Deploy consumer plugin to connected device
+deploy-consumer-plugin:
+	@echo "Deploying consumer plugin..."
+	@adb install -r peat-atak-plugin/app/build/outputs/apk/civ/debug/consumer-Plugin-Peat-*.apk
 	@echo "✓ Deployed to device"
 
 # Full Android build and deploy
-android: build-atak-plugin deploy-atak-plugin
+android: build-consumer-plugin deploy-consumer-plugin
 	@echo "✓ Android build and deploy complete"
 
 # Clean Android build artifacts
 clean-android:
 	@echo "Cleaning Android build artifacts..."
-	@rm -rf atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so
-	@rm -rf atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
-	@rm -rf atak-plugin/app/build
+	@rm -rf peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so
+	@rm -rf peat-atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
+	@rm -rf peat-atak-plugin/app/build
 	@echo "✓ Android artifacts cleaned"
 
 # ============================================
-# Demo Automation (ATAK + Sim Mesh)
+# Demo Automation (Consumer Plugin + Sim Mesh)
 # ============================================
 # Full build→deploy→configure→launch loop for development iteration.
 #
 # Quick reference:
-#   make demo-atak          # Build + deploy + configure + launch ATAK plugin
-#   make demo-restart-atak  # Stop + clear + relaunch (no rebuild)
+#   make demo-consumer          # Build + deploy + configure + launch consumer plugin
+#   make demo-restart-consumer  # Stop + clear + relaunch (no rebuild)
 #   make demo-sim           # Build docker + deploy containerlab + warmup
-#   make demo               # Full loop: sim + ATAK
-#   make demo-verify        # Check ATAK logs for cell sync status
-#   make demo-stop          # Tear down sim + stop ATAK
+#   make demo               # Full loop: sim + consumer
+#   make demo-verify        # Check consumer logs for cell sync status
+#   make demo-stop          # Tear down sim + stop consumer
 
 TOPOLOGY ?= peat-sim/topologies/lab4-48n-1gbps.yaml
 CLAB_PREFIX ?= clab-lab4-48n
 COMMANDER_CONTAINER ?= $(CLAB_PREFIX)-company-ALPHA-commander
-ATAK_PACKAGE ?= com.atakmap.app.civ
-PEAT_PLUGIN_ID ?= com.defenseunicorns.atak.peat
+CONSUMER_PACKAGE ?= com.atakmap.app.civ
+PEAT_PLUGIN_ID ?= com.atakmap.android.peat.plugin.civ
 
-# Full ATAK plugin build → deploy → configure → launch
-demo-atak: build-atak-plugin deploy-atak-plugin configure-atak
+# Full consumer plugin build → deploy → configure → launch
+demo-consumer: build-consumer-plugin deploy-consumer-plugin configure-consumer
 	@sleep 2
-	@$(MAKE) start-atak
-	@echo "✓ ATAK plugin built, deployed, configured, and launched"
+	@$(MAKE) start-consumer
+	@echo "✓ consumer plugin built, deployed, configured, and launched"
 
 # Enable plugin + clear stale store (adb install always disables the plugin)
-# Must stop ATAK first so SharedPreferences aren't held open
-configure-atak:
-	@echo "Stopping ATAK for configuration..."
-	@adb shell am force-stop $(ATAK_PACKAGE) 2>/dev/null || true
+# Must stop the consumer app first so SharedPreferences aren't held open
+configure-consumer:
+	@echo "Stopping consumer for configuration..."
+	@adb shell am force-stop $(CONSUMER_PACKAGE) 2>/dev/null || true
 	@sleep 1
 	@echo "Enabling Peat plugin..."
-	@adb shell "run-as $(ATAK_PACKAGE) sed -i 's/shouldLoad-$(PEAT_PLUGIN_ID)\" value=\"false\"/shouldLoad-$(PEAT_PLUGIN_ID)\" value=\"true\"/' /data/data/$(ATAK_PACKAGE)/shared_prefs/$(ATAK_PACKAGE)_preferences.xml" 2>/dev/null || echo "  (prefs file not found — first install, plugin will auto-enable)"
+	@adb shell "run-as $(CONSUMER_PACKAGE) sed -i 's/shouldLoad-$(PEAT_PLUGIN_ID)\" value=\"false\"/shouldLoad-$(PEAT_PLUGIN_ID)\" value=\"true\"/' /data/data/$(CONSUMER_PACKAGE)/shared_prefs/$(CONSUMER_PACKAGE)_preferences.xml" 2>/dev/null || echo "  (prefs file not found — first install, plugin will auto-enable)"
 	@echo "Clearing stale Peat store..."
-	@adb shell "run-as $(ATAK_PACKAGE) rm -rf /data/user/0/$(ATAK_PACKAGE)/files/peat" 2>/dev/null || true
-	@echo "✓ ATAK configured for Peat plugin"
+	@adb shell "run-as $(CONSUMER_PACKAGE) rm -rf /data/user/0/$(CONSUMER_PACKAGE)/files/peat" 2>/dev/null || true
+	@echo "✓ consumer configured for Peat plugin"
 
-# Force-stop and relaunch ATAK (no rebuild)
-start-atak:
-	@echo "Starting ATAK..."
-	@adb shell am force-stop $(ATAK_PACKAGE) 2>/dev/null || true
+# Force-stop and relaunch the consumer app (no rebuild)
+start-consumer:
+	@echo "Starting consumer..."
+	@adb shell am force-stop $(CONSUMER_PACKAGE) 2>/dev/null || true
 	@sleep 1
-	@adb shell am start -n $(ATAK_PACKAGE)/com.atakmap.app.ATAKActivity
-	@echo "✓ ATAK started"
+	@adb shell am start -n $(CONSUMER_PACKAGE)/com.atakmap.app.ATAKActivity
+	@echo "✓ consumer started"
 
-# Stop ATAK
-stop-atak:
-	@echo "Stopping ATAK..."
-	@adb shell am force-stop $(ATAK_PACKAGE) 2>/dev/null || true
-	@echo "✓ ATAK stopped"
+# Stop consumer
+stop-consumer:
+	@echo "Stopping consumer..."
+	@adb shell am force-stop $(CONSUMER_PACKAGE) 2>/dev/null || true
+	@echo "✓ consumer stopped"
 
 # Quick restart: stop → clear store → relaunch (skips build)
-demo-restart-atak: stop-atak
+demo-restart-consumer: stop-consumer
 	@echo "Clearing stale Peat store..."
-	@adb shell "run-as $(ATAK_PACKAGE) rm -rf /data/user/0/$(ATAK_PACKAGE)/files/peat" 2>/dev/null || true
+	@adb shell "run-as $(CONSUMER_PACKAGE) rm -rf /data/user/0/$(CONSUMER_PACKAGE)/files/peat" 2>/dev/null || true
 	@sleep 1
-	@$(MAKE) start-atak
-	@echo "✓ ATAK restarted with clean Peat store"
+	@$(MAKE) start-consumer
+	@echo "✓ consumer restarted with clean Peat store"
 
 # Build docker image + deploy containerlab + wait for warmup
 demo-sim: build-docker
@@ -522,15 +522,15 @@ demo-sim-destroy:
 	@sudo containerlab destroy -t $(TOPOLOGY) --cleanup 2>/dev/null || true
 	@echo "✓ Sim destroyed"
 
-# Full demo loop: sim + ATAK
-demo: demo-sim demo-atak
+# Full demo loop: sim + consumer
+demo: demo-sim demo-consumer
 	@sleep 5
 	@$(MAKE) demo-verify
 
-# Verify ATAK sees the sim mesh
+# Verify consumer sees the sim mesh
 demo-verify:
 	@echo "=== Recent Peat logs ==="
-	@adb logcat -d -t 200 | grep -iE 'Cell.*updated|PeatNode|sync.*document|PEAT|formation.*handshake' || echo "(no recent Peat logs — ATAK may still be starting)"
+	@adb logcat -d -t 200 | grep -iE 'Cell.*updated|PeatNode|sync.*document|PEAT|formation.*handshake' || echo "(no recent Peat logs — consumer may still be starting)"
 	@echo ""
 	@echo "=== Sim commander metrics ==="
 	@docker exec $(COMMANDER_CONTAINER) tail -5 /data/logs/company-ALPHA-commander.metrics.log 2>/dev/null || echo "(sim not running)"
@@ -549,20 +549,20 @@ demo-disco-destroy:
 
 # ---- Demo Flow Control ----
 # Pre-demo: build everything (run once before the demo)
-demo-prep: build-docker build-atak-plugin deploy-atak-plugin
+demo-prep: build-docker build-consumer-plugin deploy-consumer-plugin
 	@cp peat-sim/topologies/lab4-48n-1gbps.yaml /tmp/lab4-48n.yaml
 	@echo "✓ Demo prep complete — Docker image + APK built and deployed"
 
-# Clean reset: tear down everything, clear ATAK store, restart fresh
-demo-reset: stop-atak
+# Clean reset: tear down everything, clear consumer-plugin store, restart fresh
+demo-reset: stop-consumer
 	@docker ps -a --filter "name=clab-" -q | xargs -r docker rm -f 2>/dev/null || true
 	@docker network rm lab4-48n disco-8usv 2>/dev/null || true
-	@adb shell "run-as $(ATAK_PACKAGE) rm -rf /data/user/0/$(ATAK_PACKAGE)/files/peat" 2>/dev/null || true
+	@adb shell "run-as $(CONSUMER_PACKAGE) rm -rf /data/user/0/$(CONSUMER_PACKAGE)/files/peat" 2>/dev/null || true
 	@echo "✓ Clean reset complete"
 
-# Phase 1: ATAK only (BRAVO cell = tablet + watch)
-demo-phase1: configure-atak start-atak
-	@echo "✓ Phase 1: ATAK running (BRAVO cell)"
+# Phase 1: consumer only (BRAVO cell = tablet + watch)
+demo-phase1: configure-consumer start-consumer
+	@echo "✓ Phase 1: consumer running (BRAVO cell)"
 
 # Phase 2: Bring up ALPHA company (48-node ground force)
 demo-phase2:
@@ -579,11 +579,11 @@ demo-phase3:
 
 # Phase 4: Start red track scenario (hostile vessel approaches USV box)
 # Sends SIGUSR1 to disco-leader container, which publishes START_SCENARIO
-# to the "commands" collection. ATAK polls commands and triggers the scenario.
+# to the "commands" collection. consumer polls commands and triggers the scenario.
 demo-phase4:
 	@echo "Starting red track scenario via mesh command..."
 	@docker kill -s USR1 clab-disco-8usv-disco-leader
-	@echo "✓ Phase 4: START_SCENARIO published to mesh — ATAK will pick it up within ~10s"
+	@echo "✓ Phase 4: START_SCENARIO published to mesh — consumer will pick it up within ~10s"
 
 # Stop red track scenario
 demo-phase4-stop:
@@ -592,7 +592,7 @@ demo-phase4-stop:
 	@echo "✓ STOP_SCENARIO published to mesh"
 
 # Stop everything
-demo-stop: stop-atak demo-sim-destroy demo-disco-destroy
+demo-stop: stop-consumer demo-sim-destroy demo-disco-destroy
 	@echo "✓ Demo environment torn down"
 
 # ============================================
@@ -621,7 +621,7 @@ build-ble-test-app: build-android
 	@echo "║  Building Android BLE Test App                            ║"
 	@echo "╚════════════════════════════════════════════════════════════╝"
 	@mkdir -p examples/android-ble-test/app/src/main/jniLibs/arm64-v8a
-	cp atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so \
+	cp peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so \
 		examples/android-ble-test/app/src/main/jniLibs/arm64-v8a/
 	@echo "✓ Copied libpeat_ffi.so to android-ble-test jniLibs"
 	cd examples/android-ble-test && ./gradlew assembleDebug

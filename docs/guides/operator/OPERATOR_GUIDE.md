@@ -16,7 +16,7 @@
 6. [Network Configuration](#6-network-configuration)
 7. [Security](#7-security)
 8. [Monitoring & Observability](#8-monitoring--observability)
-9. [TAK/ATAK Integration](#9-takatak-integration)
+9. [CoT Integration](#9-cot-integration)
 10. [Backup & Recovery](#10-backup--recovery)
 11. [Troubleshooting](#11-troubleshooting)
 12. [Reference](#12-reference)
@@ -141,7 +141,7 @@ cargo check --all-features
 
 - [Configuration](#4-configuration) - Customize your deployment
 - [Deployment Patterns](#5-deployment-patterns) - Production deployment options
-- [TAK Integration](#9-takatak-integration) - Connect to ATAK
+- [TAK Integration](#9-cot-integration) - Connect to consumer plugins
 
 ---
 
@@ -854,7 +854,7 @@ service_name = "peat-node"
 
 ---
 
-## 9. TAK/ATAK Integration
+## 9. CoT Integration
 
 ### 9.1 Overview
 
@@ -862,15 +862,15 @@ Peat integrates with Team Awareness Kit (TAK) via Cursor-on-Target (CoT) protoco
 
 ```
 ┌─────────┐      ┌───────────────┐      ┌──────────┐
-│  Peat   │ ←──→ │ CoT Translator│ ←──→ │  ATAK    │
+│  Peat   │ ←──→ │ CoT Translator│ ←──→ │  CoT Sink │
 │ Network │      │   (peat-cot)  │      │  Devices │
 └─────────┘      └───────────────┘      └──────────┘
 ```
 
-### 9.2 ATAK Plugin Installation
+### 9.2 Consumer Plugin Installation
 
-1. Download the Peat ATAK plugin APK
-2. Install on Android device with ATAK
+1. Download the Peat consumer plugin APK
+2. Install on Android device running the host app
 3. Configure connection settings
 
 ```
@@ -917,8 +917,8 @@ Peat automatically translates to CoT XML:
 
 ### 9.5 Bidirectional Integration
 
-Peat receives commands from TAK/ATAK:
-- Position updates from ATAK users
+Peat receives commands from CoT/TAK:
+- Position updates from consumer-plugin users
 - Mission waypoints
 - Target designations
 - Chat messages

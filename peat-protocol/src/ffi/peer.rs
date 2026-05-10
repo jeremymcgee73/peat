@@ -1,7 +1,7 @@
 //! FFI peer management API (Issue #258)
 //!
 //! Provides C-compatible FFI bindings for managing peer connections.
-//! Designed for ATAK Android integration via JNI.
+//! Designed for Android consumer integration via JNI.
 //!
 //! ## Thread Safety
 //!

@@ -9,7 +9,7 @@
 
 ## Overview
 
-This project plan tracks the integration of peat-btle and peat-lite into the Peat framework and ATAK plugin, implementing ADR-047 (Android BLE Hybrid Integration).
+This project plan tracks the integration of peat-btle and peat-lite into the Peat framework and consumer plugin, implementing ADR-047 (Android BLE Hybrid Integration).
 
 ---
 
@@ -155,9 +155,9 @@ the transport layer into `peat-mesh`. Much of the original M4 work is now comple
 
 ---
 
-### Milestone 5: ADR-047 Phase 4 - ATAK Plugin Migration
+### Milestone 5: ADR-047 Phase 4 - Consumer Plugin Migration
 
-Migrate ATAK plugin from dual-system to unified transport.
+Migrate consumer plugin from dual-system to unified transport.
 
 | Task | Status | Notes |
 |------|--------|-------|
@@ -173,7 +173,7 @@ Migrate ATAK plugin from dual-system to unified transport.
 **Deliverables**:
 - [x] BLE state queryable through PeatNodeJni (unified API)
 - [x] Unified peer count display in UI
-- [ ] ATAK plugin uses single PeatNode API for all features
+- [ ] consumer plugin uses single PeatNode API for all features
 - [ ] WearTAK devices sync via unified transport
 - [ ] No regression in functionality
 
@@ -190,7 +190,7 @@ Final cleanup and documentation.
 | Update ADR-047 status to Accepted | TODO | |
 | Battery consumption benchmark | TODO | <5% regression target |
 | Performance profiling (callback latency) | TODO | <10ms target |
-| Update ATAK plugin documentation | TODO | |
+| Update consumer plugin documentation | TODO | |
 
 **Deliverables**:
 - [ ] Clean codebase
@@ -246,7 +246,7 @@ Final cleanup and documentation.
 
 ### Hardware
 - Raspberry Pi 5 x2: rpi-ci (D8:3A:DD:F5:FD:53), rpi-ci2 (D8:3A:DD:F6:1B:89, 192.168.228.65)
-- Android device for ATAK testing
+- Android device for consumer-plugin testing
 - WearOS devices: WEAROS-5122, WEAROS-6441 (discovered during Pi testing)
 
 ---
