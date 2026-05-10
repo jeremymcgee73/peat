@@ -1579,6 +1579,7 @@ mod tests {
     ///   - second observation outside the window passes (legitimate reconnect)
     ///   - second observation for a *different* peer within the window passes
     ///     (no accidental cross-peer dedup)
+    ///
     /// If `CONNECTED_DEDUP_WINDOW` is tuned, or the helper's
     /// reaping logic regresses (e.g. `retain` swapped for a no-op),
     /// one of these assertions fails before the bug ships.
