@@ -612,6 +612,21 @@ impl SyncCapable for AutomergeBackend {
         let sync_active_for_events = Arc::clone(&sync_active);
         let active_handlers_for_events = Arc::clone(&active_handlers);
 
+        // De-dup window for duplicate Connected events per peer.
+        // The connect-path and accept-path can both emit Connected
+        // for the same peer when racing on a recycle reconnect (seen
+        // in 2026-05-10 sync diagnostic: tablet observed two Connected
+        // events for the same peer ID within 2.6s, each spawning its
+        // own proactive-push task — wasted bandwidth and a confusing
+        // log trail). 5s is comfortably wider than the observed race
+        // window without suppressing legitimate reconnect-after-recycle
+        // events (those are >50s apart).
+        let recent_connects: Arc<std::sync::RwLock<std::collections::HashMap<
+            EndpointId,
+            std::time::Instant,
+        >>> = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        const CONNECTED_DEDUP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
         tokio::spawn(async move {
             let mut events = transport_events;
             while let Some(event) = events.recv().await {
@@ -623,6 +638,33 @@ impl SyncCapable for AutomergeBackend {
                     ..
                 } = event
                 {
+                    // Skip duplicate Connected within the dedup window
+                    // — otherwise both the connect and accept paths
+                    // double-spawn proactive pushes for the same peer.
+                    let now = std::time::Instant::now();
+                    let is_duplicate = {
+                        let mut map = recent_connects.write().expect("recent_connects poisoned");
+                        // Garbage-collect stale entries on each event so
+                        // the map doesn't grow unbounded over a long
+                        // session. O(n) per event is fine — peer count
+                        // stays in the low double digits in practice.
+                        map.retain(|_, t| now.duration_since(*t) < CONNECTED_DEDUP_WINDOW);
+                        match map.get(&endpoint_id) {
+                            Some(_) => true,
+                            None => {
+                                map.insert(endpoint_id, now);
+                                false
+                            }
+                        }
+                    };
+                    if is_duplicate {
+                        tracing::debug!(
+                            peer = ?endpoint_id,
+                            "Suppressing duplicate Connected event within dedup window"
+                        );
+                        continue;
+                    }
+
                     // Spawn handler immediately for new connection
                     Self::spawn_sync_handler_for_peer(
                         endpoint_id,
@@ -639,15 +681,29 @@ impl SyncCapable for AutomergeBackend {
                     let push_peer_id = endpoint_id;
                     tokio::spawn(async move {
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        if let Err(e) = coordinator_for_push
+                        match coordinator_for_push
                             .sync_all_documents_with_peer(push_peer_id)
                             .await
                         {
-                            tracing::debug!(
-                                "Proactive document push to peer {:?} failed: {}",
-                                push_peer_id,
-                                e
-                            );
+                            Ok(()) => {
+                                // Success-side tracing — without this,
+                                // a silently-failing proactive push is
+                                // indistinguishable from a successful
+                                // one in logs. Diagnostic log spammed
+                                // ~50 connect events with zero info on
+                                // whether any push actually ran.
+                                tracing::info!(
+                                    peer = ?push_peer_id,
+                                    "Proactive document push to peer succeeded"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Proactive document push to peer {:?} failed: {}",
+                                    push_peer_id,
+                                    e
+                                );
+                            }
                         }
                     });
 
