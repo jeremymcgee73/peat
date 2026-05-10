@@ -4,14 +4,14 @@
 //! and Peat Protocol Automerge documents. This enables gateway nodes to
 //! bridge between:
 //!
-//! - **Full Peat nodes** (ATAK, CLI) using Automerge documents
-//! - **WearTAK devices** (Samsung Watch) using peat-btle lightweight CRDTs
+//! - **Full Peat nodes** (mobile-app consumers, CLI) using Automerge documents
+//! - **Constrained wearable devices** using peat-btle lightweight CRDTs
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────────┐
-//! │                       Gateway Node (ATAK)                           │
+//! │                          Gateway Node                               │
 //! │  ┌─────────────────────────────────────────────────────────────────┐│
 //! │  │                    BLE Translation Layer                        ││
 //! │  │                                                                 ││
