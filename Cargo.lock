@@ -3742,7 +3742,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peat"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 
 [[package]]
 name = "peat-btle"
@@ -3782,7 +3782,7 @@ dependencies = [
 
 [[package]]
 name = "peat-discovery"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3871,7 +3871,7 @@ dependencies = [
 
 [[package]]
 name = "peat-persistence"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3896,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "peat-protocol"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "peat-schema"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3963,7 +3963,7 @@ dependencies = [
 
 [[package]]
 name = "peat-tak-bridge"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3984,7 +3984,7 @@ dependencies = [
 
 [[package]]
 name = "peat-transport"
-version = "0.9.0-rc.1"
+version = "0.9.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
