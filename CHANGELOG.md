@@ -14,6 +14,21 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.5] - 2026-05-11
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.4` → `0.9.0-rc.5`. `peat-ffi` bumps independently `0.2.1` → `0.2.2` (patch: non-breaking observability addition; no ABI surface change).
+
+### Changed
+
+- **`peat-mesh` patch pin:** `[patch.crates-io] peat-mesh` rev bumped from `9a92e7ca` (post-#106; the workspace skipped the interim `1df89a01` post-#108 mainline since rc.4's release cadence pre-dated those PRs) to `0d15467` (post-#109). The new revision pulls in three cumulative sync-coordinator fixes validated end-to-end on the 3-device bench:
+  - **peat-mesh#107** — `categorize_sync_error` deduplicated. The inline categorizer at `sync_documents_batch` mirrored the one at `initiate_sync` but had drifted; refactored into a free function with shared pattern table so a Network-class transient stops getting silently categorized as Document and burning the retry budget.
+  - **peat-mesh#108** — `get_alive_connection` pre-check before `open_bi`. `transport.get_or_connect` could return a cached iroh `Connection` whose `close_reason()` was already set; the subsequent `open_bi` would fail, but the categorizer's Network → Network classification wasted a circuit-breaker failure slot per cached-dead-peer attempt. The helper checks `close_reason()` before opening the stream and bails with a phrase the categorizer recognizes as Network.
+  - **peat-mesh#109** — circuit-breaker one-way trap. `is_circuit_open` was pure-read and ignored `open_timeout`, so once tripped the breaker stayed blocking indefinitely. New `should_block_sync` gate respects the timeout and performs Open → HalfOpen transition. The shared `try_half_open_transition` helper is used by both `handle_error` and `should_block_sync` so the state-machine semantics stay symmetric. Both production call sites (`initiate_sync`, `sync_documents_batch`) now route through `should_block_sync` and through `anyhow::Error::from(SyncError::CircuitBreakerOpen)` for typed downcastability.
+
+### Added
+
+- **`peat-ffi` Android tracing bridge:** `init_android_tracing()` invoked from `JNI_OnLoad` installs a `tracing-subscriber` whose writer routes every event ≥ INFO to logcat under the `PeatRust` tag. peat-mesh and peat-protocol emit per-document sync results, transport-layer warnings, and other diagnostics via `tracing::warn!` / `tracing::info!` — without a subscriber installed those events go nowhere on Android, which is how the silent-sync regression that motivated peat-mesh#107/#108/#109 went undiagnosed until peat-ffi `request_sync` got its own `android_log` (`PeatFFI` tag, peat#848). Idempotent via `OnceLock`; level override via `PEAT_TRACING_LEVEL` env var. Closes the observability arm of peat#850.
+
 ## [0.9.0-rc.4] - 2026-05-11
 
 ### Changed

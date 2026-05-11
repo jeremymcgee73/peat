@@ -33,6 +33,17 @@ audit-as-crates-io = true
 [policy.peat-protocol]
 audit-as-crates-io = true
 
+# Reserved-name placeholder crate. `peat:0.9.0-rc.4` was published
+# to crates.io as part of the 2026-05-11 rc.4 release flow; once a
+# name is reserved with a real version, every subsequent workspace
+# version bump trips cargo-vet's "non-crates.io-fetched packages
+# match published crates.io versions" check unless we declare a
+# policy. Same `audit-as-crates-io = true` shape as peat-schema /
+# peat-protocol — treat the local path crate as auditable under
+# the crates.io identity.
+[policy.peat]
+audit-as-crates-io = true
+
 # ADR-059 Amendment 4 Slice 4.d (interim) — peat-mesh and peat-btle are
 # resolved from git via `[patch.crates-io]` in the workspace Cargo.toml
 # (the post-Slice-4.a/4.b mains, until the Slice 4 train ships post-UAT
@@ -79,6 +90,10 @@ criteria = "safe-to-deploy"
 version = "0.9.0-rc.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.peat-schema]]
+version = "0.9.0-rc.5"
+criteria = "safe-to-deploy"
+
 [[exemptions.peat-protocol]]
 version = "0.9.0-rc.1"
 criteria = "safe-to-deploy"
@@ -93,6 +108,20 @@ criteria = "safe-to-deploy"
 
 [[exemptions.peat-protocol]]
 version = "0.9.0-rc.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.peat-protocol]]
+version = "0.9.0-rc.5"
+criteria = "safe-to-deploy"
+
+# Top-level facade crate. `peat:0.9.0-rc.4` was published to
+# crates.io as part of the 2026-05-11 rc.4 release flow (currently
+# a reserved-name placeholder); the workspace member at rc.5 is
+# the local-path source the workspace builds from. First-party
+# trust under the same `audit-as-crates-io = true` policy as
+# peat-schema / peat-protocol above.
+[[exemptions.peat]]
+version = "0.9.0-rc.5"
 criteria = "safe-to-deploy"
 
 # ADR-059 Amendment 4 Slice 4.d interim git-rev consumption.

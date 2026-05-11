@@ -8813,6 +8813,171 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
     }
 }
 
+/// Bridge `tracing` events into android logcat (peat#850).
+///
+/// peat-mesh and peat-protocol emit per-doc sync results, transport
+/// errors, and other diagnostics via `tracing::error!` /
+/// `tracing::warn!` / `tracing::info!` / `tracing::debug!`. Without
+/// a subscriber installed these events go nowhere on Android — which
+/// is how the marker-sync silent-failure bug went un-diagnosed until
+/// peat-ffi `request_sync` got its own `android_log` (peat#848).
+///
+/// This subscriber routes every tracing event matching the filter
+/// to logcat under the `PeatRust` tag, **with the tracing `Level`
+/// mapped to the corresponding Android log priority** so
+/// `adb logcat *:W` / `*:E` priority filtering surfaces peat-mesh's
+/// `warn!` / `error!` events. Priority mapping (Android NDK
+/// convention): `ERROR→6, WARN→5, INFO→4, DEBUG→3, TRACE→2`.
+///
+/// Implementation uses a custom `tracing_subscriber::Layer<S>` impl
+/// (not the `fmt-layer` + custom `Write` pipeline) because the
+/// formatted-bytes interface only sees the rendered string, not the
+/// originating `Event`'s metadata. The Layer pulls
+/// `event.metadata().level()` directly and dispatches to
+/// `__android_log_write` with the mapped priority. peat#851 round-5.
+///
+/// Idempotent via `OnceLock` — safe to call multiple times. Failures
+/// to install (another subscriber already global) are logged once
+/// and ignored, never panic.
+///
+/// The level defaults to INFO; override with `PEAT_TRACING_LEVEL=debug`
+/// (or any `tracing-subscriber::EnvFilter` directive) at process
+/// launch via an environment variable on the Android side. Going
+/// below INFO is verbose — fine for active diagnostic, not for
+/// steady-state.
+#[cfg(target_os = "android")]
+fn init_android_tracing() {
+    use std::sync::OnceLock;
+    static INITIALIZED: OnceLock<()> = OnceLock::new();
+    INITIALIZED.get_or_init(|| {
+        use std::ffi::CString;
+        use std::fmt::Write as _;
+        use std::os::raw::c_char;
+        use tracing::field::{Field, Visit};
+        use tracing::{Event, Level, Subscriber};
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::{EnvFilter, Layer};
+
+        extern "C" {
+            fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+        }
+
+        // Tag is a compile-time constant — allocate the CString once
+        // for the lifetime of the process, not on every log event.
+        fn tag_ptr() -> *const c_char {
+            static TAG: OnceLock<CString> = OnceLock::new();
+            TAG.get_or_init(|| CString::new("PeatRust").expect("static tag"))
+                .as_ptr()
+        }
+
+        /// Visitor that flattens an event's fields into a single
+        /// string. Treats the `message` field (where `info!("X")`'s
+        /// argument lands) specially so it's not prefixed with
+        /// `message=`. Other fields render as `name=value`.
+        #[derive(Default)]
+        struct FieldStringifier(String);
+        impl Visit for FieldStringifier {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if !self.0.is_empty() {
+                    self.0.push(' ');
+                }
+                if field.name() == "message" {
+                    // Debug-format strips the surrounding quotes if
+                    // the value is a `&str` literal, which matches
+                    // how the fmt-layer rendered messages previously.
+                    let _ = write!(self.0, "{:?}", value);
+                } else {
+                    let _ = write!(self.0, "{}={:?}", field.name(), value);
+                }
+            }
+            fn record_str(&mut self, field: &Field, value: &str) {
+                if !self.0.is_empty() {
+                    self.0.push(' ');
+                }
+                if field.name() == "message" {
+                    self.0.push_str(value);
+                } else {
+                    let _ = write!(self.0, "{}={}", field.name(), value);
+                }
+            }
+        }
+
+        /// `Level → Android NDK priority` mapping. Verbose=2,
+        /// Debug=3, Info=4, Warn=5, Error=6. Constants live in
+        /// `android/log.h`; we hardcode them rather than pulling in
+        /// the `ndk-sys` crate just for five integers.
+        fn android_priority(level: &Level) -> i32 {
+            match *level {
+                Level::ERROR => 6,
+                Level::WARN => 5,
+                Level::INFO => 4,
+                Level::DEBUG => 3,
+                Level::TRACE => 2,
+            }
+        }
+
+        struct AndroidLayer;
+        impl<S: Subscriber> Layer<S> for AndroidLayer {
+            fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+                let metadata = event.metadata();
+                let prio = android_priority(metadata.level());
+
+                let mut visitor = FieldStringifier::default();
+                event.record(&mut visitor);
+                // Prefix with the target (typically the source crate
+                // / module path) so a logcat reader can grep for
+                // `peat_mesh::storage::automerge_sync` without
+                // needing the priority signal alone.
+                let formatted = if visitor.0.is_empty() {
+                    metadata.target().to_string()
+                } else {
+                    format!("{}: {}", metadata.target(), visitor.0)
+                };
+
+                // Cap each entry well under logcat's per-line limit
+                // (~4 KiB). The source string is valid UTF-8, so we
+                // must truncate on a char boundary — walk back from
+                // byte LIMIT to a UTF-8 leading byte. Worst case 3
+                // bytes back, O(1).
+                const LIMIT: usize = 3500;
+                let bytes = formatted.as_bytes();
+                let truncated: &[u8] = if bytes.len() > LIMIT {
+                    let mut cut = LIMIT;
+                    while cut > 0 && (bytes[cut] & 0b1100_0000) == 0b1000_0000 {
+                        cut -= 1;
+                    }
+                    &bytes[..cut]
+                } else {
+                    bytes
+                };
+
+                if let Ok(c_msg) = CString::new(truncated) {
+                    unsafe {
+                        __android_log_write(prio, tag_ptr(), c_msg.as_ptr());
+                    }
+                }
+            }
+        }
+
+        let env_filter = EnvFilter::try_from_env("PEAT_TRACING_LEVEL")
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+
+        let result = tracing_subscriber::registry()
+            .with(env_filter)
+            .with(AndroidLayer)
+            .try_init();
+
+        match result {
+            Ok(()) => android_log("init_android_tracing: subscriber installed"),
+            Err(e) => android_log(&format!(
+                "init_android_tracing: subscriber NOT installed (already set?): {}",
+                e
+            )),
+        }
+    });
+}
+
 /// JNI_OnLoad - Called when library is loaded via System.loadLibrary()
 ///
 /// This is our chance to register native methods while we have access to
@@ -8825,10 +8990,15 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
     #[cfg(target_os = "android")]
     android_log("JNI_OnLoad called for peat_ffi");
 
-    // NOTE: Tracing initialization disabled - was causing issues and blocking debugging.
-    // The android_log() function works directly and is used for critical logging.
-    // Tracing from protocol crate won't show in logcat, but we can add android_log
-    // callbacks if needed for debugging specific paths.
+    // Bridge `tracing` events (peat-mesh's per-doc sync warnings,
+    // peat-protocol's sync coordinator events, etc.) into logcat
+    // under the `PeatRust` tag. peat#850 — previous attempts at
+    // tracing init "caused issues" per the prior comment here; this
+    // implementation uses a minimal in-process writer with no JNI
+    // re-entry and `try_init` so it's a no-op if another subscriber
+    // was already set.
+    #[cfg(target_os = "android")]
+    init_android_tracing();
 
     // Store JavaVM globally for callbacks from any thread
     let java_vm = unsafe {
