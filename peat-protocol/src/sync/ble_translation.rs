@@ -163,7 +163,7 @@ pub struct BleEmergencyEvent {
 
 /// BLE canned message (mirrors peat_lite::CannedMessageAckEvent)
 ///
-/// Represents a pre-defined message from a WearTAK device, with ACK tracking.
+/// Represents a pre-defined message from a constrained wearable device, with ACK tracking.
 /// The ACK map uses OR-set CRDT semantics: each acker_node maps to its ack_timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BleCannedMessage {
