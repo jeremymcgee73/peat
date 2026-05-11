@@ -93,7 +93,7 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 - [ ] No new cross-repo cycle introduced (`peat` does not depend on its consumers; sibling repos do not depend on each other)
 - [ ] PR references a GitHub issue with Context / Scope / Acceptance Criteria / Constraints / Dependencies sections
 - [ ] If a hard invariant was waived, the PR description names which one and quotes the user approval
-- [ ] **For changes inside the `peat` repo:** the new diff is free of consumer-specific identifiers (ATAK, WinTAK, iTAK, WearTAK, etc.). Run `git diff main -- ':!docs/adr' ':!docs/whitepaper' | grep -iE '\b(atak|wintak|itak|weartak)\b'` — must be empty before merge. If a citation is genuinely load-bearing it belongs in an ADR (`docs/adr/`), not in code or operational docs.
+- [ ] **For changes inside the `peat` repo:** the new diff is free of consumer-specific identifiers (ATAK, WinTAK, iTAK, WearTAK, etc.). Run `git diff main -- ':!docs/adr' ':!docs/whitepaper' ':!CLAUDE.md' ':!SKILL.md' | grep -E '^\+' | grep -iE '\b(atak|wintak|itak|weartak)\b' | grep -vE 'peat-atak-plugin|com\.atakmap|atakmap\.app|ATAKActivity'` — must be empty before merge. The pipeline checks ADDITIONS only (`^\+`), excludes the rule documents themselves (which legitimately enumerate the forbidden names as part of the rule definition), and tail-filters the sibling repo name `peat-atak-plugin` (its actual repo name, historical) plus the third-party host app's real Android identifiers (`com.atakmap.*`, `ATAKActivity`) that operational adb commands genuinely target. If a citation is genuinely load-bearing it belongs in an ADR (`docs/adr/`), not in code or operational docs.
 
 "Seems right" or "the diff looks correct" is never sufficient.
 

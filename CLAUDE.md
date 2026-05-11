@@ -24,7 +24,7 @@ Forbidden references include but are not limited to: vendor names (ATAK, WinTAK,
 
 **Acceptable generic terms:** "consumer", "consumer plugin", "CoT consumer", "mobile-app plugin", "wearable", "CLI tool", "server bridge". When a protocol name is structurally load-bearing (e.g. CoT XML, the TAK Server wire protocol that `peat-transport/src/tak/` bridges to), the *protocol* name may appear; the *consumer* name may not.
 
-**The only place consumer names may appear** is in ADRs (`docs/adr/`) when citing a real-world use case that motivated a design decision. Even there, prefer generic language unless the citation is load-bearing for the rationale.
+**The only places consumer names may appear** are: (1) ADRs (`docs/adr/`) when citing a real-world use case that motivated a design decision (even there, prefer generic language); and (2) genuine third-party identifiers that operational tooling targets verbatim — the host app's actual Android package id (`com.atakmap.*`), its activity classes (`ATAKActivity`), and the sibling repo's actual name (`peat-atak-plugin`). These are not "references to a consumer" in the rule's sense; they are external identifiers that the operational layer literally invokes by string. The SKILL.md grep gate excludes them.
 
 If a task in this repo would introduce a consumer reference into code/comments/operational docs, do not write it. Find the generic equivalent or stop and surface the design tension explicitly.
 
