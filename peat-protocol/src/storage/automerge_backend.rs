@@ -683,6 +683,29 @@ impl SyncCapable for AutomergeBackend {
                 if !sync_active_for_events.load(Ordering::Relaxed) {
                     break;
                 }
+                // Disconnected events clear the dedup entry so a
+                // legitimate reconnect-after-flap (BLE link drop,
+                // network blip, peer-side force-stop+restart, iroh
+                // transport reset) gets the full proactive-push
+                // treatment even if it lands inside the 5s window.
+                // Without this, the recycle-driven dedup wrongly
+                // suppresses externally-driven reconnects too —
+                // which is exactly the path the marker-tombstone
+                // sync this PR enables depends on.
+                if let crate::network::iroh_transport::TransportPeerEvent::Disconnected {
+                    endpoint_id,
+                    ..
+                } = event
+                {
+                    let mut map = recent_connects.write().expect("recent_connects poisoned");
+                    if map.remove(&endpoint_id).is_some() {
+                        tracing::debug!(
+                            peer = ?endpoint_id,
+                            "Cleared dedup entry on Disconnected — next Connected will be treated as fresh"
+                        );
+                    }
+                    continue;
+                }
                 if let crate::network::iroh_transport::TransportPeerEvent::Connected {
                     endpoint_id,
                     ..
@@ -691,6 +714,9 @@ impl SyncCapable for AutomergeBackend {
                     // Skip duplicate Connected within the dedup window
                     // — otherwise both the connect and accept paths
                     // double-spawn proactive pushes for the same peer.
+                    // A real disconnect+reconnect cycle is NOT suppressed
+                    // because the Disconnected arm above cleared the
+                    // dedup entry.
                     let now = std::time::Instant::now();
                     let is_duplicate = Self::check_and_record_connect(
                         &recent_connects,
@@ -1682,6 +1708,31 @@ mod tests {
             assert!(
                 !is_dup,
                 "stale entry reaped — peer(1) must register as fresh"
+            );
+        }
+
+        /// Regression lock for the round-3 review finding: a real
+        /// disconnect+reconnect (BLE flap, force-stop+restart) must
+        /// NOT be suppressed by the dedup window. The Disconnected
+        /// branch of the event loop clears the peer's map entry so
+        /// the next Connected is treated as fresh. This test models
+        /// that lifecycle directly against the helper: after a
+        /// removal, a Connected within the dedup window passes.
+        #[test]
+        fn disconnect_then_reconnect_within_window_passes() {
+            let map = fresh_map();
+            let window = Duration::from_secs(5);
+            let t0 = Instant::now();
+            // Initial connect — records the peer.
+            AutomergeBackend::check_and_record_connect(&map, peer(1), t0, window);
+            // Simulate Disconnected → loop clears the peer's entry.
+            map.write().unwrap().remove(&peer(1));
+            // Real fast reconnect within the dedup window.
+            let t1 = t0 + Duration::from_secs(2);
+            let is_dup = AutomergeBackend::check_and_record_connect(&map, peer(1), t1, window);
+            assert!(
+                !is_dup,
+                "real disconnect+reconnect within window must NOT be suppressed"
             );
         }
 
