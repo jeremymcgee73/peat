@@ -821,15 +821,52 @@ impl PeatNode {
     pub fn request_sync(&self) -> Result<(), PeatError> {
         if let Some(coordinator) = self.storage_backend.sync_coordinator() {
             let peers = self.iroh_transport.connected_peers();
+            let peer_count = peers.len();
+            // Logcat-visible signal of every request_sync invocation:
+            // peer count + each push's success/failure. peat-protocol's
+            // internal `tracing::info!` doesn't reach logcat because no
+            // tracing-subscriber is installed on Android, so the only
+            // way to observe whether `sync_all_documents_with_peer`
+            // actually ran is to surface it here at the FFI boundary
+            // where `android_log` works.
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "request_sync: starting with {} connected peer(s)",
+                peer_count
+            ));
             let coord = Arc::clone(coordinator);
             self.runtime.block_on(async {
                 for peer_id in peers {
-                    if let Err(e) = coord.sync_all_documents_with_peer(peer_id).await {
-                        #[cfg(target_os = "android")]
-                        android_log(&format!("request_sync failed for peer: {}", e));
+                    match coord.sync_all_documents_with_peer(peer_id).await {
+                        Ok(()) => {
+                            #[cfg(target_os = "android")]
+                            {
+                                let peer_hex = hex::encode(peer_id.as_bytes());
+                                android_log(&format!(
+                                    "request_sync: pushed to peer {}",
+                                    &peer_hex[..16]
+                                ));
+                            }
+                        }
+                        Err(_e) => {
+                            #[cfg(target_os = "android")]
+                            {
+                                let peer_hex = hex::encode(peer_id.as_bytes());
+                                android_log(&format!(
+                                    "request_sync: FAILED for peer {}: {}",
+                                    &peer_hex[..16],
+                                    _e
+                                ));
+                            }
+                        }
                     }
                 }
             });
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "request_sync: complete ({} peer(s) attempted)",
+                peer_count
+            ));
         }
         Ok(())
     }
