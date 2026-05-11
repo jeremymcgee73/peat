@@ -14,6 +14,12 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.4] - 2026-05-11
+
+### Changed
+
+- **Release workflow:** `Publish peat-protocol` step now treats "peat-btle dep version not on crates.io" as a graceful skip rather than a hard failure. peat-protocol depends on peat-btle 0.4.0 via the workspace, but peat-btle 0.4.0 is held back from crates.io until the Slice-4.b UAT train ships (peat#828). Without this guard, every release tag's `cargo publish` step failed with `failed to select a version for the requirement \`peat-btle = …\`` even though all other release artifacts (tag, GitHub release, SBOM, peat-schema publish) produced cleanly. The step now logs a `::warning::` explaining the skip and the release proceeds. Once peat-btle 0.4.0 lands on crates.io, the resolver finds a match and the publish runs normally.
+
 ## [0.9.0-rc.3] - 2026-05-11
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.2` → `0.9.0-rc.3`. `peat-ffi` bumps independently `0.2.0` → `0.2.1` (patch: non-breaking observability addition; no ABI surface change).

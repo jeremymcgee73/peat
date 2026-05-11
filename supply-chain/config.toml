@@ -75,6 +75,10 @@ criteria = "safe-to-deploy"
 version = "0.9.0-rc.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.peat-schema]]
+version = "0.9.0-rc.4"
+criteria = "safe-to-deploy"
+
 [[exemptions.peat-protocol]]
 version = "0.9.0-rc.1"
 criteria = "safe-to-deploy"
@@ -85,6 +89,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.peat-protocol]]
 version = "0.9.0-rc.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.peat-protocol]]
+version = "0.9.0-rc.4"
 criteria = "safe-to-deploy"
 
 # ADR-059 Amendment 4 Slice 4.d interim git-rev consumption.
