@@ -449,4 +449,4 @@ For non-GitHub workflows, the same gate can be enforced by scripting: check that
 | `examples/android-ble-test/.../test/TestRunner.kt` | Android 11-phase test orchestrator |
 | `examples/android-ble-test/.../test/MainActivity.kt` | Android UI + auto-run support |
 | `examples/android-ble-test/.../test/BleGattClient.kt` | Android BLE scan + GATT client |
-| `examples/android-ble-test/.../atak/peat/PeatJni.kt` | JNI declarations |
+| `examples/android-ble-test/.../peat/PeatJni.kt` | JNI declarations |

@@ -4,14 +4,14 @@
 //! and Peat Protocol Automerge documents. This enables gateway nodes to
 //! bridge between:
 //!
-//! - **Full Peat nodes** (ATAK, CLI) using Automerge documents
-//! - **WearTAK devices** (Samsung Watch) using peat-btle lightweight CRDTs
+//! - **Full Peat nodes** (mobile-app consumers, CLI) using Automerge documents
+//! - **Constrained wearable devices** using peat-btle lightweight CRDTs
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────────┐
-//! │                       Gateway Node (ATAK)                           │
+//! │                          Gateway Node                               │
 //! │  ┌─────────────────────────────────────────────────────────────────┐│
 //! │  │                    BLE Translation Layer                        ││
 //! │  │                                                                 ││
@@ -163,7 +163,7 @@ pub struct BleEmergencyEvent {
 
 /// BLE canned message (mirrors peat_lite::CannedMessageAckEvent)
 ///
-/// Represents a pre-defined message from a WearTAK device, with ACK tracking.
+/// Represents a pre-defined message from a constrained wearable device, with ACK tracking.
 /// The ACK map uses OR-set CRDT semantics: each acker_node maps to its ack_timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BleCannedMessage {

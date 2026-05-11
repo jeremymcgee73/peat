@@ -13,7 +13,7 @@ docs/
 ├── contracts/                # Interface contracts between teams
 │   ├── CONTRACT_CORE_AI_CAPABILITY.md      # Core ↔ AI: Capability Advertisement
 │   ├── CONTRACT_CORE_AI_MLOPS.md           # Core ↔ AI: Model Distribution
-│   ├── CONTRACT_CORE_ATAK_TAK_BRIDGE.md    # Core ↔ ATAK: TAK Integration
+│   ├── CONTRACT_CORE_ATAK_TAK_BRIDGE.md    # Core ↔ CoT: TAK Integration
 │   └── CONTRACT_EXPERIMENTS_ALL_VALIDATION.md  # Experiments ↔ All: Validation
 └── planning/
     └── SPRINT_PLAN.md        # Detailed 12-week sprint plan
@@ -24,7 +24,7 @@ docs/
 | Team | Primary Focus | Key Deliverables |
 |------|--------------|------------------|
 | **Core** | Schema, protocol, Automerge/Iroh | CapabilityAdvertisement, TrackUpdate, MissionTask schemas |
-| **ATAK** | Android plugin, Peat-TAK Bridge | CoT translation, TAK Server integration |
+|  **CoT consumers** | Mobile-app consumer plugin, Peat-CoT Bridge | CoT translation, TAK Server integration |
 | **Experiments** | Containerlab, validation | Network simulation, metrics collection |
 | **AI** | Jetson inference, YOLOv8, MLOps | Object tracking, model hot-swap |
 | **PM** | Coordination, demo scripting | Sprint management, stakeholder comms |
@@ -47,7 +47,7 @@ Before implementation begins, teams must review and approve their interface cont
 |----------|-------|--------|
 | [Core ↔ AI Capability](contracts/CONTRACT_CORE_AI_CAPABILITY.md) | Core, AI | ☐ Pending |
 | [Core ↔ AI MLOps](contracts/CONTRACT_CORE_AI_MLOPS.md) | Core, AI | ☐ Pending |
-| [Core ↔ ATAK Bridge](contracts/CONTRACT_CORE_ATAK_TAK_BRIDGE.md) | Core, ATAK | ☐ Pending |
+| [Core ↔ CoT Bridge](contracts/CONTRACT_CORE_ATAK_TAK_BRIDGE.md) | Core, CoT consumer | ☐ Pending |
 | [Experiments ↔ All](contracts/CONTRACT_EXPERIMENTS_ALL_VALIDATION.md) | All | ☐ Pending |
 
 **Approval Process:**

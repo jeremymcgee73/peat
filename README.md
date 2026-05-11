@@ -17,7 +17,7 @@ Peat gives them a common coordination layer:
 
 - **Any device joins**: Servers, phones, ESP32 sensors, Raspberry Pis, AI platforms — each contributes what it can
 - **Any transport works**: QUIC, BLE mesh, UDP, HTTP — simultaneously, with automatic failover
-- **Interoperability built in**: TAK/CoT bridge, Android bindings (ATAK plugin), embedded wire protocol, edge AI pipeline
+- **Interoperability built in**: TAK/CoT bridge, Android bindings (consumer plugin), embedded wire protocol, edge AI pipeline
 - **Works disconnected**: CRDT-based state via Automerge — no central server, operates through network partitions
 - **Scales when you need it**: Hierarchical aggregation means the protocol that works for 5 nodes also works for 1,000+
 
@@ -150,7 +150,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and [DEVELOPMENT.md
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  APPLICATIONS    TAK Bridge · ATAK Plugin · Edge Inference      │
+│  APPLICATIONS    TAK Bridge · Consumer Plugin · Edge Inference      │
 │                  Your app — anything that produces or consumes   │
 │                  tactical data                                   │
 ├─────────────────────────────────────────────────────────────────┤
@@ -183,7 +183,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full five-layer breakdo
 | `peat-persistence` | Storage backends (Redb, SQLite) |
 | `peat-discovery` | Peer discovery (mDNS, static, hybrid) |
 | `peat-ffi` | Mobile bindings (Kotlin/Swift via UniFFI + JNI) |
-| `examples/peat-tak-bridge` | TAK/ATAK CoT interoperability bridge |
+| `examples/peat-tak-bridge` | TAK/CoT interoperability bridge |
 | `examples/peat-ble-test` | BLE integration test harness (Pi-to-Android) |
 
 ## Feature Flags
@@ -204,7 +204,7 @@ Peat components are packaged for Kubernetes via Helm, Zarf (air-gapped), and UDS
 make docker-build                         # Container images
 helm install peat-mesh deploy/helm/peat-mesh/  # Helm
 zarf package create                       # Air-gapped
-make build-atak-plugin                    # ATAK plugin APK
+make build-consumer-plugin                    # consumer plugin APK
 ```
 
 ## Technology Stack
@@ -290,7 +290,7 @@ See [Three integration depths](#three-integration-depths) above for the shallow/
 
 Peat augments existing systems — it does not replace them.
 
-- **TAK stays.** Peat's TAK bridge makes Peat nodes appear as native TAK endpoints. Operators keep using ATAK as their common operating picture. Peat handles machine-to-machine coordination underneath.
+- **TAK stays.** Peat's TAK bridge makes Peat nodes appear as native TAK endpoints. Operators keep using their CoT consumer of choice as their common operating picture. Peat handles machine-to-machine coordination underneath.
 - **Radios stay.** Peat uses your existing network links (tactical radios, Starlink, MANET, 5G) as transports. It reduces bandwidth demand by 93-99% through hierarchical aggregation, making constrained links viable.
 - **ROS2 stays.** A DDS adapter bridges ROS2 topics into Peat's CRDT mesh. Robots keep their existing autonomy stacks.
 
@@ -327,7 +327,7 @@ That's it. Capability advertisement, cell formation, leader election, hierarchic
 
 **Completed**
 - Multi-transport coordination (QUIC, BLE, UDP, HTTP) with PACE failover
-- TAK/CoT interoperability bridge and ATAK plugin
+- TAK/CoT interoperability bridge and consumer plugin
 - Certificate-based enrollment and tactical trust hierarchy
 - Edge inference pipeline (ONNX YOLOv8)
 - Three-phase hierarchical protocol with CRDT sync
