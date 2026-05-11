@@ -425,9 +425,18 @@ build-consumer-plugin: build-android
 	@echo "✓ consumer plugin built"
 
 # Deploy consumer plugin to connected device
+# APK filename is determined by the sibling repo's Gradle config —
+# pick the newest civDebug APK in the output dir rather than hard-
+# coding a filename, so Gradle artifact-name churn in the consumer
+# repo doesn't break this target.
 deploy-consumer-plugin:
 	@echo "Deploying consumer plugin..."
-	@adb install -r peat-atak-plugin/app/build/outputs/apk/civ/debug/consumer-Plugin-Peat-*.apk
+	@apk=$$(ls -t peat-atak-plugin/app/build/outputs/apk/civ/debug/*.apk 2>/dev/null | head -1); \
+		if [ -z "$$apk" ]; then \
+			echo "  No APK in peat-atak-plugin/app/build/outputs/apk/civ/debug/ — run build-consumer-plugin first"; \
+			exit 1; \
+		fi; \
+		adb install -r "$$apk"
 	@echo "✓ Deployed to device"
 
 # Full Android build and deploy

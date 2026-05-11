@@ -99,7 +99,7 @@ transports concurrently.
 
 **Per-collection routing options**:
 - `transport: iroh` — always use Iroh (large payloads, reliable)
-- `transport: ble` — always use BLE (WearTAK, offline proximity)
+- `transport: ble` — always use BLE (constrained wearable, offline proximity)
 - `transport: bypass` — UDP bypass channel (low-latency ephemeral)
 - `transport: pace` — PACE-based selection (score transports, pick best available)
 
@@ -110,7 +110,7 @@ a transport get that transport; collections that specify `pace` get dynamic sele
 ```
 Collection "beacons"     -> transport: pace (scores Iroh vs BLE, picks best)
 Collection "positions"   -> transport: bypass (low-latency ephemeral UDP)
-Collection "canned_msgs" -> transport: ble (BLE-only, WearTAK sync)
+Collection "canned_msgs" -> transport: ble (BLE-only, wearable sync)
 Collection "documents"   -> transport: iroh (large payloads, reliable)
 ```
 
@@ -126,7 +126,7 @@ the transport layer into `peat-mesh`. Much of the original M4 work is now comple
 - `bluetooth` feature flag exists in both `peat-mesh` and `peat-protocol` Cargo.toml
 - `TransportManager` supports PACE-based registration via `register_instance()`
 - `BleTranslator` in `peat-protocol/src/sync/ble_translation.rs` (764 lines) bridges
-  peat-btle CRDTs to Automerge documents for WearTAK
+  peat-btle CRDTs to Automerge documents for constrained wearables
 - `peat-ffi` already imports `PeatBleTransport` under `#[cfg(feature = "bluetooth")]`
 - `BypassCollectionConfig` already demonstrates per-collection transport binding
 
@@ -168,13 +168,13 @@ Migrate consumer plugin from dual-system to unified transport.
 | Update `PeatMapComponent` connection status | DONE | Uses `lifecycle.getBlePeerCount()` |
 | Update `PeatPluginLifecycle` to use unified transport | IN PROGRESS | `isBleAvailable`/`getBlePeerCount` prefer JNI, fall back to legacy |
 | Remove direct `PeatBleManager` usage | TODO | Requires chat/markers/canned message migration |
-| Test WearTAK interoperability | TODO | Requires device testing |
+| Test constrained-wearable interoperability | TODO | Requires device testing |
 
 **Deliverables**:
 - [x] BLE state queryable through PeatNodeJni (unified API)
 - [x] Unified peer count display in UI
 - [ ] consumer plugin uses single PeatNode API for all features
-- [ ] WearTAK devices sync via unified transport
+- [ ] Constrained wearable devices sync via unified transport
 - [ ] No regression in functionality
 
 ---
