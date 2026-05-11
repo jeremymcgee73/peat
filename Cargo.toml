@@ -82,7 +82,7 @@ peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "9a92e
 peat-btle = { git = "https://github.com/defenseunicorns/peat-btle", rev = "d96c4da577887a75353e6e0abd4865ebd9b9cea0" }
 
 [workspace.package]
-version = "0.9.0-rc.3"
+version = "0.9.0-rc.4"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
