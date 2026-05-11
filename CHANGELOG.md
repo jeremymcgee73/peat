@@ -16,6 +16,9 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [0.9.0-rc.2] - 2026-05-10
 
+> **Crate-level versions in this release**:
+> `peat`, `peat-protocol`, `peat-schema`, `peat-discovery`, `peat-persistence`, `peat-transport` (and the workspace example crates) inherit `workspace.package.version = "0.9.0-rc.2"`. `peat-ffi` carries an independent `version = "0.2.0"` (bumped from `0.1.0`) — its semver surface is the JNI ABI + UniFFI binding shape, which moves on a different cadence than the workspace's CHANGELOG-tracked protocol surface. The JNI rename below is the breaking change driving the bump.
+
 ### Changed
 
 - **BREAKING (FFI ABI):** all `peat-ffi` JNI extern symbols renamed
