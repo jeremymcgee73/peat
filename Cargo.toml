@@ -78,11 +78,11 @@ exclude = ["examples/m5stack-core2-peat"]
 # workspace.dependencies pins below get bumped to whatever versions
 # the post-UAT release cuts hit on crates.io.
 [patch.crates-io]
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "9a92e7cac274e7ed25f72570f87e3e5d8ea23d9a" }
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "0d15467de558c209e91f31bc632adb7323613e3d" }
 peat-btle = { git = "https://github.com/defenseunicorns/peat-btle", rev = "d96c4da577887a75353e6e0abd4865ebd9b9cea0" }
 
 [workspace.package]
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
