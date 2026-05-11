@@ -14,6 +14,14 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.3] - 2026-05-11
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.2` → `0.9.0-rc.3`. `peat-ffi` bumps independently `0.2.0` → `0.2.1` (patch: non-breaking observability addition; no ABI surface change).
+
+### Added
+
+- `peat-ffi` `PeatNode::request_sync` now emits Android `__android_log_write` events at INFO covering every invocation: a starting line with the connected-peer count, a per-peer push success / failure line, and a complete line. Closes the observability gap surfaced by the 2026-05-10 bench session — peat-mesh's internal `sync_document_with_peer` failures log via `tracing::warn!` which doesn't reach logcat (no tracing-subscriber installed on Android), so previously `request_sync` could return `Ok(())` while every per-doc push silently failed. The FFI-boundary log makes those silent failures visible at the layer where `android_log` is wired up. Logcat tag: `PeatFFI`, message pattern: `request_sync: starting with N connected peer(s)` / `request_sync: pushed to peer <16-hex-prefix>` / `request_sync: FAILED for peer <16-hex-prefix>: <err>` / `request_sync: complete (N peer(s) attempted)`.
+
 ## [0.9.0-rc.2] - 2026-05-10
 
 > **Crate-level versions in this release**:
