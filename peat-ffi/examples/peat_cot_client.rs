@@ -1,12 +1,12 @@
-//! Peat TAK Test Client
+//! Peat CoT Test Client
 //!
 //! This example creates a Peat node that publishes mock data for testing
-//! mDNS peer discovery with the ATAK plugin.
+//! mDNS peer discovery with consumer plugins.
 //!
 //! # Running the Example
 //!
 //! ```bash
-//! CXXFLAGS="-include cstdint" cargo run --example peat_tak_client -p peat-ffi --features sync
+//! CXXFLAGS="-include cstdint" cargo run --example peat_cot_client -p peat-ffi --features sync
 //! ```
 //!
 //! # What It Does
@@ -17,12 +17,12 @@
 //!
 //! # IMPORTANT: Test Isolation
 //!
-//! By default, this uses a TEST-ONLY formation ID (`peat-test-tak-client`) that is
-//! isolated from production ATAK deployments. To test with the ATAK plugin, you must
+//! By default, this uses a TEST-ONLY formation ID (`peat-test-cot-client`) that is
+//! isolated from production deployments. To test with a consumer plugin, you must
 //! explicitly set the same formation ID:
 //!
 //! ```bash
-//! PEAT_APP_ID=default-atak-formation cargo run --example peat_tak_client ...
+//! PEAT_APP_ID=default-formation cargo run --example peat_cot_client ...
 //! ```
 //!
 //! This prevents test data from accidentally polluting production deployments.
@@ -58,11 +58,11 @@ enum PatternType {
 }
 
 fn main() {
-    println!("=== Peat TAK Test Client - Atlanta Flight Patterns ===\n");
+    println!("=== Peat CoT Test Client - Atlanta Flight Patterns ===\n");
 
     // Use TEST-ONLY formation by default to avoid polluting production deployments
-    // Set PEAT_APP_ID=default-atak-formation to test with real ATAK plugin
-    let app_id = std::env::var("PEAT_APP_ID").unwrap_or_else(|_| "peat-test-tak-client".into());
+    // Set PEAT_APP_ID=default-formation to test with a real consumer plugin
+    let app_id = std::env::var("PEAT_APP_ID").unwrap_or_else(|_| "peat-test-cot-client".into());
     let shared_key = std::env::var("PEAT_SHARED_KEY")
         .unwrap_or_else(|_| "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into());
 
@@ -176,7 +176,7 @@ fn main() {
 
     // Keep running and update positions
     println!("\nFlying patterns over Atlanta... (Ctrl+C to exit)");
-    println!("ATAK plugin should discover this node via mDNS.\n");
+    println!("Consumer plugins should discover this node via mDNS.\n");
 
     let mut last_platform_count = 0;
     loop {
@@ -190,10 +190,10 @@ fn main() {
         publish_flight_patterns(&node, &patterns, time_offset);
         update_platform_positions(&node, &patterns, time_offset);
 
-        // Check for received platforms (ATAK PLI)
+        // Check for received platforms (consumer PLI)
         let platforms = node.get_platforms().unwrap_or_default();
 
-        // Log new platforms received from ATAK
+        // Log new platforms received from consumers
         if platforms.len() != last_platform_count {
             println!(
                 "\n=== Received {} platforms from network ===",

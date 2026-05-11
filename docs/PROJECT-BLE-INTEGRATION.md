@@ -9,7 +9,7 @@
 
 ## Overview
 
-This project plan tracks the integration of peat-btle and peat-lite into the Peat framework and ATAK plugin, implementing ADR-047 (Android BLE Hybrid Integration).
+This project plan tracks the integration of peat-btle and peat-lite into the Peat framework and consumer plugin, implementing ADR-047 (Android BLE Hybrid Integration).
 
 ---
 
@@ -99,7 +99,7 @@ transports concurrently.
 
 **Per-collection routing options**:
 - `transport: iroh` — always use Iroh (large payloads, reliable)
-- `transport: ble` — always use BLE (WearTAK, offline proximity)
+- `transport: ble` — always use BLE (constrained wearable, offline proximity)
 - `transport: bypass` — UDP bypass channel (low-latency ephemeral)
 - `transport: pace` — PACE-based selection (score transports, pick best available)
 
@@ -110,7 +110,7 @@ a transport get that transport; collections that specify `pace` get dynamic sele
 ```
 Collection "beacons"     -> transport: pace (scores Iroh vs BLE, picks best)
 Collection "positions"   -> transport: bypass (low-latency ephemeral UDP)
-Collection "canned_msgs" -> transport: ble (BLE-only, WearTAK sync)
+Collection "canned_msgs" -> transport: ble (BLE-only, wearable sync)
 Collection "documents"   -> transport: iroh (large payloads, reliable)
 ```
 
@@ -126,7 +126,7 @@ the transport layer into `peat-mesh`. Much of the original M4 work is now comple
 - `bluetooth` feature flag exists in both `peat-mesh` and `peat-protocol` Cargo.toml
 - `TransportManager` supports PACE-based registration via `register_instance()`
 - `BleTranslator` in `peat-protocol/src/sync/ble_translation.rs` (764 lines) bridges
-  peat-btle CRDTs to Automerge documents for WearTAK
+  peat-btle CRDTs to Automerge documents for constrained wearables
 - `peat-ffi` already imports `PeatBleTransport` under `#[cfg(feature = "bluetooth")]`
 - `BypassCollectionConfig` already demonstrates per-collection transport binding
 
@@ -155,9 +155,9 @@ the transport layer into `peat-mesh`. Much of the original M4 work is now comple
 
 ---
 
-### Milestone 5: ADR-047 Phase 4 - ATAK Plugin Migration
+### Milestone 5: ADR-047 Phase 4 - Consumer Plugin Migration
 
-Migrate ATAK plugin from dual-system to unified transport.
+Migrate consumer plugin from dual-system to unified transport.
 
 | Task | Status | Notes |
 |------|--------|-------|
@@ -168,13 +168,13 @@ Migrate ATAK plugin from dual-system to unified transport.
 | Update `PeatMapComponent` connection status | DONE | Uses `lifecycle.getBlePeerCount()` |
 | Update `PeatPluginLifecycle` to use unified transport | IN PROGRESS | `isBleAvailable`/`getBlePeerCount` prefer JNI, fall back to legacy |
 | Remove direct `PeatBleManager` usage | TODO | Requires chat/markers/canned message migration |
-| Test WearTAK interoperability | TODO | Requires device testing |
+| Test constrained-wearable interoperability | TODO | Requires device testing |
 
 **Deliverables**:
 - [x] BLE state queryable through PeatNodeJni (unified API)
 - [x] Unified peer count display in UI
-- [ ] ATAK plugin uses single PeatNode API for all features
-- [ ] WearTAK devices sync via unified transport
+- [ ] consumer plugin uses single PeatNode API for all features
+- [ ] Constrained wearable devices sync via unified transport
 - [ ] No regression in functionality
 
 ---
@@ -190,7 +190,7 @@ Final cleanup and documentation.
 | Update ADR-047 status to Accepted | TODO | |
 | Battery consumption benchmark | TODO | <5% regression target |
 | Performance profiling (callback latency) | TODO | <10ms target |
-| Update ATAK plugin documentation | TODO | |
+| Update consumer plugin documentation | TODO | |
 
 **Deliverables**:
 - [ ] Clean codebase
@@ -246,7 +246,7 @@ Final cleanup and documentation.
 
 ### Hardware
 - Raspberry Pi 5 x2: rpi-ci (D8:3A:DD:F5:FD:53), rpi-ci2 (D8:3A:DD:F6:1B:89, 192.168.228.65)
-- Android device for ATAK testing
+- Android device for consumer-plugin testing
 - WearOS devices: WEAROS-5122, WEAROS-6441 (discovered during Pi testing)
 
 ---

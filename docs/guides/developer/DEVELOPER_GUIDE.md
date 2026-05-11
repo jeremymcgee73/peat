@@ -1335,7 +1335,7 @@ Mobile support via peat-ffi using UniFFI:
 ```
 ┌─────────────────┐     ┌─────────────────┐
 │  Kotlin/Swift   │     │     Android     │
-│   Application   │     │      ATAK       │
+│   Application   │     │   CoT Consumer  │
 └────────┬────────┘     └────────┬────────┘
          │                       │
          ▼                       ▼
@@ -1404,13 +1404,13 @@ class PeatService {
 }
 ```
 
-### 10.4 ATAK Plugin Development
+### 10.4 Consumer Plugin Development
 
-The ATAK plugin provides TAK integration:
+The consumer plugin provides TAK integration:
 
 ```bash
-# Build ATAK plugin
-cd atak-plugin
+# Build consumer plugin
+cd peat-atak-plugin
 ./gradlew assembleRelease
 
 # Install on device

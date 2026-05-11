@@ -7,7 +7,7 @@ package com.defenseunicorns.peat.test
 import android.content.Context
 import android.util.Base64
 import android.util.Log
-import com.defenseunicorns.atak.peat.PeatJni
+import com.defenseunicorns.peat.PeatJni
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import java.time.LocalDateTime

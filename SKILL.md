@@ -31,7 +31,7 @@ The ecosystem comprises **one Rust workspace repo** (`peat`) plus several siblin
 | **peat-mesh** | Mesh networking; pluggable transport, peer discovery, topology, routing, optional Automerge/Iroh sync, optional HTTP/WS broker. **Top-tier active.** | `peat-mesh/SKILL.md` |
 | **peat-btle** | BLE transport bridge. M5Stack/ESP32 integration. | `peat-btle/SKILL.md` |
 | **peat-lite** | Lightweight implementation for constrained environments. | `peat-lite/SKILL.md` |
-| **peat-atak-plugin** | Android/Kotlin ATAK plugin. Pure Kotlin/Gradle — no Rust here. Consumes pre-built JNI/UniFFI bindings from `peat/peat-ffi`. | `peat-atak-plugin/SKILL.md` |
+| **peat-atak-plugin** | One consumer-plugin integration (Android/Kotlin). Pure Kotlin/Gradle — no Rust here. Consumes pre-built JNI/UniFFI bindings from `peat/peat-ffi`. Repo name is historical; this repo treats it as a generic consumer surface. | `peat-atak-plugin/SKILL.md` |
 | **peat-sim** | ContainerLab-based network simulation harness. Not on the production path. | `peat-sim/SKILL.md` |
 
 **Workspace subcrates** (members of the `peat` repo, share this skill):
@@ -52,7 +52,9 @@ The ecosystem comprises **one Rust workspace repo** (`peat`) plus several siblin
 
 These rules apply in every repo. Violating one without explicit user approval is out of scope, full stop.
 
-**Language.** Rust everywhere except the Kotlin layer in `peat-atak-plugin`. No new language dependencies. No Python. No shell scripts for anything that belongs in Rust.
+**Language.** Rust everywhere except Kotlin in consumer plugins (currently `peat-atak-plugin`). No new language dependencies. No Python. No shell scripts for anything that belongs in Rust.
+
+**No consumer-specific references in peat.** peat is the generic mesh substrate; consumers (mobile-app plugins, wearable firmware, CLI tools, server bridges) live in sibling repos. Code, comments, examples, READMEs, operational docs, JNI symbol names, package paths, and test fixtures in this repo MUST NOT name a specific consumer (ATAK, WinTAK, iTAK, WearTAK, etc.) or vendor-derived identifiers. Use "consumer", "consumer plugin", "CoT consumer", "mobile-app plugin", "wearable", "CLI tool", or "server bridge". Protocol-name appearances (e.g. CoT, TAK Server wire protocol) are allowed where the protocol itself is structurally load-bearing; consumer-name appearances are not. The only exception is ADRs in `docs/adr/` citing real-world use cases that motivated a design decision. See `CLAUDE.md` § "Hard rule: no consumer-specific references in peat" for the full rule + rationale. Verification gate (below) includes a grep check for ATAK / vendor names in new diffs.
 
 **Dependency flow.** `peat` is the dependency anchor. Common types, traits, error handling flow *down* from `peat`. Repos depend on `peat`, never on each other directly. Circular dependencies are rejected.
 
@@ -91,6 +93,7 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 - [ ] No new cross-repo cycle introduced (`peat` does not depend on its consumers; sibling repos do not depend on each other)
 - [ ] PR references a GitHub issue with Context / Scope / Acceptance Criteria / Constraints / Dependencies sections
 - [ ] If a hard invariant was waived, the PR description names which one and quotes the user approval
+- [ ] **For changes inside the `peat` repo:** the new diff is free of consumer-specific identifiers (ATAK, WinTAK, iTAK, WearTAK, etc.). Run `git diff main -- ':!docs/adr' ':!docs/whitepaper' ':!CLAUDE.md' ':!SKILL.md' | grep -E '^\+' | grep -iE '\b(atak|wintak|itak|weartak)\b' | grep -vE 'peat-atak-plugin|com\.atakmap|atakmap\.app|ATAKActivity'` — must be empty before merge. The pipeline checks ADDITIONS only (`^\+`), excludes the rule documents themselves (which legitimately enumerate the forbidden names as part of the rule definition), and tail-filters the sibling repo name `peat-atak-plugin` (its actual repo name, historical) plus the third-party host app's real Android identifiers (`com.atakmap.*`, `ATAKActivity`) that operational adb commands genuinely target. If a citation is genuinely load-bearing it belongs in an ADR (`docs/adr/`), not in code or operational docs.
 
 "Seems right" or "the diff looks correct" is never sufficient.
 
@@ -105,6 +108,8 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 | "`peat` core doesn't have the type I need; I'll just put it in this repo for now." | Surface the gap as an issue against `peat`. Don't fork the type system. |
 | "I'll move this Peat protocol logic into Kotlin to make the FFI simpler." | All Peat protocol logic stays in Rust. Kotlin is UI and Android lifecycle only. |
 | "This change makes Peat assume the counterpart is also running Peat — fine for now, we'll generalize later." | Interoperability-first is the product. Generalize before merging, or don't merge. |
+| "Just one mention of ATAK in the comment is fine — that's the consumer everyone knows about." | No consumer-specific references in peat. Ever. Use "consumer plugin" / "CoT consumer" / "mobile-app plugin". One mention becomes 382 mentions in two years. Verification gate greps for it. |
+| "The JNI symbol name has to encode the Java package path of the calling class." | True for the suffix; the Java package path itself is a choice. Pick a generic namespace (`com.defenseunicorns.peat.PeatJni`), not a consumer-specific one (`com.defenseunicorns.<vendor>.peat.PeatJni`). |
 
 ## Scope guards
 

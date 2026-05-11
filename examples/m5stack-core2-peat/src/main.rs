@@ -934,8 +934,8 @@ fn main() -> anyhow::Result<()> {
     info!("Display cleared to blue");
 
     // Initialize PeatMesh for centralized peer management and document sync.
-    // Uses the same shared WEARTAK genesis as the WearOS watch and ATAK plugin
-    // so encrypted sync documents decode on this node.
+    // Uses the same shared mesh genesis as the wearable watch and consumer
+    // plugins so encrypted sync documents decode on this node.
     info!("Initializing PeatMesh...");
     if USING_FALLBACK_GENESIS {
         warn!(

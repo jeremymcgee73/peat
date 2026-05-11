@@ -139,7 +139,7 @@ The Peat Protocol has a clear 12-month development pathway to achieve:
 **Timeline**: 12 weeks
 **Depends On**: EPIC 2, EPIC 5
 
-**Value**: Peat-coordinated assets visible in ATAK, operators can control via TAK
+**Value**: Peat-coordinated assets visible in consumer plugins, operators can control via TAK
 
 ---
 
@@ -205,7 +205,7 @@ EPIC 2 (Mesh)
 
 ### Operational Capability
 - [ ] Complete ISR mission scenario (100 platforms)
-- [ ] TAK integration allowing ATAK control of Peat assets
+- [ ] TAK integration allowing consumer-plugin control of Peat assets
 - [ ] Model capability queries and intelligent tasking
 - [ ] Network partition tolerance demonstrated
 - [ ] Tactical radio network validated (25% packet loss)

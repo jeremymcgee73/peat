@@ -5,8 +5,9 @@
 //!
 //! ## Overview
 //!
-//! The FFI is designed for the ATAK integration team and other consumers who need
-//! to manage peer connections through native code bindings.
+//! The FFI is designed for native consumers (mobile-app plugins, embedded
+//! integrations, CLI tools) that need to manage peer connections through
+//! native code bindings.
 //!
 //! ## Peer Management API (Issue #258)
 //!

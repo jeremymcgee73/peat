@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Defense Unicorns.  All rights reserved.
  */
 
-package com.defenseunicorns.atak.peat
+package com.defenseunicorns.peat
 
 import android.util.Log
 

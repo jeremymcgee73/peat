@@ -16,7 +16,7 @@
 //! TAK Server (FreeTAKServer / official)
 //!     │
 //!     ▼
-//! WebTAK / ATAK (C2 visibility)
+//! CoT consumers (C2 visibility)
 //! ```
 
 use anyhow::Result;

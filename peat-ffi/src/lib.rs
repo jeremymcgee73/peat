@@ -1,7 +1,7 @@
 //! Peat FFI - Foreign Function Interface for Kotlin/Swift
 //!
 //! This crate provides UniFFI bindings to expose Peat functionality
-//! to Kotlin (Android/ATAK) and Swift (iOS) applications.
+//! to Kotlin (Android) and Swift (iOS) consumer applications.
 //!
 //! ## Features
 //!
@@ -336,9 +336,8 @@ pub struct SyncStats {
 // Mirror types over `peat_mesh::transport::LinkState` family. The
 // peat-mesh types aren't UniFFI-decorated (they live in the transport
 // layer, not the binding layer), so we re-shape them into peat-ffi
-// `Record`s/`Enum`s with `From<peat_mesh::...>` conversions. The Kotlin
-// plugin consumer (defenseunicorns/peat-atak-plugin#15) renders
-// directly off these.
+// `Record`s/`Enum`s with `From<peat_mesh::...>` conversions. Kotlin
+// plugin consumers render directly off these.
 //
 // Per ADR-032 §Amendment A's host-rendering rule, peat-ffi is the
 // *single source of truth* for transport-state queries in the UI; the
@@ -519,8 +518,8 @@ pub trait DocumentCallback: Send + Sync {
 ///
 /// On Android the JNI path is used directly because UniFFI 0.28's Kotlin
 /// backend wraps callback interfaces in `com.sun.jna.Callback`, which
-/// fails under ATAK's classloader isolation. Implementations on
-/// non-Android platforms should expect any-thread invocation from the
+/// fails under Android plugin-host classloader isolation. Implementations
+/// on non-Android platforms should expect any-thread invocation from the
 /// `peat-mesh` runtime.
 ///
 /// The `register_outbound_frame_callback` method on [`PeatNode`] that
@@ -1638,11 +1637,11 @@ impl From<anyhow::Error> for PeatError {
 }
 
 // =============================================================================
-// Peat Data Types for TAK Plugin Integration
+// Peat Data Types for Consumer Integration
 // =============================================================================
 //
-// These types represent Peat entities that can be synced and displayed in the
-// ATAK plugin. They use well-known collection names for document storage.
+// These types represent Peat entities that can be synced and displayed by
+// consumer plugins. They use well-known collection names for document storage.
 
 /// Well-known collection names for Peat data
 pub mod collections {
@@ -1656,7 +1655,25 @@ pub mod collections {
     pub const CAPABILITIES: &str = "capabilities";
     /// Collection for commands (C2 messages)
     pub const COMMANDS: &str = "commands";
+    /// Collection for operator-placed map markers (CoT pins synced
+    /// across the mesh via the universal-Document transport,
+    /// ADR-035). Receiver renders consistently regardless of which
+    /// peer originated the marker — the doc store is the source of
+    /// truth, transport is invisible to consumers.
+    pub const MARKERS: &str = "markers";
 }
+
+/// CoT 2525 placeholder type that
+/// [`parse_marker_publish_json`] substitutes when a tombstone body
+/// arrives without an explicit `type` field. Tombstones intentionally
+/// omit geo + type to keep the BLE frame tight (~40 bytes vs ~120
+/// for a full marker); receivers filter `_deleted: true` entries out
+/// of "current markers" views before the placeholder is rendered, so
+/// the value never reaches a UI. Lifted to a named constant so a
+/// future change to the placeholder shape (e.g., shifting to a
+/// neutral "unknown" or an empty string) lands in one place rather
+/// than being scattered through the parser.
+const TOMBSTONE_PLACEHOLDER_TYPE: &str = "a-u-G";
 
 /// Cell status enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -1872,6 +1889,62 @@ pub struct PlatformInfo {
     /// signal, not absence-of-data, and the platform-overlay code uses
     /// the time delta directly without a None-check branch.
     pub last_heartbeat: i64,
+}
+
+/// Operator-placed map marker — the typed shape every peer renders
+/// in the Peat Markers panel and on the MapView (ADR-035 Universal
+/// Document transport, "markers" collection).
+///
+/// Origin-agnostic: this struct is what the local doc store holds,
+/// independent of which peer published it. The plugin's mental model
+/// is "created somewhere, synced everywhere, displayed consistently"
+/// — `MarkerInfo` is the synced shape, the wire transport is
+/// invisible above this surface.
+///
+/// Wire-key parity with the JSON the prior raw-JSON publish path
+/// produced (uid, type, lat, lon, hae, ts, callsign, color), so the
+/// migration to the typed API is wire-compatible: docs published by
+/// the old raw-JSON path round-trip cleanly into `MarkerInfo`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MarkerInfo {
+    /// Unique marker identifier — the operator-placed UID, typically
+    /// UUID-shaped (e.g. `4ae7b0a0-1995-447c-...`).
+    pub uid: String,
+    /// CoT 2525-style type code (e.g. `"a-f-G-U-C"` for friendly
+    /// ground unit combat, `"b-m-p-w"` for waypoint).
+    pub marker_type: String,
+    /// Latitude (WGS84).
+    pub lat: f64,
+    /// Longitude (WGS84).
+    pub lon: f64,
+    /// Height above ellipsoid (meters). `None` when the publisher
+    /// had no altitude fix; receivers render at ground level.
+    pub hae: Option<f64>,
+    /// Unix epoch milliseconds — the publisher's clock at marker
+    /// drop time. Receivers DON'T treat this as a presence-staleness
+    /// timestamp (markers persist until deleted, unlike platforms);
+    /// it's purely "when did the operator drop this pin."
+    pub ts: i64,
+    /// Operator callsign of the publisher. `None` when the publisher
+    /// didn't stamp it.
+    pub callsign: Option<String>,
+    /// Marker color (consumer-defined encoding — commonly a 32-bit
+    /// ARGB integer, sign-extended). `None` when default coloring
+    /// applies.
+    pub color: Option<i32>,
+    /// Cell membership (organizational unit within mesh), if scoped.
+    /// `None` for cell-agnostic markers.
+    pub cell_id: Option<String>,
+    /// Soft-delete sentinel. When `true`, the marker is a tombstone
+    /// — peers sync the deletion (CRDT keeps the entry so concurrent
+    /// edits resolve consistently) but consumer UIs filter it out
+    /// of "current markers" views. peat-mesh's fan-out today does
+    /// NOT propagate `ChangeEvent::Removed` (Slice 2 work), so the
+    /// soft-delete-sentinel pattern is the only way to communicate
+    /// deletions across the mesh until that lands. Wire key: `_deleted`
+    /// (matches the peat-mesh `transport::document_codec` synthesis
+    /// convention from PR #103).
+    pub deleted: bool,
 }
 
 // Wire-shape contract for `Option<T>` fields on `PlatformInfo`
@@ -2132,6 +2205,63 @@ impl PeatNode {
             let backend = &self.storage_backend;
             let coll = backend.collection(collections::PLATFORMS);
             coll.upsert(&platform.id, json.into_bytes())
+                .map_err(|e| PeatError::StorageError { msg: e.to_string() })
+        })
+    }
+
+    // -------------------------------------------------------------------------
+    // Marker Operations (operator-placed map pins, synced via ADR-035
+    // Universal Document transport)
+    // -------------------------------------------------------------------------
+
+    /// Get all markers from the sync document.
+    ///
+    /// Returns the canonical typed list of operator-placed pins
+    /// across the mesh. Origin-agnostic — locally-created and
+    /// peer-synced markers are indistinguishable in the result.
+    /// Plugin consumers (PeatMapComponent's periodic refresh, the
+    /// Peat Markers panel readout) call this and render every entry
+    /// with the same code path.
+    pub fn get_markers(&self) -> Result<Vec<MarkerInfo>, PeatError> {
+        self.runtime.block_on(async {
+            let backend = &self.storage_backend;
+            let coll = backend.collection(collections::MARKERS);
+
+            let docs = coll
+                .scan()
+                .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
+
+            let mut markers = Vec::new();
+            for (id, data) in docs {
+                let json_str = String::from_utf8_lossy(&data);
+                match parse_marker_publish_json(&id, &json_str) {
+                    Ok(m) => markers.push(m),
+                    Err(_) => {
+                        // Malformed entry — skip silently. Same shape
+                        // as get_platforms / get_commands handle parse
+                        // errors: don't poison the whole list with one
+                        // bad doc.
+                    }
+                }
+            }
+            Ok(markers)
+        })
+    }
+
+    /// Store a marker.
+    ///
+    /// Persists into the `markers` collection. peat-mesh's fan-out
+    /// observes the change and routes via the registered transports
+    /// (universal-Document path on BLE via LiteBridgeTranslator,
+    /// iroh sync for cross-mesh peers). Receivers see the same
+    /// `MarkerInfo` shape on their side.
+    pub fn put_marker(&self, marker: MarkerInfo) -> Result<(), PeatError> {
+        let json = serialize_marker_json(&marker)?;
+        let uid = marker.uid.clone();
+        self.runtime.block_on(async {
+            let backend = &self.storage_backend;
+            let coll = backend.collection(collections::MARKERS);
+            coll.upsert(&uid, json.into_bytes())
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })
         })
     }
@@ -2766,6 +2896,155 @@ fn parse_battery_percent(v: &serde_json::Value) -> Option<i32> {
 fn parse_heart_rate(v: &serde_json::Value) -> Option<i32> {
     let n = coerce_json_number_to_i64(v)?;
     Some(n.clamp(0, 250) as i32)
+}
+
+/// Parse a `MarkerInfo` from the wire JSON (publish-side), with
+/// graceful field absence: missing optional fields → `None`, missing
+/// required geo (`uid`/`type`/`lat`/`lon`) → `InvalidInput`.
+///
+/// The parser is wire-compatible with the JSON the prior raw-JSON
+/// publish path produced — see the field comments on `MarkerInfo`
+/// for key-by-key parity. The `id` argument lets the scan-side
+/// caller supply the doc id (the doc store's key) when it's not in
+/// the body; we accept either source as the `uid`.
+fn parse_marker_publish_json(id: &str, json_str: &str) -> Result<MarkerInfo, PeatError> {
+    let v: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| PeatError::InvalidInput {
+            msg: format!("marker JSON: {}", e),
+        })?;
+
+    let uid = v["uid"]
+        .as_str()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| id.to_string());
+    if uid.is_empty() {
+        return Err(PeatError::InvalidInput {
+            msg: "marker missing uid (and no doc-store id supplied)".to_string(),
+        });
+    }
+
+    // Deletion-sentinel detection. A tombstone marker is just
+    // `{uid, _deleted: true}` — type/lat/lon optional. Receivers
+    // know to filter the entry out of "current markers" views. We
+    // need the deletion to ride the same wire envelope as a normal
+    // marker (peat-mesh fan-out doesn't propagate Removed events
+    // today), so the doc-store retains the tombstone for CRDT
+    // consistency.
+    let deleted = v["_deleted"].as_bool().unwrap_or(false);
+
+    let marker_type = if deleted {
+        v["type"]
+            .as_str()
+            .unwrap_or(TOMBSTONE_PLACEHOLDER_TYPE)
+            .to_string()
+    } else {
+        v["type"]
+            .as_str()
+            .ok_or_else(|| PeatError::InvalidInput {
+                msg: format!("marker {uid} missing CoT type"),
+            })?
+            .to_string()
+    };
+    let lat = if deleted {
+        v["lat"].as_f64().unwrap_or(0.0)
+    } else {
+        v["lat"].as_f64().ok_or_else(|| PeatError::InvalidInput {
+            msg: format!("marker {uid} missing lat"),
+        })?
+    };
+    let lon = if deleted {
+        v["lon"].as_f64().unwrap_or(0.0)
+    } else {
+        v["lon"].as_f64().ok_or_else(|| PeatError::InvalidInput {
+            msg: format!("marker {uid} missing lon"),
+        })?
+    };
+    let hae = v["hae"].as_f64();
+    let ts = v["ts"].as_i64().unwrap_or(0);
+    let callsign = v["callsign"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let color = coerce_json_number_to_i64(&v["color"]).map(|n| n as i32);
+    let cell_id = v["cell_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    Ok(MarkerInfo {
+        uid,
+        marker_type,
+        lat,
+        lon,
+        hae,
+        ts,
+        callsign,
+        color,
+        cell_id,
+        deleted,
+    })
+}
+
+/// Serialize the typed list to the JSON shape `getMarkersJni`
+/// returns. Wire-key parity with `serialize_marker_json` so a doc
+/// round-trips through the get path identically to the put path.
+fn serialize_markers_get_json(markers: &[MarkerInfo]) -> String {
+    let json_array: Vec<serde_json::Value> = markers
+        .iter()
+        .map(|m| {
+            let mut obj = serde_json::json!({
+                "uid": m.uid,
+                "type": m.marker_type,
+                "lat": m.lat,
+                "lon": m.lon,
+                "hae": m.hae,
+                "ts": m.ts,
+                "callsign": m.callsign,
+                "color": m.color,
+                "cell_id": m.cell_id,
+            });
+            if m.deleted {
+                obj["_deleted"] = serde_json::Value::Bool(true);
+            }
+            obj
+        })
+        .collect();
+    // `serde_json::to_string` on a `Vec<serde_json::Value>` composed
+    // entirely of primitives, booleans, strings, and JSON objects we
+    // just constructed is infallible — the failure modes are
+    // I/O on `to_writer`, non-string map keys, or NaN floats without
+    // the `arbitrary_precision` feature. None of those can arise
+    // from this shape, so the unwrap-to-`"[]"` fallback is dead code
+    // that exists only because the signature returns `String` (not
+    // `Result<String, _>`) for symmetry with the JNI consumers'
+    // `Ok("[]")` semantics on storage error. If a future field type
+    // change introduces a fallible shape (e.g., `f64::NAN` for a
+    // missing-altitude sentinel), promote this to `Result` and
+    // surface the error to the caller.
+    serde_json::to_string(&json_array).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Serialize a single marker for `put_marker` storage. Wire-key
+/// parity with `serialize_markers_get_json` (single object instead
+/// of array — same key set, same shapes) so a doc written via
+/// `put_marker` reads identically through `get_markers`.
+fn serialize_marker_json(marker: &MarkerInfo) -> Result<String, PeatError> {
+    let mut v = serde_json::json!({
+        "uid": marker.uid,
+        "type": marker.marker_type,
+        "lat": marker.lat,
+        "lon": marker.lon,
+        "hae": marker.hae,
+        "ts": marker.ts,
+        "callsign": marker.callsign,
+        "color": marker.color,
+        "cell_id": marker.cell_id,
+    });
+    if marker.deleted {
+        v["_deleted"] = serde_json::Value::Bool(true);
+    }
+    serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
 }
 
 fn serialize_platform_json(platform: &PlatformInfo) -> Result<String, PeatError> {
@@ -3895,6 +4174,62 @@ mod tests {
             assert_eq!(decoded.fields, original_fields);
         }
 
+        /// Tombstone variant of the markers-collection fanout path.
+        /// A doc carrying `_deleted: true` on the `"markers"`
+        /// collection must reach the lite-bridge sink with the
+        /// sentinel preserved end-to-end. peat-mesh's fan-out skips
+        /// `ChangeEvent::Removed` today (Slice-2 work); the soft-
+        /// delete sentinel rides the Updated channel via this same
+        /// path. If the codec drops the `_deleted` key in either
+        /// direction, deletions never propagate and markers reappear
+        /// on peers after every refresh — the failure mode that
+        /// motivated this PR. Re-decoding the envelope bytes confirms
+        /// the wire shape carries the flag.
+        #[tokio::test]
+        async fn marker_tombstone_publish_reaches_lite_bridge_sink_with_deleted_flag() {
+            let (fx, _h) = coexistence_fixture().await;
+
+            let mut fields = std::collections::HashMap::new();
+            fields.insert("_deleted".to_string(), serde_json::json!(true));
+            fields.insert("ts".to_string(), serde_json::json!(1_700_000_000_000_i64));
+            let doc = peat_mesh::sync::types::Document::with_id(
+                "marker-tombstone-001".to_string(),
+                fields.clone(),
+            );
+
+            fx.node
+                .publish_with_origin("markers", doc, Some("self".to_string()))
+                .await
+                .expect("publish tombstone");
+
+            wait_for_any(&[&fx.ble_sink, &fx.lite_sink], 1).await;
+
+            let ble_frames = fx.ble_sink.snapshot();
+            let lite_frames = fx.lite_sink.snapshot();
+            assert!(
+                ble_frames.is_empty(),
+                "typed BLE sink MUST decline 'markers' tombstone (unknown collection)"
+            );
+            assert_eq!(
+                lite_frames.len(),
+                1,
+                "lite-bridge sink should see exactly one envelope for the tombstone"
+            );
+            let (_, collection, bytes) = &lite_frames[0];
+            assert_eq!(collection, "markers");
+
+            let (envelope_collection, decoded) =
+                peat_mesh::transport::document_codec::decode_document(bytes)
+                    .expect("decode tombstone envelope");
+            assert_eq!(envelope_collection, "markers");
+            assert_eq!(decoded.id.as_deref(), Some("marker-tombstone-001"));
+            assert_eq!(
+                decoded.fields.get("_deleted"),
+                Some(&serde_json::json!(true)),
+                "tombstone _deleted: true must survive the BLE wire round-trip"
+            );
+        }
+
         /// A doc on `"tracks"` (typed BLE collection) reaches the typed
         /// BLE sink only — the gating wrapper declines the
         /// non-allow-list collection, so the lite-bridge sink stays
@@ -4567,9 +4902,9 @@ mod tests {
             assert_eq!(found.cell_id.as_deref(), Some("BRAVO"));
         }
 
-        /// JNI inline-parser path: the publish surface ATAK actually
-        /// hits. Builds a JSON envelope shaped exactly like
-        /// `SelfPositionBroadcaster.broadcastNow` would publish, runs
+        /// JNI inline-parser path: the publish surface consumers
+        /// actually hit. Builds a JSON envelope shaped exactly like
+        /// a typical self-position broadcaster would publish, runs
         /// it through the same `parse_platform_publish_json` helper
         /// `publishPlatformJni` invokes, and verifies battery + heart
         /// land in the resulting `PlatformInfo`. Locks the duplicated
@@ -5006,7 +5341,7 @@ mod tests {
 
     /// End-to-end round-trip tests for the track storage path that
     /// `Java_..._ingestPositionJni` and `Java_..._getTracksJni` expose
-    /// to the ATAK plugin.
+    /// to consumer plugins.
     ///
     /// peat#832 (open as of 2026-05-08) reports the BLE-bridged tracks
     /// surface every body field at `parse_track_json`'s `unwrap_or`
@@ -5318,6 +5653,409 @@ mod tests {
             );
         }
     }
+
+    /// Marker tombstone schema. peat-mesh's fan-out skips
+    /// `ChangeEvent::Removed` today (Slice-2 work), so deletion of
+    /// a synced marker is communicated via a `_deleted: true`
+    /// sentinel ridden on the Updated channel. Consumers publish a
+    /// tombstone on deletion and filter `_deleted: true` entries out
+    /// of "current markers" views on render. These tests pin the
+    /// wire shape so a future schema change has to pass through the
+    /// test gate first.
+    mod marker_tombstone {
+        use super::*;
+
+        /// A minimum-viable tombstone publish carries `uid` +
+        /// `_deleted: true` only — the publisher omits type/lat/lon
+        /// to keep the BLE frame small. The parser must accept this
+        /// shape (placeholders for the absent geo fields), set
+        /// `deleted = true`, and round-trip cleanly.
+        #[test]
+        fn parse_minimal_tombstone() {
+            let json = r#"{"uid":"abc-123","_deleted":true,"ts":1700000000000}"#;
+            let m = parse_marker_publish_json("", json).expect("minimal tombstone parses");
+            assert!(m.deleted, "deleted flag set");
+            assert_eq!(m.uid, "abc-123");
+            assert_eq!(m.ts, 1700000000000);
+        }
+
+        /// A live (non-tombstone) marker still requires type/lat/lon.
+        /// Drops `_deleted` from the body — the parser must default
+        /// `deleted = false` and enforce the required-fields contract
+        /// it enforced before the tombstone shape was added.
+        #[test]
+        fn parse_live_marker_requires_geo() {
+            let no_type = r#"{"uid":"x","lat":1.0,"lon":2.0}"#;
+            assert!(parse_marker_publish_json("", no_type).is_err());
+
+            let no_lat = r#"{"uid":"x","type":"a-f-G","lon":2.0}"#;
+            assert!(parse_marker_publish_json("", no_lat).is_err());
+
+            let no_lon = r#"{"uid":"x","type":"a-f-G","lat":1.0}"#;
+            assert!(parse_marker_publish_json("", no_lon).is_err());
+
+            let ok = r#"{"uid":"x","type":"a-f-G","lat":1.0,"lon":2.0}"#;
+            let m = parse_marker_publish_json("", ok).expect("live marker parses");
+            assert!(!m.deleted);
+        }
+
+        /// `serialize_marker_json` round-trips a tombstone. The
+        /// `_deleted: true` key MUST appear in the output (otherwise
+        /// peers receiving the doc see a normal-looking marker and
+        /// re-render it after a refresh tick — the deletion would
+        /// "un-do" itself).
+        #[test]
+        fn serialize_tombstone_includes_deleted_key() {
+            let m = MarkerInfo {
+                uid: "abc-123".to_string(),
+                marker_type: "a-u-G".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                hae: None,
+                ts: 1700000000000,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: true,
+            };
+            let json = serialize_marker_json(&m).expect("serializes");
+            assert!(
+                json.contains("\"_deleted\":true"),
+                "tombstone serialization must include _deleted key, got: {json}"
+            );
+        }
+
+        /// A live marker's serialization MUST NOT include `_deleted`
+        /// (saves bytes on the wire AND avoids ambiguity for
+        /// receivers running an older parser that does a strict
+        /// `_deleted == true` check).
+        #[test]
+        fn serialize_live_marker_omits_deleted_key() {
+            let m = MarkerInfo {
+                uid: "abc-123".to_string(),
+                marker_type: "a-f-G-U-C".to_string(),
+                lat: 33.71,
+                lon: -84.41,
+                hae: Some(312.4),
+                ts: 1700000000000,
+                callsign: Some("ALPHA-1".to_string()),
+                color: Some(-65536),
+                cell_id: None,
+                deleted: false,
+            };
+            let json = serialize_marker_json(&m).expect("serializes");
+            assert!(
+                !json.contains("_deleted"),
+                "live marker must not emit _deleted key, got: {json}"
+            );
+        }
+
+        /// `serialize_markers_get_json` (the get_markers / scan-side
+        /// shape, an array) preserves the tombstone flag when the
+        /// doc store contains both live and deleted entries. The
+        /// plugin's `renderAllMarkersFromDocStore` reads this output
+        /// and must be able to identify which entries are tombstones.
+        #[test]
+        fn scan_serializes_tombstones_in_array() {
+            let live = MarkerInfo {
+                uid: "live".to_string(),
+                marker_type: "a-f-G".to_string(),
+                lat: 1.0,
+                lon: 2.0,
+                hae: None,
+                ts: 1,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: false,
+            };
+            let dead = MarkerInfo {
+                deleted: true,
+                ..live.clone()
+            };
+            let mut dead = dead;
+            dead.uid = "dead".to_string();
+
+            let json = serialize_markers_get_json(&[live, dead]);
+            let arr: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let arr = arr.as_array().unwrap();
+            assert_eq!(arr.len(), 2);
+            // Find by uid; can't rely on order.
+            let live_obj = arr.iter().find(|v| v["uid"] == "live").unwrap();
+            let dead_obj = arr.iter().find(|v| v["uid"] == "dead").unwrap();
+            assert!(
+                live_obj.get("_deleted").is_none(),
+                "live entry has no _deleted"
+            );
+            assert_eq!(
+                dead_obj["_deleted"].as_bool(),
+                Some(true),
+                "dead entry has _deleted: true"
+            );
+        }
+
+        /// Round-trip: serialize → parse → serialize. The two
+        /// serialized strings must be byte-identical. Catches
+        /// codec drift (e.g., one side adds a field the other
+        /// drops, or `Option<i64> 0` vs absent disagreements).
+        #[test]
+        fn tombstone_round_trip_is_stable() {
+            let m = MarkerInfo {
+                uid: "round-trip-uid".to_string(),
+                marker_type: "a-u-G".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                hae: None,
+                ts: 1700000000000,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: true,
+            };
+            let s1 = serialize_marker_json(&m).unwrap();
+            let parsed = parse_marker_publish_json("", &s1).expect("parses tombstone");
+            assert!(parsed.deleted, "deleted flag preserved through round-trip");
+            assert_eq!(parsed.uid, m.uid);
+            let s2 = serialize_marker_json(&parsed).unwrap();
+            assert_eq!(s1, s2, "round-trip must produce byte-identical output");
+        }
+    }
+
+    /// Surface-tier round-trips for the marker API the plugin
+    /// actually consumes: the UniFFI `PeatNode::put_marker` /
+    /// `PeatNode::get_markers` path (typed-record wrapper, doc-store
+    /// persistence, `MARKERS` collection wiring) and the JNI
+    /// `publishMarkerJni` / `getMarkersJni` path (inline parser +
+    /// `serialize_markers_get_json`). These tests are the bidirectional
+    /// E2E coverage the QA review on PR #845 required — internal
+    /// codec tests in [`marker_tombstone`] don't catch wrapper-vs-
+    /// internal drift (renamed UniFFI field, doc-store key mismatch,
+    /// JNI handle lifecycle regression). Storage-side tests follow
+    /// the `put_platform_get_platforms_preserves_battery_and_heart`
+    /// pattern in [`platform_tests`]: `create_node` against
+    /// `AutomergeBackend` (not `InMemoryBackend`, which silently
+    /// papers over the publish-vs-scan storage-API asymmetry — see
+    /// the InMemoryBackend test gap memory).
+    #[cfg(feature = "sync")]
+    mod marker_tests {
+        use super::*;
+
+        fn live_marker(uid: &str) -> MarkerInfo {
+            MarkerInfo {
+                uid: uid.to_string(),
+                marker_type: "a-f-G-U-C".to_string(),
+                lat: 33.71576,
+                lon: -84.41152,
+                hae: Some(312.4),
+                ts: 1_700_000_000_000,
+                callsign: Some("ALPHA-1".to_string()),
+                color: Some(-65536),
+                cell_id: Some("BRAVO".to_string()),
+                deleted: false,
+            }
+        }
+
+        fn tombstone_marker(uid: &str) -> MarkerInfo {
+            MarkerInfo {
+                uid: uid.to_string(),
+                marker_type: TOMBSTONE_PLACEHOLDER_TYPE.to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                hae: None,
+                ts: 1_700_000_000_000,
+                callsign: None,
+                color: None,
+                cell_id: None,
+                deleted: true,
+            }
+        }
+
+        fn make_node(label: &str) -> Arc<PeatNode> {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            create_node(NodeConfig {
+                app_id: format!("marker-rt-{label}"),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: tmp.path().to_str().unwrap().to_string(),
+                transport: None,
+            })
+            .expect("create_node")
+        }
+
+        // ----- UniFFI tier -------------------------------------------------
+
+        /// Live marker survives the full UniFFI surface round-trip.
+        /// Drift point this catches: a future field added to
+        /// `MarkerInfo` but dropped in `serialize_marker_json` or
+        /// `parse_marker_publish_json` (the very bug pattern
+        /// peat#835 / peat#832 sat behind). Every optional field
+        /// must round-trip; new fields require a parallel assertion
+        /// below so this matrix stays exhaustive.
+        #[test]
+        fn put_marker_get_markers_preserves_live_fields() {
+            let node = make_node("live");
+            let original = live_marker("marker-live-001");
+            node.put_marker(original.clone()).expect("put_marker");
+
+            let listed = node.get_markers().expect("get_markers");
+            let found = listed
+                .iter()
+                .find(|m| m.uid == original.uid)
+                .expect("published marker must appear in get_markers");
+
+            assert_eq!(found.marker_type, original.marker_type);
+            assert_eq!(found.lat, original.lat);
+            assert_eq!(found.lon, original.lon);
+            assert_eq!(found.hae, original.hae);
+            assert_eq!(found.ts, original.ts);
+            assert_eq!(found.callsign, original.callsign);
+            assert_eq!(found.color, original.color);
+            assert_eq!(found.cell_id, original.cell_id);
+            assert!(!found.deleted, "live marker must not arrive deleted");
+        }
+
+        /// Tombstone survives the UniFFI surface round-trip with the
+        /// `deleted` flag preserved. Without this assertion a future
+        /// schema refactor could silently drop `_deleted: true` on
+        /// store-and-scan — receivers would render the marker as
+        /// live, the deletion would never propagate, and the only
+        /// signal would be on-device UAT (the exact bug class the
+        /// dev-team-owns-validation rule exists to lock in CI).
+        #[test]
+        fn put_marker_get_markers_preserves_tombstone() {
+            let node = make_node("tomb");
+            let original = tombstone_marker("marker-tomb-001");
+            node.put_marker(original.clone()).expect("put_marker");
+
+            let listed = node.get_markers().expect("get_markers");
+            let found = listed
+                .iter()
+                .find(|m| m.uid == original.uid)
+                .expect("published tombstone must appear in get_markers");
+
+            assert!(found.deleted, "tombstone must round-trip with deleted=true");
+            assert_eq!(found.uid, original.uid);
+            assert_eq!(found.ts, original.ts);
+        }
+
+        /// Tombstone overwriting a live marker for the same UID:
+        /// `put_marker` is upsert, the second write replaces the
+        /// first. `get_markers` returns the tombstone (deleted=true),
+        /// not the prior live shape. Locks the CRDT semantics the
+        /// consumer's deletion flow depends on — without upsert,
+        /// "delete a marker I just placed" would produce two
+        /// doc-store entries and ambiguous resolution.
+        #[test]
+        fn tombstone_upserts_over_live_marker() {
+            let node = make_node("upsert");
+            let uid = "marker-upsert-001";
+            node.put_marker(live_marker(uid)).expect("put live");
+            node.put_marker(tombstone_marker(uid)).expect("put tomb");
+
+            let listed = node.get_markers().expect("get_markers");
+            let matching: Vec<_> = listed.iter().filter(|m| m.uid == uid).collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "upsert must produce exactly one entry per uid, got {}",
+                matching.len()
+            );
+            assert!(matching[0].deleted, "tombstone must win over prior live");
+        }
+
+        // ----- JNI tier ----------------------------------------------------
+
+        /// JNI inline-parser path: `publishMarkerJni` decodes a
+        /// JString into the same `parse_marker_publish_json` helper
+        /// the typed UniFFI path skips. Builds a JSON envelope shaped
+        /// exactly like the consumer's marker serializer produces on
+        /// the wire and verifies every field lands in the resulting
+        /// `MarkerInfo`. Locks the duplicated codec — same pattern as
+        /// `publish_json_inline_parser_extracts_battery_and_heart` in
+        /// [`platform_tests`], same rationale (silent field drop on
+        /// the publish path).
+        #[test]
+        fn publish_json_inline_parser_extracts_live_marker_fields() {
+            let json = r#"{
+                "uid": "marker-jni-001",
+                "type": "a-f-G-U-C",
+                "lat": 33.71576,
+                "lon": -84.41152,
+                "hae": 312.4,
+                "ts": 1700000000000,
+                "callsign": "ALPHA-1",
+                "color": -65536,
+                "cell_id": "BRAVO"
+            }"#;
+
+            let parsed = parse_marker_publish_json("", json).expect("parse");
+
+            assert_eq!(parsed.uid, "marker-jni-001");
+            assert_eq!(parsed.marker_type, "a-f-G-U-C");
+            assert_eq!(parsed.lat, 33.71576);
+            assert_eq!(parsed.lon, -84.41152);
+            assert_eq!(parsed.hae, Some(312.4));
+            assert_eq!(parsed.callsign.as_deref(), Some("ALPHA-1"));
+            assert_eq!(parsed.color, Some(-65536));
+            assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
+            assert!(!parsed.deleted);
+        }
+
+        /// JNI tombstone inline-parser path: `publishMarkerJni` must
+        /// accept the stripped tombstone body the consumer's deletion
+        /// serializer produces (uid + `_deleted: true` + ts, no
+        /// geo/type/callsign). Catches a regression where the parser
+        /// tightens up its required-fields validation in a way that
+        /// breaks the deletion path silently.
+        #[test]
+        fn publish_json_inline_parser_accepts_stripped_tombstone() {
+            let json = r#"{"uid":"marker-jni-tomb-001","_deleted":true,"ts":1700000000000}"#;
+            let parsed = parse_marker_publish_json("", json).expect("parse stripped tombstone");
+            assert!(parsed.deleted);
+            assert_eq!(parsed.uid, "marker-jni-tomb-001");
+            assert_eq!(parsed.ts, 1_700_000_000_000);
+            assert_eq!(
+                parsed.marker_type, TOMBSTONE_PLACEHOLDER_TYPE,
+                "absent type must resolve to the named placeholder, not a magic literal"
+            );
+        }
+
+        // ----- JNI + UniFFI: storage round-trip via the get-side serializer
+        //       (the shape getMarkersJni hands to consumers) -------------
+
+        /// `getMarkersJni` serializes `Vec<MarkerInfo>` via
+        /// `serialize_markers_get_json` — the JSON shape consumers
+        /// parse. A round-trip test pins that the wire shape
+        /// `get_markers` emits is one a subsequent
+        /// `parse_marker_publish_json` accepts, ensuring no
+        /// asymmetric-codec regression slips through.
+        #[test]
+        fn get_markers_jni_serialized_shape_re_parses_cleanly() {
+            let node = make_node("getjni");
+            node.put_marker(live_marker("marker-getjni-001"))
+                .expect("put live");
+            node.put_marker(tombstone_marker("marker-getjni-002"))
+                .expect("put tomb");
+
+            let listed = node.get_markers().expect("get_markers");
+            let json = serialize_markers_get_json(&listed);
+
+            // Decode every entry through the same inline parser the
+            // publish path uses. If the get-side shape ever diverges
+            // from the publish-side shape, this fails before it
+            // reaches a consumer.
+            let arr: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+            for obj in arr.as_array().expect("array").iter() {
+                let body = serde_json::to_string(obj).unwrap();
+                let parsed = parse_marker_publish_json("", &body).expect("get-side body re-parses");
+                if parsed.uid == "marker-getjni-002" {
+                    assert!(parsed.deleted, "tombstone preserved in scan output");
+                } else {
+                    assert!(!parsed.deleted, "live preserved in scan output");
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -5345,7 +6083,7 @@ mod tests {
 ///
 /// Kotlin signature: external fun peatVersion(): String
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_peatVersion(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_peatVersion(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -5359,7 +6097,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_peatVersion(
 ///
 /// Kotlin signature: external fun testJni(): String
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_testJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_testJni(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -5374,7 +6112,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_testJni(
 /// Kotlin signature: external fun createNodeJni(appId: String, sharedKey: String, storagePath: String): Long
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_createNodeJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
     mut env: JNIEnv,
     _class: JClass,
     app_id: JString,
@@ -5452,7 +6190,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_createNodeJni(
 /// ```
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_createNodeWithConfigJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni(
     mut env: JNIEnv,
     _class: JClass,
     app_id: JString,
@@ -5545,7 +6283,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_createNodeWith
 /// Kotlin signature: external fun getGlobalNodeHandleJni(): Long
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getGlobalNodeHandleJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getGlobalNodeHandleJni(
     _env: JNIEnv,
     _class: JClass,
 ) -> i64 {
@@ -5565,7 +6303,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getGlobalNodeH
 /// Kotlin signature: external fun nodeIdJni(handle: Long): String
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nodeIdJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nodeIdJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5593,7 +6331,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nodeIdJni(
 /// Kotlin signature: external fun peerCountJni(handle: Long): Int
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_peerCountJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_peerCountJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5616,7 +6354,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_peerCountJni(
 /// Kotlin signature: external fun requestSyncJni(handle: Long): Boolean
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_requestSyncJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_requestSyncJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5636,7 +6374,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_requestSyncJni
 /// Returns JSON array of hex-encoded peer IDs, or "[]" on error
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_connectedPeersJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_connectedPeersJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5665,7 +6403,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_connectedPeers
 /// Kotlin signature: external fun startSyncJni(handle: Long): Boolean
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_startSyncJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_startSyncJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5710,7 +6448,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_startSyncJni(
 /// Kotlin signature: external fun freeNodeJni(handle: Long)
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_freeNodeJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5758,7 +6496,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_freeNodeJni(
 /// Kotlin signature: external fun bleSetStartedJni(handle: Long, started: Boolean)
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleSetStartedJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleSetStartedJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5803,7 +6541,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleSetStartedJ
 /// Kotlin signature: external fun bleAddPeerJni(handle: Long, peerId: String)
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleAddPeerJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleAddPeerJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5841,7 +6579,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleAddPeerJni(
 /// Kotlin signature: external fun bleRemovePeerJni(handle: Long, peerId: String)
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleRemovePeerJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleRemovePeerJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5879,7 +6617,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleRemovePeerJ
 /// Kotlin signature: external fun bleIsAvailableJni(handle: Long): Boolean
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleIsAvailableJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleIsAvailableJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5915,7 +6653,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_bleIsAvailable
 /// Kotlin signature: external fun blePeerCountJni(handle: Long): Int
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blePeerCountJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blePeerCountJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5941,7 +6679,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blePeerCountJn
 /// Returns JSON array of cell objects, or "[]" on error
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getCellsJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getCellsJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -5993,7 +6731,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getCellsJni(
 /// Returns JSON array of track objects, or "[]" on error
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getTracksJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getTracksJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6050,7 +6788,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getTracksJni(
 /// Returns JSON array of platform objects, or "[]" on error
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getPlatformsJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6082,7 +6820,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getPlatformsJn
 /// Returns JSON array of command objects, or "[]" on error
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getCommandsJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getCommandsJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6134,7 +6872,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getCommandsJni
 /// Expected JSON format:
 /// ```json
 /// {
-///   "id": "atak-device-uid",
+///   "id": "consumer-device-uid",
 ///   "name": "CALLSIGN",
 ///   "platform_type": "SOLDIER",
 ///   "lat": 33.7490,
@@ -6150,7 +6888,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_getCommandsJni
 /// ```
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatformJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6219,6 +6957,135 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatfor
     result
 }
 
+/// JNI: Get all markers as JSON array string
+///
+/// Kotlin signature: `external fun getMarkersJni(handle: Long): String`
+/// Returns JSON array of marker objects, or `"[]"` on error.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getMarkersJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    if handle == 0 {
+        return env
+            .new_string("[]")
+            .expect("Failed to create Java string")
+            .into_raw();
+    }
+
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = match node.get_markers() {
+        Ok(markers) => serialize_markers_get_json(&markers),
+        Err(e) => {
+            // Surface storage failures the same way the publish
+            // side does — otherwise Kotlin sees `"[]"` and can't
+            // tell "no markers" from "storage error retrieving
+            // markers." Triage on a tablet starts with the
+            // PeatFFI logcat tag; this line is what makes "marker
+            // didn't sync" reports actionable.
+            #[cfg(target_os = "android")]
+            android_log(&format!("getMarkersJni: get_markers failed: {:?}", e));
+            let _ = e;
+            "[]".to_string()
+        }
+    };
+
+    // Don't drop the Arc - we're just borrowing
+    std::mem::forget(node);
+
+    env.new_string(&result)
+        .expect("Failed to create Java string")
+        .into_raw()
+}
+
+/// JNI: Publish a marker into the doc store. Routes through the
+/// universal-Document transport on every registered radio
+/// (LiteBridgeTranslator on BLE, iroh sync for cross-mesh peers).
+///
+/// Kotlin signature: `external fun publishMarkerJni(handle: Long, markerJson: String): Boolean`
+/// Returns `1` (JNI_TRUE) on success, `0` (JNI_FALSE) on failure
+/// (invalid handle, malformed JSON, missing required fields, storage
+/// error). The Kotlin caller maps the boolean return back to a
+/// success / "publish failed" log path — same shape as
+/// `publishPlatformJni`.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    marker_json: JString,
+) -> jboolean {
+    if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("publishMarkerJni: Invalid handle (0)");
+        return 0;
+    }
+
+    let json_str: String = match env.get_string(&marker_json) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "publishMarkerJni: Failed to get JSON string: {:?}",
+                e
+            ));
+            let _ = e;
+            return 0;
+        }
+    };
+
+    #[cfg(target_os = "android")]
+    android_log(&format!("publishMarkerJni: Received JSON: {}", json_str));
+
+    // Parse — uid is read from the body (no doc-store id available
+    // pre-storage). parse_marker_publish_json's `id` parameter is
+    // accepted for the scan-side path; on publish we pass the
+    // body's uid and reject if absent.
+    let marker: MarkerInfo = match parse_marker_publish_json("", &json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("publishMarkerJni: parse error: {:?}", e));
+            let _ = e;
+            return 0;
+        }
+    };
+
+    #[cfg(target_os = "android")]
+    if marker.deleted {
+        android_log(&format!(
+            "publishMarkerJni: Publishing TOMBSTONE for uid={}",
+            marker.uid
+        ));
+    } else {
+        android_log(&format!(
+            "publishMarkerJni: Publishing marker uid={}, type={}, lat={}, lon={}",
+            marker.uid, marker.marker_type, marker.lat, marker.lon
+        ));
+    }
+
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = match node.put_marker(marker) {
+        Ok(_) => {
+            #[cfg(target_os = "android")]
+            android_log("publishMarkerJni: Marker published successfully");
+            1
+        }
+        Err(e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("publishMarkerJni: Failed to publish: {:?}", e));
+            let _ = e;
+            0
+        }
+    };
+
+    std::mem::forget(node);
+    result
+}
+
 /// Publish a generic document into a named collection via `peat_mesh::Node`.
 ///
 /// JNI wrapper around [`publish_document_into_node`]. The Kotlin caller passes
@@ -6236,7 +7103,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatfor
 /// Kotlin signature: `external fun publishDocumentJni(handle: Long, collection: String, json: String): String`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishDocumentJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6314,7 +7181,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumen
 /// Kotlin signature: `external fun publishDocumentWithOriginJni(handle: Long, collection: String, json: String, origin: String): String`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentWithOriginJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishDocumentWithOriginJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6489,7 +7356,7 @@ async fn publish_document_into_node_with_origin(
 /// [`BleTranslator`]: peat_protocol::sync::ble_translation::BleTranslator
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6667,7 +7534,7 @@ fn parse_peripheral_id(value: Option<&serde_json::Value>) -> anyhow::Result<u32>
 /// when mDNS is unreliable.
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_connectPeerJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_connectPeerJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6734,11 +7601,11 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_connectPeerJni
 // =============================================================================
 //
 // This is the push-based equivalent of the UniFFI PeatNode::subscribe() API.
-// We can't use UniFFI's version from the ATAK plugin because UniFFI 0.28's
-// Kotlin backend generates callback interfaces that inherit from
+// We can't use UniFFI's version from Android plugin consumers because UniFFI
+// 0.28's Kotlin backend generates callback interfaces that inherit from
 // com.sun.jna.Callback, and JNA's function-pointer resolution fails under
-// ATAK's linker namespace isolation (see the comment block at the top of the
-// JNI Bindings section and ADR-059 for full context).
+// Android plugin-host linker namespace isolation (see the comment block at
+// the top of the JNI Bindings section and ADR-059 for full context).
 //
 // The direct-JNI path uses the same JAVA_VM + GlobalRef + attach_current_thread
 // pattern that notify_peer_event already uses for peer connectivity events.
@@ -6752,14 +7619,14 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_connectPeerJni
 /// The listener receives `onChange(collection, docId)` for every document upsert
 /// and `onError(message)` if the underlying broadcast channel lags or closes.
 /// Calls from the Rust side happen on the tokio runtime thread owned by the
-/// PeatNode; the listener must be safe to invoke from any thread (the plugin
-/// posts back to ATAK's main-thread Handler before touching UI state).
+/// PeatNode; the listener must be safe to invoke from any thread (consumers
+/// typically post back to a main-thread Handler before touching UI state).
 ///
 /// Replacing an existing subscription is allowed: the previous listener's
 /// GlobalRef is dropped and the new one takes over on the next event.
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeDocumentChangesJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -6852,7 +7719,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeDocum
 /// a race between unsubscribe and an in-flight dispatch.
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeDocumentChangesJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -6990,7 +7857,7 @@ fn dispatch_document_error(message: &str) {
 // =============================================================================
 //
 // Bridges `TransportManager`'s per-transport fan-out (peat-mesh) into a
-// Kotlin callback so the ATAK plugin's BLE manager can deliver encoded
+// Kotlin callback so a consumer plugin's BLE manager can deliver encoded
 // frames over the radio. The JNI shape mirrors `subscribeDocumentChangesJni`
 // — a single GlobalRef in a static slot, replaceable on re-subscribe — so
 // the same patterns audited on PR #803 carry over.
@@ -7118,7 +7985,7 @@ impl peat_mesh::transport::OutboundSink for JniOutboundSink {
 /// listeners. Use `unsubscribeOutboundFramesJni` to fully tear down.
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutboundFramesJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7306,7 +8173,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutbo
 /// twice or before any subscribe is a no-op.
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeOutboundFramesJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni(
     _env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7417,7 +8284,7 @@ fn dispatch_outbound_frame(transport_id: &str, collection: &str, bytes: &[u8]) {
 /// `external fun enableBlobTransferJni(handle: Long, bindAddr: String?): Boolean`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_enableBlobTransferJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_enableBlobTransferJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7454,7 +8321,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_enableBlobTran
 /// `external fun blobAddPeerJni(handle: Long, peerIdHex: String, address: String): Boolean`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobAddPeerJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobAddPeerJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7499,7 +8366,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobAddPeerJni
 /// `external fun blobPutJni(handle: Long, data: ByteArray, contentType: String): String?`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobPutJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobPutJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7544,7 +8411,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobPutJni(
 /// `external fun blobGetJni(handle: Long, hashHex: String): ByteArray?`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobGetJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobGetJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7585,7 +8452,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobGetJni(
 /// `external fun blobExistsLocallyJni(handle: Long, hashHex: String): Boolean`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobExistsLocallyJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobExistsLocallyJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7619,7 +8486,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobExistsLoca
 /// `external fun blobEndpointIdJni(handle: Long): String?`
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobEndpointIdJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobEndpointIdJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7661,7 +8528,7 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_blobEndpointId
 /// }
 /// ```
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
     mut env: JNIEnv,
     class: JClass,
 ) {
@@ -7671,139 +8538,149 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
         NativeMethod {
             name: "peatVersion".into(),
             sig: "()Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_peatVersion as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_peatVersion as *mut c_void,
         },
         NativeMethod {
             name: "testJni".into(),
             sig: "()Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_testJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_testJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "createNodeJni".into(),
             sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_createNodeJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "getGlobalNodeHandleJni".into(),
             sig: "()J".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getGlobalNodeHandleJni
-                as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getGlobalNodeHandleJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "nodeIdJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_nodeIdJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_nodeIdJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "peerCountJni".into(),
             sig: "(J)I".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_peerCountJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_peerCountJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "connectedPeersJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_connectedPeersJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_connectedPeersJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "requestSyncJni".into(),
             sig: "(J)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_requestSyncJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_requestSyncJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "startSyncJni".into(),
             sig: "(J)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_startSyncJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_startSyncJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "freeNodeJni".into(),
             sig: "(J)V".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_freeNodeJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_freeNodeJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "getCellsJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getCellsJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getCellsJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "getTracksJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getTracksJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getTracksJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "getPlatformsJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getPlatformsJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "getCommandsJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getCommandsJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getCommandsJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "publishPlatformJni".into(),
             sig: "(JLjava/lang/String;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatformJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "getMarkersJni".into(),
+            sig: "(J)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getMarkersJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "publishMarkerJni".into(),
+            sig: "(JLjava/lang/String;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "publishDocumentJni".into(),
             sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishDocumentJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "publishDocumentWithOriginJni".into(),
             sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
                 .into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentWithOriginJni
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishDocumentWithOriginJni
                 as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         NativeMethod {
             name: "ingestPositionJni".into(),
             sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "connectPeerJni".into(),
             sig: "(JLjava/lang/String;Ljava/lang/String;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_connectPeerJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_connectPeerJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "createNodeWithConfigJni".into(),
             sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)J"
                 .into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_createNodeWithConfigJni
-                as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "subscribeDocumentChangesJni".into(),
             // (long handle, DocumentChangeListener listener) -> boolean
-            sig: "(JLcom/defenseunicorns/atak/peat/DocumentChangeListener;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_subscribeDocumentChangesJni
+            sig: "(JLcom/defenseunicorns/peat/DocumentChangeListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni
                 as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "unsubscribeDocumentChangesJni".into(),
             sig: "()V".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeDocumentChangesJni
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni
                 as *mut c_void,
         },
         // ADR-059 Slice 1.b: outbound BLE-frame fan-out callback.
@@ -7811,16 +8688,15 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
         NativeMethod {
             name: "subscribeOutboundFramesJni".into(),
             // (long handle, OutboundFrameListener listener) -> boolean
-            sig: "(JLcom/defenseunicorns/atak/peat/OutboundFrameListener;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_subscribeOutboundFramesJni
-                as *mut c_void,
+            sig: "(JLcom/defenseunicorns/peat/OutboundFrameListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         NativeMethod {
             name: "unsubscribeOutboundFramesJni".into(),
             // (long handle) -> void
             sig: "(J)V".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_unsubscribeOutboundFramesJni
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
                 as *mut c_void,
         },
         // Blob transfer (ADR-060)
@@ -7828,67 +8704,67 @@ pub extern "system" fn Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit(
         NativeMethod {
             name: "enableBlobTransferJni".into(),
             sig: "(JLjava/lang/String;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_enableBlobTransferJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_enableBlobTransferJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "blobAddPeerJni".into(),
             sig: "(JLjava/lang/String;Ljava/lang/String;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blobAddPeerJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blobAddPeerJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "blobPutJni".into(),
             sig: "(J[BLjava/lang/String;)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blobPutJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blobPutJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "blobGetJni".into(),
             sig: "(JLjava/lang/String;)[B".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blobGetJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blobGetJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "blobExistsLocallyJni".into(),
             sig: "(JLjava/lang/String;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blobExistsLocallyJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blobExistsLocallyJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "blobEndpointIdJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blobEndpointIdJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blobEndpointIdJni as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
         NativeMethod {
             name: "bleSetStartedJni".into(),
             sig: "(JZ)V".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleSetStartedJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleSetStartedJni as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
         NativeMethod {
             name: "bleAddPeerJni".into(),
             sig: "(JLjava/lang/String;)V".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleAddPeerJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleAddPeerJni as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
         NativeMethod {
             name: "bleRemovePeerJni".into(),
             sig: "(JLjava/lang/String;)V".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleRemovePeerJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleRemovePeerJni as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
         NativeMethod {
             name: "bleIsAvailableJni".into(),
             sig: "(J)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleIsAvailableJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleIsAvailableJni as *mut c_void,
         },
         #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
         NativeMethod {
             name: "blePeerCountJni".into(),
             sig: "(J)I".into(),
-            fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blePeerCountJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blePeerCountJni as *mut c_void,
         },
     ];
 
@@ -7954,7 +8830,7 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
     };
 
     // Try to find PeerEventManager class and store global reference for callbacks
-    let peer_event_manager_class = "com/defenseunicorns/atak/peat/PeerEventManager";
+    let peer_event_manager_class = "com/defenseunicorns/peat/PeerEventManager";
     match env.find_class(peer_event_manager_class) {
         Ok(class) => match env.new_global_ref(class) {
             Ok(global_ref) => {
@@ -7979,7 +8855,7 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
     android_log("JNI_OnLoad: Got JNIEnv, looking for PeatJni class...");
 
     // Try to find the PeatJni class and register natives
-    let class_name = "com/defenseunicorns/atak/peat/PeatJni";
+    let class_name = "com/defenseunicorns/peat/PeatJni";
     match env.find_class(class_name) {
         Ok(class) => {
             #[cfg(target_os = "android")]
@@ -7991,103 +8867,116 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                 NativeMethod {
                     name: "nativeInit".into(),
                     sig: "()V".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_nativeInit as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_nativeInit as *mut c_void,
                 },
                 NativeMethod {
                     name: "peatVersion".into(),
                     sig: "()Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_peatVersion as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_peatVersion as *mut c_void,
                 },
                 NativeMethod {
                     name: "testJni".into(),
                     sig: "()Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_testJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_testJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "createNodeJni".into(),
                     sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_createNodeJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "getGlobalNodeHandleJni".into(),
                     sig: "()J".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getGlobalNodeHandleJni
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getGlobalNodeHandleJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "nodeIdJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_nodeIdJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_nodeIdJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "peerCountJni".into(),
                     sig: "(J)I".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_peerCountJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_peerCountJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "connectedPeersJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_connectedPeersJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_connectedPeersJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "requestSyncJni".into(),
                     sig: "(J)Z".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_requestSyncJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_requestSyncJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "startSyncJni".into(),
                     sig: "(J)Z".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_startSyncJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_startSyncJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "freeNodeJni".into(),
                     sig: "(J)V".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_freeNodeJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_freeNodeJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "getCellsJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getCellsJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getCellsJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "getTracksJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getTracksJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getTracksJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "getPlatformsJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getPlatformsJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "getCommandsJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_getCommandsJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getCommandsJni as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "getMarkersJni".into(),
+                    sig: "(J)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getMarkersJni as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "publishMarkerJni".into(),
+                    sig: "(JLjava/lang/String;)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni
+                        as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "publishPlatformJni".into(),
                     sig: "(JLjava/lang/String;)Z".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishPlatformJni
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "publishDocumentJni".into(),
                     sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentJni
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishDocumentJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
@@ -8097,59 +8986,59 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                           Ljava/lang/String;"
                         .into(),
                     fn_ptr:
-                        Java_com_defenseunicorns_atak_peat_PeatJni_publishDocumentWithOriginJni
+                        Java_com_defenseunicorns_peat_PeatJni_publishDocumentWithOriginJni
                             as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth"))]
                 NativeMethod {
                     name: "ingestPositionJni".into(),
                     sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_ingestPositionJni
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "connectPeerJni".into(),
                     sig: "(JLjava/lang/String;Ljava/lang/String;)Z".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_connectPeerJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_connectPeerJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "createNodeWithConfigJni".into(),
                     sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)J"
                         .into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_createNodeWithConfigJni
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni
                         as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
                 NativeMethod {
                     name: "bleSetStartedJni".into(),
                     sig: "(JZ)V".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleSetStartedJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleSetStartedJni as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
                 NativeMethod {
                     name: "bleAddPeerJni".into(),
                     sig: "(JLjava/lang/String;)V".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleAddPeerJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleAddPeerJni as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
                 NativeMethod {
                     name: "bleRemovePeerJni".into(),
                     sig: "(JLjava/lang/String;)V".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleRemovePeerJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleRemovePeerJni as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
                 NativeMethod {
                     name: "bleIsAvailableJni".into(),
                     sig: "(J)Z".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_bleIsAvailableJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_bleIsAvailableJni as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
                 NativeMethod {
                     name: "blePeerCountJni".into(),
                     sig: "(J)I".into(),
-                    fn_ptr: Java_com_defenseunicorns_atak_peat_PeatJni_blePeerCountJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_blePeerCountJni as *mut c_void,
                 },
             ];
 
@@ -8231,7 +9120,7 @@ fn notify_peer_event(method_name: &str, peer_id: &str, reason: Option<&str>) {
 
         // Attach current thread to get env for class lookup
         if let Ok(mut env) = java_vm.attach_current_thread() {
-            let peer_event_manager_class = "com/defenseunicorns/atak/peat/PeerEventManager";
+            let peer_event_manager_class = "com/defenseunicorns/peat/PeerEventManager";
             if let Ok(class) = env.find_class(peer_event_manager_class) {
                 if let Ok(global_ref) = env.new_global_ref(class) {
                     *class_guard = Some(global_ref);

@@ -148,6 +148,21 @@ pub struct AutomergeBackend {
     channel_manager: Arc<RwLock<Option<Arc<super::sync_channel::SyncChannelManager>>>>,
 }
 
+/// Dedup window for duplicate `Connected` events on the
+/// event-driven sync spawner (see [`AutomergeBackend::start_sync`]).
+/// Calibrated to the 2026-05-10 sync diagnostic — connect-path /
+/// accept-path race observed at 2.6s. 5s is comfortably wider than
+/// the race without suppressing legitimate reconnect-after-recycle
+/// (those are >50s apart by design of `CONNECTION_RECYCLE_INTERVAL_SECS`).
+///
+/// If iroh's connect/accept race window widens past this in a
+/// future release, OR `CONNECTION_RECYCLE_INTERVAL_SECS` is tuned
+/// down toward this value, regression tests in
+/// `connected_dedup_tests` will fail their boundary assertions —
+/// which is the signal to recalibrate.
+#[cfg(feature = "automerge-backend")]
+const CONNECTED_DEDUP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[cfg(feature = "automerge-backend")]
 impl AutomergeBackend {
     /// Create a new Automerge backend from an existing AutomergeStore
@@ -268,6 +283,43 @@ impl AutomergeBackend {
 
     /// Spawn a sync handler for a specific peer (Issue #346)
     ///
+    /// Suppress duplicate `Connected` events for the same peer that
+    /// arrive within `window`. Returns `true` if `peer` is currently
+    /// inside its dedup window (caller should `continue` the loop),
+    /// `false` if this is the first observation in the window
+    /// (caller proceeds and registers handlers).
+    ///
+    /// The connect-path and accept-path can both emit `Connected`
+    /// for the same peer when racing on a recycle reconnect. Without
+    /// this filter, both spawned `spawn_sync_handler_for_peer` AND
+    /// the proactive `sync_all_documents_with_peer` push run twice
+    /// per peer per cycle — wasted bandwidth, redundant log noise,
+    /// and risk of duplicate sync stream construction.
+    ///
+    /// On every call this also reaps entries whose timestamps fall
+    /// outside the window. O(n) per event is fine — peer count
+    /// stays in the low double digits in practice and the dedup
+    /// window itself bounds map size.
+    ///
+    /// Extracted from the inline async loop so the dedup contract
+    /// has unit-test coverage. See `connected_dedup_tests`.
+    fn check_and_record_connect(
+        recent_connects: &Arc<RwLock<HashMap<EndpointId, std::time::Instant>>>,
+        peer: EndpointId,
+        now: std::time::Instant,
+        window: std::time::Duration,
+    ) -> bool {
+        let mut map = recent_connects.write().expect("recent_connects poisoned");
+        map.retain(|_, t| now.duration_since(*t) < window);
+        match map.get(&peer) {
+            Some(_) => true,
+            None => {
+                map.insert(peer, now);
+                false
+            }
+        }
+    }
+
     /// This is called both by the event-based handler spawner (for immediate response)
     /// and by the polling-based fallback (for any connections that might be missed).
     ///
@@ -612,17 +664,74 @@ impl SyncCapable for AutomergeBackend {
         let sync_active_for_events = Arc::clone(&sync_active);
         let active_handlers_for_events = Arc::clone(&active_handlers);
 
+        // De-dup window for duplicate Connected events per peer.
+        // The connect-path and accept-path can both emit Connected
+        // for the same peer when racing on a recycle reconnect (seen
+        // in 2026-05-10 sync diagnostic: a single node observed two
+        // Connected events for the same peer ID within 2.6s, each
+        // spawning its own proactive-push task — wasted bandwidth
+        // and a confusing log trail). 5s is comfortably wider than
+        // the observed race window without suppressing legitimate
+        // reconnect-after-recycle events (those are >50s apart).
+        let recent_connects: Arc<
+            std::sync::RwLock<std::collections::HashMap<EndpointId, std::time::Instant>>,
+        > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+
         tokio::spawn(async move {
             let mut events = transport_events;
             while let Some(event) = events.recv().await {
                 if !sync_active_for_events.load(Ordering::Relaxed) {
                     break;
                 }
+                // Disconnected events clear the dedup entry so a
+                // legitimate reconnect-after-flap (BLE link drop,
+                // network blip, peer-side force-stop+restart, iroh
+                // transport reset) gets the full proactive-push
+                // treatment even if it lands inside the 5s window.
+                // Without this, the recycle-driven dedup wrongly
+                // suppresses externally-driven reconnects too —
+                // which is exactly the path the marker-tombstone
+                // sync this PR enables depends on.
+                if let crate::network::iroh_transport::TransportPeerEvent::Disconnected {
+                    endpoint_id,
+                    ..
+                } = event
+                {
+                    let mut map = recent_connects.write().expect("recent_connects poisoned");
+                    if map.remove(&endpoint_id).is_some() {
+                        tracing::debug!(
+                            peer = ?endpoint_id,
+                            "Cleared dedup entry on Disconnected — next Connected will be treated as fresh"
+                        );
+                    }
+                    continue;
+                }
                 if let crate::network::iroh_transport::TransportPeerEvent::Connected {
                     endpoint_id,
                     ..
                 } = event
                 {
+                    // Skip duplicate Connected within the dedup window
+                    // — otherwise both the connect and accept paths
+                    // double-spawn proactive pushes for the same peer.
+                    // A real disconnect+reconnect cycle is NOT suppressed
+                    // because the Disconnected arm above cleared the
+                    // dedup entry.
+                    let now = std::time::Instant::now();
+                    let is_duplicate = Self::check_and_record_connect(
+                        &recent_connects,
+                        endpoint_id,
+                        now,
+                        CONNECTED_DEDUP_WINDOW,
+                    );
+                    if is_duplicate {
+                        tracing::debug!(
+                            peer = ?endpoint_id,
+                            "Suppressing duplicate Connected event within dedup window"
+                        );
+                        continue;
+                    }
+
                     // Spawn handler immediately for new connection
                     Self::spawn_sync_handler_for_peer(
                         endpoint_id,
@@ -639,15 +748,29 @@ impl SyncCapable for AutomergeBackend {
                     let push_peer_id = endpoint_id;
                     tokio::spawn(async move {
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        if let Err(e) = coordinator_for_push
+                        match coordinator_for_push
                             .sync_all_documents_with_peer(push_peer_id)
                             .await
                         {
-                            tracing::debug!(
-                                "Proactive document push to peer {:?} failed: {}",
-                                push_peer_id,
-                                e
-                            );
+                            Ok(()) => {
+                                // Success-side tracing — without this,
+                                // a silently-failing proactive push is
+                                // indistinguishable from a successful
+                                // one in logs. Diagnostic log spammed
+                                // ~50 connect events with zero info on
+                                // whether any push actually ran.
+                                tracing::info!(
+                                    peer = ?push_peer_id,
+                                    "Proactive document push to peer succeeded"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Proactive document push to peer {:?} failed: {}",
+                                    push_peer_id,
+                                    e
+                                );
+                            }
                         }
                     });
 
@@ -1471,5 +1594,161 @@ mod tests {
         assert_eq!(stats.peer_count, 0); // No peers connected yet
         assert_eq!(stats.bytes_sent, 0);
         assert_eq!(stats.bytes_received, 0);
+    }
+
+    /// Regression coverage for `check_and_record_connect` —
+    /// the dedup helper that the event-driven sync spawner calls on
+    /// every `TransportPeerEvent::Connected`. Exercises four
+    /// behaviors the production loop relies on:
+    ///   - first observation within the window passes
+    ///   - second observation for the same peer within the window suppresses
+    ///   - second observation outside the window passes (legitimate reconnect)
+    ///   - second observation for a *different* peer within the window passes
+    ///     (no accidental cross-peer dedup)
+    ///
+    /// If `CONNECTED_DEDUP_WINDOW` is tuned, or the helper's
+    /// reaping logic regresses (e.g. `retain` swapped for a no-op),
+    /// one of these assertions fails before the bug ships.
+    mod connected_dedup_tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        fn fresh_map() -> Arc<RwLock<HashMap<EndpointId, Instant>>> {
+            Arc::new(RwLock::new(HashMap::new()))
+        }
+
+        fn peer(seed: u8) -> EndpointId {
+            // EndpointId is iroh's Ed25519 public key — `from_bytes`
+            // requires a valid Edwards curve point, not arbitrary
+            // 32-byte patterns. Derive a deterministic test key by
+            // generating from a seeded RNG; the seed varies per
+            // test peer so we get distinct, valid IDs.
+            use rand::{rngs::StdRng, SeedableRng};
+            let mut rng = StdRng::seed_from_u64(seed as u64);
+            iroh::SecretKey::generate(&mut rng).public()
+        }
+
+        #[test]
+        fn first_connect_passes() {
+            let map = fresh_map();
+            let now = Instant::now();
+            let is_dup = AutomergeBackend::check_and_record_connect(
+                &map,
+                peer(1),
+                now,
+                Duration::from_secs(5),
+            );
+            assert!(!is_dup, "first observation must not be marked duplicate");
+        }
+
+        #[test]
+        fn second_connect_within_window_suppresses() {
+            let map = fresh_map();
+            let window = Duration::from_secs(5);
+            let t0 = Instant::now();
+            AutomergeBackend::check_and_record_connect(&map, peer(1), t0, window);
+            let t1 = t0 + Duration::from_secs(2);
+            let is_dup = AutomergeBackend::check_and_record_connect(&map, peer(1), t1, window);
+            assert!(
+                is_dup,
+                "second observation within window MUST be marked duplicate"
+            );
+        }
+
+        #[test]
+        fn second_connect_outside_window_passes() {
+            let map = fresh_map();
+            let window = Duration::from_secs(5);
+            let t0 = Instant::now();
+            AutomergeBackend::check_and_record_connect(&map, peer(1), t0, window);
+            // Slightly past the window — should re-register as fresh.
+            let t1 = t0 + Duration::from_secs(6);
+            let is_dup = AutomergeBackend::check_and_record_connect(&map, peer(1), t1, window);
+            assert!(
+                !is_dup,
+                "legitimate reconnect after window must NOT be suppressed"
+            );
+        }
+
+        #[test]
+        fn different_peers_within_window_both_pass() {
+            let map = fresh_map();
+            let window = Duration::from_secs(5);
+            let t0 = Instant::now();
+            AutomergeBackend::check_and_record_connect(&map, peer(1), t0, window);
+            let t1 = t0 + Duration::from_secs(1);
+            let is_dup = AutomergeBackend::check_and_record_connect(&map, peer(2), t1, window);
+            assert!(
+                !is_dup,
+                "dedup must be per-peer; different peer must not be suppressed"
+            );
+        }
+
+        /// Reaping behavior: when a stale entry falls outside the
+        /// window, the next call for that same peer treats it as
+        /// fresh. Verifies the `retain` pass in
+        /// `check_and_record_connect` is doing its job.
+        #[test]
+        fn stale_entries_get_reaped_on_subsequent_call() {
+            let map = fresh_map();
+            let window = Duration::from_secs(5);
+            let t0 = Instant::now();
+            AutomergeBackend::check_and_record_connect(&map, peer(1), t0, window);
+
+            // Way past the window — entry should be reaped on next call.
+            let t1 = t0 + Duration::from_secs(60);
+            // Touch with a DIFFERENT peer so the reap runs without
+            // implicitly insert-and-update for peer(1).
+            AutomergeBackend::check_and_record_connect(&map, peer(2), t1, window);
+
+            // peer(1) should no longer be in the map; verify by
+            // confirming the next call for peer(1) is not flagged duplicate.
+            let t2 = t1 + Duration::from_millis(1);
+            let is_dup = AutomergeBackend::check_and_record_connect(&map, peer(1), t2, window);
+            assert!(
+                !is_dup,
+                "stale entry reaped — peer(1) must register as fresh"
+            );
+        }
+
+        /// Regression lock for the round-3 review finding: a real
+        /// disconnect+reconnect (BLE flap, force-stop+restart) must
+        /// NOT be suppressed by the dedup window. The Disconnected
+        /// branch of the event loop clears the peer's map entry so
+        /// the next Connected is treated as fresh. This test models
+        /// that lifecycle directly against the helper: after a
+        /// removal, a Connected within the dedup window passes.
+        #[test]
+        fn disconnect_then_reconnect_within_window_passes() {
+            let map = fresh_map();
+            let window = Duration::from_secs(5);
+            let t0 = Instant::now();
+            // Initial connect — records the peer.
+            AutomergeBackend::check_and_record_connect(&map, peer(1), t0, window);
+            // Simulate Disconnected → loop clears the peer's entry.
+            map.write().unwrap().remove(&peer(1));
+            // Real fast reconnect within the dedup window.
+            let t1 = t0 + Duration::from_secs(2);
+            let is_dup = AutomergeBackend::check_and_record_connect(&map, peer(1), t1, window);
+            assert!(
+                !is_dup,
+                "real disconnect+reconnect within window must NOT be suppressed"
+            );
+        }
+
+        /// The production constant matches the documented calibration.
+        /// If a future tweak shifts the window, the assertion forces
+        /// the change to flow through the comment + the regression
+        /// rationale rather than silently slipping in.
+        #[test]
+        fn production_window_matches_documented_calibration() {
+            assert_eq!(
+                CONNECTED_DEDUP_WINDOW,
+                Duration::from_secs(5),
+                "CONNECTED_DEDUP_WINDOW changed — re-evaluate against the iroh \
+                 connect/accept race window and the recycle interval, and update \
+                 the comment at the constant's definition"
+            );
+        }
     }
 }

@@ -139,7 +139,7 @@ static LAST_FAILED_DISCONNECT_SEC: AtomicU32 = AtomicU32::new(0);
 
 /// When true, we never initiate an outbound BLE connection to a peer;
 /// we only accept incoming connections from peers that scan + connect to
-/// our advertisement (the watch and ATAK plugin both do). Removing the
+/// our advertisement (the wearable watch and consumer plugins do). Removing the
 /// outbound path eliminates the connect/disconnect/discovery-error
 /// thrash that intermittently locked NimBLE's host task in mbuf
 /// cleanup. Peripheral-only is enough for the M5Stack's role (sensor +
@@ -420,7 +420,7 @@ unsafe extern "C" fn gap_event_handler(event: *mut ble_gap_event, _arg: *mut c_v
             let disc = &event.__bindgen_anon_1.disc;
 
             // Skip outbound-connect handling entirely in peripheral-only mode.
-            // Peers (watch / ATAK plugin) connect TO us via our advertisement;
+            // Peers (wearable watch / consumer plugins) connect TO us via our advertisement;
             // we sync via gatt_write_cb (their write to our characteristic)
             // and notifications, so we don't need to be central.
             if PERIPHERAL_ONLY {

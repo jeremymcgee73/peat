@@ -10,7 +10,7 @@
 //! │  Peat Protocol  │───▶│  TakTransport   │───▶│  TAK Server/    │
 //! │                 │    │                 │    │  Mesh SA        │
 //! │  CotEncoder     │    │  DIL Queue      │    │                 │
-//! │  CotEvent       │    │  Reconnection   │    │  ATAK/WinTAK    │
+//! │  CotEvent       │    │  Reconnection   │    │  CoT consumers  │
 //! └─────────────────┘    └─────────────────┘    └─────────────────┘
 //! ```
 //!
