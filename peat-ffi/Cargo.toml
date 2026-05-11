@@ -1,6 +1,15 @@
 [package]
 name = "peat-ffi"
-version = "0.1.0"
+# 0.2.0 (was 0.1.0): breaking JNI ABI rename — every
+# `Java_com_defenseunicorns_atak_peat_PeatJni_*` extern fn renamed to
+# `Java_com_defenseunicorns_peat_PeatJni_*` (103 sites), plus
+# NativeMethod table classpath strings and callback class lookups.
+# Pre-1.0 semver: minor bump signals the breaking change.
+# This crate's version is independent of `workspace.package.version`
+# so the wire-versioned ABI surface can rev separately from the
+# workspace's CHANGELOG-tracked protocol cadence; see CHANGELOG
+# entry under [0.9.0-rc.2] for the consumer migration contract.
+version = "0.2.0"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
