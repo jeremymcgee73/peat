@@ -14,23 +14,106 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.2] - 2026-05-10
+
+> **Crate-level versions in this release**:
+> `peat`, `peat-protocol`, `peat-schema`, `peat-discovery`, `peat-persistence`, `peat-transport` (and the workspace example crates) inherit `workspace.package.version = "0.9.0-rc.2"`. `peat-ffi` carries an independent `version = "0.2.0"` (bumped from `0.1.0`) — its semver surface is the JNI ABI + UniFFI binding shape, which moves on a different cadence than the workspace's CHANGELOG-tracked protocol surface. The JNI rename below is the breaking change driving the bump.
+
 ### Changed
 
-- **BREAKING (default behavior):** `peat-protocol` no longer enables n0's
-  hosted iroh relay pool or DNS pkarr discovery by default. All
+- **BREAKING (FFI ABI):** all `peat-ffi` JNI extern symbols renamed
+  from `Java_com_defenseunicorns_atak_peat_PeatJni_*` to
+  `Java_com_defenseunicorns_peat_PeatJni_*` (103 sites). Callback
+  interface class lookups in `JNI_OnLoad` and `notify_peer_event`
+  similarly migrated (`PeatJni`, `PeerEventManager`,
+  `DocumentChangeListener`, `OutboundFrameListener`). Kotlin
+  consumers MUST move their `PeatJni` class from package
+  `com.defenseunicorns.atak.peat` to `com.defenseunicorns.peat` for
+  `RegisterNatives` to resolve; without that migration, deploying
+  the new `.so` to a tablet running the old plugin Kotlin crashes
+  on native load. See peat#846 for cross-repo coordination + the
+  rationale (peat is the generic mesh substrate; consumers live in
+  sibling repos, so peat's identifiers should not name a specific
+  consumer). PR #845.
+- **BREAKING (default behavior):** `peat-protocol` no longer enables
+  n0's hosted iroh relay pool or DNS pkarr discovery by default. All
   `IrohTransport` constructors now use `Endpoint::empty_builder()`
   instead of `iroh::endpoint::presets::N0`, so default builds never
   reach `*.iroh.network` or `*.iroh-canary.iroh.link`. Cross-internet
   hole-punching that implicitly relied on n0 relays will fail in
   default builds; LAN/mDNS and direct addresses continue to work. See
   issue #833.
+- Generic-vocabulary scrub across code, examples, READMEs,
+  operational docs, and the `Makefile`: vendor-specific consumer
+  names (ATAK, WinTAK, iTAK, WearTAK) replaced with generic terms
+  ("consumer plugin", "CoT consumer", "constrained wearable", etc.).
+  Make targets `demo-atak`/`configure-atak`/`start-atak`/`stop-atak`/
+  `build-atak-plugin`/`deploy-atak-plugin` →
+  `demo-consumer`/`configure-consumer`/`start-consumer`/`stop-consumer`/
+  `build-consumer-plugin`/`deploy-consumer-plugin`. Make variables
+  `ATAK_PACKAGE`/`ATAK_JAVA_HOME` → `CONSUMER_PACKAGE`/`CONSUMER_JAVA_HOME`.
+  Example file `peat_tak_client.rs` → `peat_cot_client.rs`. PR #845.
+- Connection-recycle dedup logic in `AutomergeBackend::start_sync`
+  refactored: 5s per-peer dedup window for duplicate `Connected`
+  events (connect-path / accept-path race), with `Disconnected`
+  events clearing the dedup entry so legitimate fast reconnects
+  (BLE flap, force-stop+restart) flow through unrestricted.
+  Extracted as `AutomergeBackend::check_and_record_connect`
+  testable helper with 7 regression tests in `connected_dedup_tests`.
+  PR #845.
 
 ### Added
 
-- `peat-protocol` cargo feature `relay-n0-hosted` (off by default) as a
-  grep-able opt-in escape hatch that restores the previous behavior.
-  Build with `--features relay-n0-hosted` to re-enable n0's hosted
-  relay pool and DNS discovery.
+- `peat-ffi`: `MarkerInfo` UniFFI Record gains a `deleted: bool`
+  field (wire key `_deleted: true`). `parse_marker_publish_json`
+  accepts stripped tombstone bodies (uid + `_deleted: true` + ts, no
+  geo required); `serialize_marker_json` and
+  `serialize_markers_get_json` emit the sentinel only when set.
+  Soft-delete sentinel pattern lets deletes propagate via the
+  Updated channel (peat-mesh fan-out skips `ChangeEvent::Removed`
+  in Slice 1; Slice 2 enables real removal). PR #845.
+- `peat-ffi`: new JNI extern fns
+  `Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni` and
+  `…_getMarkersJni`, registered in both `nativeInit` and
+  `JNI_OnLoad`. Mirrors the existing `publishPlatformJni` /
+  `getPlatformsJni` shape. PR #845.
+- `peat-protocol`: `tracing::info!` on success of the post-Connected
+  `sync_all_documents_with_peer` proactive push (was failure-only),
+  closing an observability gap that made silently-failing pushes
+  indistinguishable from successful ones. PR #845.
+- `TOMBSTONE_PLACEHOLDER_TYPE` constant extracted from
+  `parse_marker_publish_json`. Documented inline why the tombstone
+  body uses a placeholder CoT type (`a-u-G`). PR #845.
+- `getMarkersJni` storage-error logging via `android_log` (was
+  silently returning `"[]"` on storage error — indistinguishable
+  from "no markers"). Mirrors the publish-side log shape. PR #845.
+- 14 new unit tests for the marker tombstone surface (`tests::
+  marker_tombstone` + `tests::marker_tests` in `peat-ffi`) and 7
+  for the dedup window (`connected_dedup_tests` in `peat-protocol`),
+  including a `marker_tombstone_publish_reaches_lite_bridge_sink_with_deleted_flag`
+  fanout test that verifies the `_deleted: true` flag survives the
+  BLE wire round-trip. PR #845.
+- `peat-protocol` cargo feature `relay-n0-hosted` (off by default)
+  as a grep-able opt-in escape hatch that restores the previous
+  n0-hosted relay-pool behavior. Build with
+  `--features relay-n0-hosted` to re-enable n0's hosted relay pool
+  and DNS discovery.
+- `CLAUDE.md` + `SKILL.md`: hard rule banning consumer-specific
+  references in the peat repo, including a verification grep gate
+  (`git diff main -- ':!docs/adr' ':!docs/whitepaper' ':!CLAUDE.md'
+  ':!SKILL.md' | grep -E '^\+' | grep -iE '\b(atak|wintak|itak|weartak)\b'
+  | grep -vE 'peat-atak-plugin|com\.atakmap|atakmap\.app|ATAKActivity'`)
+  that must be empty before merge. PR #845.
+
+### Removed
+
+- Vendor-specific identifiers from peat repo: `peat-ffi/examples/
+  peat_tak_client.rs` (renamed), `Java_com_defenseunicorns_atak_peat_*`
+  JNI symbols (renamed), `com.defenseunicorns.atak.peat.*` package
+  references in `examples/android-ble-test` (Kotlin files moved to
+  `com.defenseunicorns.peat`). See peat#846 for the full cross-repo
+  rationale and the matching CLAUDE.md / SKILL.md rule + verification
+  grep gate. PR #845.
 
 ## [0.9.0-rc.1] - 2026-04-23
 
