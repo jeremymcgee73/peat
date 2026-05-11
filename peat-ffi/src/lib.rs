@@ -837,24 +837,27 @@ impl PeatNode {
             let coord = Arc::clone(coordinator);
             self.runtime.block_on(async {
                 for peer_id in peers {
-                    let peer_hex = hex::encode(peer_id.as_bytes());
                     match coord.sync_all_documents_with_peer(peer_id).await {
                         Ok(()) => {
                             #[cfg(target_os = "android")]
-                            android_log(&format!(
-                                "request_sync: pushed to peer {}",
-                                &peer_hex[..16]
-                            ));
-                            let _ = peer_hex;
+                            {
+                                let peer_hex = hex::encode(peer_id.as_bytes());
+                                android_log(&format!(
+                                    "request_sync: pushed to peer {}",
+                                    &peer_hex[..16]
+                                ));
+                            }
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             #[cfg(target_os = "android")]
-                            android_log(&format!(
-                                "request_sync: FAILED for peer {}: {}",
-                                &peer_hex[..16],
-                                e
-                            ));
-                            let _ = (peer_hex, e);
+                            {
+                                let peer_hex = hex::encode(peer_id.as_bytes());
+                                android_log(&format!(
+                                    "request_sync: FAILED for peer {}: {}",
+                                    &peer_hex[..16],
+                                    _e
+                                ));
+                            }
                         }
                     }
                 }
