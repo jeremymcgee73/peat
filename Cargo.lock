@@ -3742,12 +3742,13 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peat"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 
 [[package]]
 name = "peat-btle"
 version = "0.4.0"
-source = "git+https://github.com/defenseunicorns/peat-btle?rev=d96c4da577887a75353e6e0abd4865ebd9b9cea0#d96c4da577887a75353e6e0abd4865ebd9b9cea0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a57dd351290e749d5a8295944184335d1b51a94e1e1b579c49e30c5a90db200e"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -3782,7 +3783,7 @@ dependencies = [
 
 [[package]]
 name = "peat-discovery"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3798,7 +3799,7 @@ dependencies = [
 
 [[package]]
 name = "peat-ffi"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3829,8 +3830,9 @@ dependencies = [
 
 [[package]]
 name = "peat-mesh"
-version = "0.9.0-rc.7"
-source = "git+https://github.com/defenseunicorns/peat-mesh?rev=0d15467de558c209e91f31bc632adb7323613e3d#0d15467de558c209e91f31bc632adb7323613e3d"
+version = "0.9.0-rc.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31ac3da985a1a1445086ad2d4750d1600ec74564d36e4ea5523d615bf89868cd"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3873,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "peat-persistence"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3898,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "peat-protocol"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3948,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "peat-schema"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3965,7 +3967,7 @@ dependencies = [
 
 [[package]]
 name = "peat-tak-bridge"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3986,7 +3988,7 @@ dependencies = [
 
 [[package]]
 name = "peat-transport"
-version = "0.9.0-rc.5"
+version = "0.9.0-rc.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4427,7 +4429,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -4447,7 +4449,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
