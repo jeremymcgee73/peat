@@ -14,6 +14,36 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.6] - 2026-05-12
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.5` → `0.9.0-rc.6`. `peat-ffi` bumps independently `0.2.2` → `0.2.3` (patch: pulls in `peat-mesh 0.9.0-rc.8` via the crates.io-resolved dep, no ABI surface change).
+
+Workspace cuts over from `[patch.crates-io]` git-rev pins to the actual crates.io releases. The Slice-4 rc-cycle that motivated the git overrides is closed:
+[peat-mesh 0.9.0-rc.8](https://crates.io/crates/peat-mesh/0.9.0-rc.8) (AutomergeBackend turnkey adapter + #107/#108/#109 sync coordinator fix train + relay-default tightening) and
+[peat-btle 0.4.0](https://crates.io/crates/peat-btle/0.4.0) (Slice-4.b cycle break — deletes `mesh-translator` Cargo feature + optional `peat-mesh` dep)
+both shipped to crates.io on 2026-05-12 in lockstep, and the workspace now consumes them directly.
+
+### Changed
+
+- **Removed `[patch.crates-io]` git overrides for `peat-mesh` and `peat-btle`.** The 40-line ADR-059 Amendment 4 Slice 4.d comment block + the two rev-pinned git URLs in `Cargo.toml` are gone. The replacement comment block documents the cutover and links to the upstream releases. Resolution is now via the workspace.dependencies pins alone:
+  - `peat-mesh = ">=0.9.0-rc.8, <0.9.1"` — floor bumped from `rc.5` → `rc.8`.
+  - `peat-btle = ">=0.4.0, <0.4.1"` — unchanged range; now resolves cleanly without the override.
+- **`Cargo.lock` flips peat-mesh from git source to registry source.** Diff visible in `git diff Cargo.lock` — the `source = "git+https://...peat-mesh?rev=..."` line becomes `source = "registry+https://github.com/rust-lang/crates.io-index"`. Same logical commit as the prior git pin (`0d15467` is the merge commit of #110 which became `v0.9.0-rc.8`).
+- **`peat-protocol`'s `=peat-schema` pin bumped** from `0.9.0-rc.5` to `0.9.0-rc.6` to match the workspace's new floor.
+
+### Verification
+
+- `cargo update -p peat-mesh -p peat-btle` resolves `peat-mesh 0.9.0-rc.8` + `peat-btle 0.4.0` from crates.io, no git fetches.
+- `cargo check --workspace --exclude peat-ffi` clean.
+- `cargo check -p peat-ffi --features bluetooth` clean (Android target-cfg deps unchanged).
+- 3-device bench validated 4 scenarios green against the rc.5 cross-compiled `.so` (same logical commit as the new rc.8 dep resolution); no runtime behavior change expected, just a dependency-resolution housekeeping pass.
+
+### Migration
+
+No consumer-visible action required. Downstream consumers depending on `peat-protocol = "0.9.0-rc.5"` should bump to `"0.9.0-rc.6"`; those depending on `peat-ffi = "0.2.2"` should bump to `"0.2.3"`. No public API surface change in either crate.
+
+The git-override removal also unblocks downstream consumers that hit cargo's structural cyclic-dep detection on the old peat-mesh 0.9.0-rc.7 / peat-btle 0.3.4-rc.5 combination — they can now pin to the new floor and resolve cleanly without their own `[patch.crates-io]` workaround.
+
 ## [0.9.0-rc.5] - 2026-05-11
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.4` → `0.9.0-rc.5`. `peat-ffi` bumps independently `0.2.1` → `0.2.2` (patch: non-breaking observability addition; no ABI surface change).
