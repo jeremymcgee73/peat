@@ -9,6 +9,8 @@
 
 > A mesh protocol that connects heterogeneous systems — phones, servers, sensors, embedded devices, AI models — into a coordinated whole, across any transport, even when the network is degraded or denied.
 
+**New here?** [→ Quickstart](docs/guides/QUICKSTART.md) — 2-node → 3-node mesh, static peers + mDNS, including a cross-compile path to Raspberry Pi. ~20 minutes.
+
 ## Overview
 
 Tactical environments are heterogeneous. TAK operators carry phones. Sensors run on microcontrollers. AI inference runs on edge servers. Robots carry embedded computers. These systems speak different protocols, use different transports, and often can't reach each other directly.
@@ -314,6 +316,7 @@ That's it. Capability advertisement, cell formation, leader election, hierarchic
 
 | Document | Purpose |
 |----------|---------|
+| [Quickstart](docs/guides/QUICKSTART.md) | 2-node → 3-node mesh, static peers + mDNS, Raspberry Pi cross-compile |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, PR process |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Development setup and build workflow |
 | [Architecture](docs/ARCHITECTURE.md) | Five-layer architecture overview |
