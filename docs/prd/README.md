@@ -13,3 +13,9 @@ Recommended implementation order:
 | [003](003-sync-mode-enforcement.md) | Sync Mode Enforcement | #666 | 019 | 2–3 days |
 | [004](004-bandwidth-allocation.md) | Bandwidth Allocation to Sync Transport | #665 | 019 | 3–5 days |
 | [005](005-storage-eviction.md) | Priority-Based Storage Eviction | #669 | 016, 019 | 1.5–2 days |
+
+## peat-node API Surface
+
+| PRD | Title | Issue | ADRs | Effort |
+|-----|-------|-------|------|--------|
+| [006](006-peat-node-attachment-api.md) | Path-Based Attachment Distribution API | [peat-node#56](https://github.com/defenseunicorns/peat-node/issues/56) | 018, 019, 025, 037, 043, 046 | 3–4 days |
