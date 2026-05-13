@@ -1,0 +1,24 @@
+[package]
+name = "peat-quickstart"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Smallest runnable Peat node — for the QUICKSTART walkthrough"
+
+[[bin]]
+name = "peat-quickstart"
+path = "src/main.rs"
+
+[dependencies]
+peat-protocol = { path = "../../peat-protocol", default-features = false, features = ["automerge-backend"] }
+peat-schema = { path = "../../peat-schema" }
+
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tempfile = "3"

@@ -9,6 +9,7 @@ members = [
     "peat-discovery",
     "peat-ffi",
     "examples/peat-tak-bridge",
+    "examples/quickstart",
     # NOTE: temporarily commented out to diagnose a cargo cycle-
     # detection issue exposed by the relaxation of the `=`-exact
     # peat-mesh ↔ peat-btle pin policy. peat-ble-test pulls peat-btle

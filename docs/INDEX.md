@@ -8,6 +8,8 @@
 
 | Document | Purpose | Audience |
 |----------|---------|----------|
+| [**QUICKSTART.md**](guides/QUICKSTART.md) | 2-node → 3-node mesh, static peers + mDNS, including Raspberry Pi cross-compile | New adopters |
+| [**Developer Guide**](guides/developer/DEVELOPER_GUIDE.md) | API reference, extending Peat | Software engineers |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | System architecture overview | New developers |
 | [**spec/**](spec/README.md) | Protocol specifications (IETF RFC style) | Protocol implementers |
 | [README.md](../README.md) | Project overview and getting started | All users |
@@ -17,6 +19,7 @@
 
 | I want to... | Go to... |
 |--------------|----------|
+| Build my first app and run it on a Pi | [QUICKSTART.md](guides/QUICKSTART.md) |
 | Understand the architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Read the protocol specs | [spec/](spec/README.md) |
 | Set up a development environment | [DEVELOPMENT.md](../DEVELOPMENT.md) |
