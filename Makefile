@@ -407,21 +407,21 @@ matrix-analyze:
 
 # Build peat-ffi native library for Android
 # Requires: cargo-ndk (cargo install cargo-ndk)
-# Outputs to: peat-atak-plugin/app/libs/{arm64-v8a,armeabi-v7a}/libpeat_ffi.so
+# Outputs to: ../peat-atak-plugin/app/libs/{arm64-v8a,armeabi-v7a}/libpeat_ffi.so
 build-android:
 	@echo "Building peat-ffi for Android..."
 	@command -v cargo-ndk >/dev/null 2>&1 || { echo "Error: cargo-ndk not found. Install with: cargo install cargo-ndk"; exit 1; }
 	@export PATH="$$HOME/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin:$$PATH" && \
-		cargo ndk -t arm64-v8a -t armeabi-v7a -o peat-atak-plugin/app/libs build --release -p peat-ffi --features bluetooth
+		cargo ndk -t arm64-v8a -t armeabi-v7a -o ../peat-atak-plugin/app/libs build --release -p peat-ffi --features bluetooth
 	@echo "✓ Native libraries built:"
-	@ls -la peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so peat-atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
+	@ls -la ../peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so ../peat-atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
 
 # Build consumer plugin with native libs
 # Kotlin 2.1.x can't parse Java 25 version strings, so pin to JDK 21
 CONSUMER_JAVA_HOME ?= /usr/lib/jvm/java-21-openjdk
 build-consumer-plugin: build-android
 	@echo "Building consumer plugin (JDK 21)..."
-	@cd peat-atak-plugin && JAVA_HOME=$(CONSUMER_JAVA_HOME) ./gradlew assembleCivDebug
+	@cd ../peat-atak-plugin && JAVA_HOME=$(CONSUMER_JAVA_HOME) ./gradlew assembleCivDebug
 	@echo "✓ consumer plugin built"
 
 # Deploy consumer plugin to connected device
@@ -431,9 +431,9 @@ build-consumer-plugin: build-android
 # repo doesn't break this target.
 deploy-consumer-plugin:
 	@echo "Deploying consumer plugin..."
-	@apk=$$(ls -t peat-atak-plugin/app/build/outputs/apk/civ/debug/*.apk 2>/dev/null | head -1); \
+	@apk=$$(ls -t ../peat-atak-plugin/app/build/outputs/apk/civ/debug/*.apk 2>/dev/null | head -1); \
 		if [ -z "$$apk" ]; then \
-			echo "  No APK in peat-atak-plugin/app/build/outputs/apk/civ/debug/ — run build-consumer-plugin first"; \
+			echo "  No APK in ../peat-atak-plugin/app/build/outputs/apk/civ/debug/ — run build-consumer-plugin first"; \
 			exit 1; \
 		fi; \
 		adb install -r "$$apk"
@@ -446,9 +446,9 @@ android: build-consumer-plugin deploy-consumer-plugin
 # Clean Android build artifacts
 clean-android:
 	@echo "Cleaning Android build artifacts..."
-	@rm -rf peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so
-	@rm -rf peat-atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
-	@rm -rf peat-atak-plugin/app/build
+	@rm -rf ../peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so
+	@rm -rf ../peat-atak-plugin/app/libs/armeabi-v7a/libpeat_ffi.so
+	@rm -rf ../peat-atak-plugin/app/build
 	@echo "✓ Android artifacts cleaned"
 
 # ============================================
@@ -630,7 +630,7 @@ build-ble-test-app: build-android
 	@echo "║  Building Android BLE Test App                            ║"
 	@echo "╚════════════════════════════════════════════════════════════╝"
 	@mkdir -p examples/android-ble-test/app/src/main/jniLibs/arm64-v8a
-	cp peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so \
+	cp ../peat-atak-plugin/app/libs/arm64-v8a/libpeat_ffi.so \
 		examples/android-ble-test/app/src/main/jniLibs/arm64-v8a/
 	@echo "✓ Copied libpeat_ffi.so to android-ble-test jniLibs"
 	cd examples/android-ble-test && ./gradlew assembleDebug
