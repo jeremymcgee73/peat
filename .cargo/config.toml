@@ -1,8 +1,13 @@
-# Use mold linker on Linux for faster and more stable linking
-# lld can crash with "Bus error" on large projects in CI
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+# Linux fast-linker pin (mold) is OPT-IN, not unconditional.
+#
+# CI sets these via workflow-level env to keep large builds stable (lld used to
+# crash with "Bus error" under this workspace); devs who don't have mold installed
+# don't get a hard build break. To opt in locally, export:
+#
+#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
+#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C link-arg=-fuse-ld=mold'
+#
+# (after `apt install mold clang` or your distro equivalent). See DEVELOPMENT.md.
 
 # Android NDK toolchain configuration
 # Requires: ANDROID_HOME and NDK_HOME environment variables

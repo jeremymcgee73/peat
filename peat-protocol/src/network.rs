@@ -28,3 +28,10 @@ pub use iroh_transport::{
 };
 #[cfg(feature = "automerge-backend")]
 pub use peer_config::{FormationConfig, LocalConfig, PeerConfig, PeerInfo};
+
+// Re-export iroh primitives that surface in our public API. Downstream consumers
+// should reach for these via `peat_protocol::network::*` rather than a direct
+// `iroh = "..."` dep, so they don't have to track which iroh major peat-mesh
+// transitively resolves to.
+#[cfg(feature = "automerge-backend")]
+pub use iroh::EndpointId;
