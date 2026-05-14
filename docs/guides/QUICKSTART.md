@@ -21,6 +21,8 @@ Each scenario builds on the previous one. The same binary handles all four.
 - **`protoc`** — `apt install protobuf-compiler` (Debian/Ubuntu) or `brew install protobuf` (macOS)
 - **For Pi deployment:** `cross` (`cargo install cross`), Docker, and SSH access to one or two Raspberry Pis running 64-bit Linux (Pi 4 or 5 recommended).
 
+> Faster builds are opt-in. CI uses `mold` + `clang` via env vars; if you want the same locally, see [DEVELOPMENT.md → Faster local builds](../../DEVELOPMENT.md). The default toolchain works without it.
+
 ---
 
 ## Build the binary
@@ -54,11 +56,21 @@ You should see flags for `--name`, `--bind`, `--peer`, `--mdns`, and `--storage`
 The node prints something like:
 
 ```
-INFO Node 'alpha' ready: node_id=21e809d6978bd73751984af8247c5ca0e4f6d660cd15fbd461b881accd428f90 bind=127.0.0.1:39001
-INFO     Other nodes can reach me with: --peer 21e80...8f90@127.0.0.1:39001
-INFO [peers=0] nodes: [alpha=100]
-INFO [peers=0] nodes: [alpha=99]
+INFO node 'alpha' ready (id=21e809d6978bd737...8f90 bind=127.0.0.1:39001)
+INFO     reach me with: --peer 21e80...8f90@127.0.0.1:39001
+INFO [peers=0] me:alpha=100
+INFO [peers=0] me:alpha=99
 ```
+
+Three event prefixes are worth knowing:
+
+- `discovery: ...` — a peer was *configured* (`--peer`) or *found* (`--mdns`). Doesn't yet mean we've reached them.
+- `connection: peer X connected` / `... reconnected` / `... lost` — transport-level QUIC connection state.
+- `sync: NAME (new)` or `sync: NAME (updated) M → N` — a remote document arrived or changed. **This is the proof state is actually replicating.**
+
+The periodic `[peers=N] me:alpha=99 | bravo=98 | ...` line is a heartbeat snapshot — own state to the left of `me:`, remote nodes after. It fires every 2 seconds regardless of activity.
+
+> The binary defaults to a quiet log filter so the protocol-level noise from the transport and sync coordinator doesn't drown out these events. Set `RUST_LOG=debug` (or any other explicit value) to opt back into the full firehose.
 
 `alpha` is writing one document per 2 seconds with a counter that decrements from 100. Nothing else is on the mesh yet, so it only sees its own state.
 
@@ -79,16 +91,22 @@ Within a few seconds both terminals start showing each other:
 
 ```
 # alpha:
-INFO [peers=1] nodes: [alpha=92, bravo=100]
-INFO [peers=1] nodes: [alpha=91, bravo=99]
+INFO connection: peer 71e2acca38df97d6 connected
+INFO sync: bravo (new) fuel_minutes=99
+INFO [peers=1] me:alpha=98 | bravo=99
+INFO sync: bravo (updated) fuel_minutes 99 → 97
+INFO [peers=1] me:alpha=97 | bravo=97
 
 # bravo:
-INFO Static peer 21e809d6978bd737: (re)connected
-INFO [peers=1] nodes: [alpha=92, bravo=100]
-INFO [peers=1] nodes: [alpha=91, bravo=99]
+INFO discovery: static peer configured (21e809d6978bd737@127.0.0.1:39001)
+INFO connection: peer 21e809d6978bd737 connected
+INFO sync: alpha (new) fuel_minutes=98
+INFO [peers=1] alpha=98 | me:bravo=99
+INFO sync: alpha (updated) fuel_minutes 98 → 96
+INFO [peers=1] alpha=96 | me:bravo=97
 ```
 
-That's it — two CRDT-replicated documents propagating over a QUIC mesh. `peers=1` is the count of live transport connections; `nodes:` is the merged view of the `nodes` collection.
+That's it — two CRDT-replicated documents propagating over a QUIC mesh. The `sync:` lines are the convergence proof; the `[peers=1]` snapshot shows the merged view of the `nodes` collection.
 
 **What just happened:**
 
@@ -118,20 +136,29 @@ Same two terminals as Scenario 1.
     --peer <ALPHA_NODE_ID>@127.0.0.1:39001
 ```
 
-After ~10 seconds you should see all three names in every terminal:
+Charlie's log will explicitly show it receiving bravo's state even though bravo isn't a direct peer — that's transitive gossip via alpha:
+
+```
+# charlie:
+INFO connection: peer 21e809d6978bd737 connected     ← only direct peer is alpha
+INFO sync: alpha (new) fuel_minutes=98
+INFO sync: bravo (new) fuel_minutes=98               ← arrived via alpha's gossip
+INFO [peers=1] alpha=98 | bravo=98 | me:charlie=99
+INFO sync: alpha (updated) fuel_minutes 98 → 93
+INFO sync: bravo (updated) fuel_minutes 98 → 93
+INFO [peers=1] alpha=93 | bravo=93 | me:charlie=96
+```
+
+Meanwhile **alpha shows `peers=2`** because it has direct connections to both bravo and charlie:
 
 ```
 # alpha:
-INFO [peers=2] nodes: [alpha=80, bravo=85, charlie=97]
-
-# bravo:
-INFO [peers=1] nodes: [alpha=80, bravo=85, charlie=97]
-
-# charlie:
-INFO [peers=1] nodes: [alpha=80, bravo=85, charlie=97]
+INFO connection: peer 71e2acca38df97d6 connected     ← bravo
+INFO sync: bravo (new) fuel_minutes=98
+INFO connection: peer 5e69189372ec1316 connected     ← charlie
+INFO sync: charlie (new) fuel_minutes=99
+INFO [peers=2] me:alpha=93 | bravo=91 | charlie=94
 ```
-
-Notice that **alpha has `peers=2`** (one connection to bravo, one to charlie) but **bravo and charlie each have `peers=1`** — they're connected only to alpha. Yet both still see each other's documents. Alpha is gossiping the merged CRDT state.
 
 You can make the mesh fully-connected by giving charlie both alpha and bravo as static peers:
 
@@ -161,9 +188,14 @@ Open three terminals and run, in any order:
 Within ~5 seconds each terminal logs:
 
 ```
-INFO mDNS enabled (service _peat-node._tcp.local)
-INFO mDNS: discovered + connected to <other-node-id>
-INFO [peers=2] nodes: [alpha=..., bravo=..., charlie=...]
+INFO discovery: mDNS enabled (service _peat-node._tcp.local)
+INFO discovery: mDNS found 71e2acca38df97d6
+INFO connection: peer 71e2acca38df97d6 connected
+INFO discovery: mDNS found 5e69189372ec1316
+INFO connection: peer 5e69189372ec1316 connected
+INFO sync: bravo (new) fuel_minutes=98
+INFO sync: charlie (new) fuel_minutes=99
+INFO [peers=2] me:alpha=98 | bravo=98 | charlie=99
 ```
 
 No `--peer` flags, no NodeId copy-paste — the nodes find each other.
@@ -286,9 +318,12 @@ You now have a working mesh and a runnable starting point — copy `examples/qui
 |---------|--------------|------------|
 | `Address already in use` | Another process owns that port (often a previous quickstart that didn't shut down). | `lsof -i :39001` and kill it, or pick a different port. |
 | Logs show `[peers=0]` indefinitely | Static peer's `node_id` or address is wrong; or a firewall is blocking UDP. | Re-copy the `node_id` from the peer's startup log; verify the address; check UDP is open. |
-| Logs alternate `[peers=1]` ↔ `[peers=0]` with `Static peer ...: (re)connected` lines | Iroh's QUIC idle timeout dropped the connection; the 5-second reconnect loop restored it. | Normal under low-traffic conditions — values still converge. |
+| `connection: peer X lost — will retry` followed by `connection: peer X reconnected` | Iroh's QUIC idle timeout (5s, tactical default) dropped the connection; the reconnect loop restored it. | Normal under low-traffic conditions — values still converge. |
 | `mDNS enabled` but never `discovered + connected` | LAN is blocking multicast (enterprise Wi-Fi, some VPNs). | Use `--peer` instead. |
-| Occasional `WARN Failed to sync ... doc_key length`, `Sync cooldown active`, or `Circuit breaker open for peer` | Transient — happens during connection storms (e.g. a third node joining) or when the reconnect retries during a sync. | Ignore unless persistent. Convergence still happens. |
+| `connection: peer ... connected` fires but no `sync:` event for several seconds | Sync messages take 1–2 round trips after the QUIC handshake completes. | Normal up to ~5 seconds. If `sync: ... (new)` still hasn't fired after that, run with `RUST_LOG=info,peat_mesh::storage::automerge_sync=debug` to watch batches arrive. |
+| `error: linker 'mold' not found` during build | You set the fast-linker env vars but don't have `mold` installed. | Either `apt install mold clang`, or unset `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` / `_RUSTFLAGS` to fall back to the default linker. |
+| With `RUST_LOG=debug`, repeating `Stream read error: stream finished early` and `Failed to write doc_key length` | The 5-second QUIC idle timeout closes the sync stream after each successful exchange; the channel reopens on next sync. | Cosmetic. The quickstart's default filter suppresses these — you only see them if you opted into a verbose `RUST_LOG`. |
+| Occasional `WARN ... Circuit breaker open for peer` | Transient — happens during connection storms (e.g. a third node joining). | Ignore unless persistent. |
 | `cross build` fails with `protoc` errors | Old Docker image cached. | `cross clean` then rebuild. |
 | Pi binary won't start: `Exec format error` | Wrong target triple (you built for the laptop, not the Pi). | Re-run `cross build --target aarch64-unknown-linux-gnu`. |
 | Pi binary starts but `[peers=0]` from the LAN | Pi firewall (ufw) is blocking UDP on the bind port. | `sudo ufw allow 39001/udp` (or your chosen port). |

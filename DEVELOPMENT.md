@@ -71,6 +71,18 @@ peat/
   cargo install cargo-nextest
   ```
 
+### Faster local builds (optional)
+
+CI uses `mold` + `clang` as the Linux linker because `lld` used to crash on this workspace under large builds. Locally the default linker works fine; if you want the same fast-link behavior CI uses:
+
+```bash
+sudo apt install mold clang   # or your distro equivalent
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C link-arg=-fuse-ld=mold'
+```
+
+These env vars match what CI's workflow-level `env:` sets, so your local builds reproduce the CI link path. Don't set them without `mold` installed — cargo will fail with `error: linker 'mold' not found`.
+
 ## Getting Started
 
 ### 1. Setup

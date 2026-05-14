@@ -4,7 +4,7 @@
 //! Run two or three copies in separate terminals (or on separate Pis) and watch
 //! state replicate.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use peat_protocol::discovery::peer::{DiscoveryStrategy, MdnsDiscovery};
-use peat_protocol::network::{IrohTransport, PeerInfo};
+use peat_protocol::network::{EndpointId, IrohTransport, PeerInfo};
 use peat_protocol::storage::capabilities::{CrdtCapable, SyncCapable, TypedCollection};
 use peat_protocol::storage::{AutomergeBackend, AutomergeStore};
 use peat_schema::node::v1::NodeState;
@@ -71,12 +71,28 @@ fn parse_peer(spec: &str) -> Result<PeerInfo> {
     })
 }
 
+fn short_id(id: &EndpointId) -> String {
+    let s = hex::encode(id.as_bytes());
+    s[..16].to_string()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Default filter prioritizes legibility over diagnostic detail. The transport
+    // (Iroh QUIC) and the sync coordinator both emit chatty WARN/ERROR lines tied
+    // to the tactical 5-second idle timeout — the streams close after every
+    // successful exchange, the reconnect loop re-opens them, sync still converges,
+    // but the noise drowns out the actual scan output.
+    // Set `RUST_LOG=debug` (or any explicit value) to opt back into the firehose.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,peat_quickstart=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "warn,peat_quickstart=info,\
+                 peat_mesh::storage::sync_channel=error,\
+                 peat_mesh::storage::automerge_sync=error,\
+                 iroh::socket::remote_map::remote_state=off"
+                    .into()
+            }),
         )
         .init();
 
@@ -97,34 +113,35 @@ async fn main() -> Result<()> {
 
     let node_id_hex = hex::encode(transport.endpoint_id().as_bytes());
     info!(
-        "Node '{}' ready: node_id={} bind={}",
+        "node '{}' ready (id={} bind={})",
         args.name, node_id_hex, args.bind
     );
-    info!(
-        "    Other nodes can reach me with: --peer {}@{}",
-        node_id_hex, args.bind
-    );
+    info!("    reach me with: --peer {}@{}", node_id_hex, args.bind);
 
     let mut static_peers: Vec<PeerInfo> = Vec::new();
     for spec in &args.peer {
         match parse_peer(spec) {
             Ok(peer) => static_peers.push(peer),
-            Err(e) => warn!("Bad --peer {:?}: {}", spec, e),
+            Err(e) => warn!("bad --peer {:?}: {}", spec, e),
         }
     }
     if !static_peers.is_empty() {
+        for peer in &static_peers {
+            info!(
+                "discovery: static peer configured ({}@{})",
+                &peer.node_id[..16],
+                peer.addresses.first().map(String::as_str).unwrap_or("?")
+            );
+        }
         let transport_for_static = Arc::clone(&transport);
         let peers = static_peers.clone();
         tokio::spawn(async move {
+            // Idempotent dial loop. The scan loop is responsible for emitting
+            // connected/lost/reconnected — this task just keeps trying.
             loop {
                 for peer in &peers {
-                    let short = &peer.node_id[..16];
-                    match transport_for_static.connect_peer(peer).await {
-                        Ok(Some(_)) => info!("Static peer {}: (re)connected", short),
-                        Ok(None) => {
-                            tracing::debug!("Static peer {}: connection already live", short)
-                        }
-                        Err(e) => warn!("Static peer {} unreachable: {}", short, e),
+                    if let Err(e) = transport_for_static.connect_peer(peer).await {
+                        tracing::debug!("dial {} failed: {}", &peer.node_id[..16], e);
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -135,15 +152,12 @@ async fn main() -> Result<()> {
     if args.mdns {
         let mut mdns = MdnsDiscovery::new(transport.endpoint().clone(), args.name.clone())?;
         mdns.start().await?;
-        info!("mDNS enabled (service _peat-node._tcp.local)");
+        info!("discovery: mDNS enabled (service _peat-node._tcp.local)");
 
         let transport_for_mdns = Arc::clone(&transport);
         let self_id = node_id_hex.clone();
         tokio::spawn(async move {
-            // Track which peers we've announced (so we don't spam the log on every
-            // reconnect attempt) but still call connect_peer each tick — the transport
-            // returns Ok(None) for already-live connections, so the call is idempotent.
-            let mut announced: HashSet<String> = HashSet::new();
+            let mut discovered_logged: HashSet<String> = HashSet::new();
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 for peer in mdns.discovered_peers().await {
@@ -151,18 +165,12 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     let short = &peer.node_id[..16];
-                    match transport_for_mdns.connect_peer(&peer).await {
-                        Ok(Some(_)) => {
-                            if announced.insert(peer.node_id.clone()) {
-                                info!("mDNS: discovered + connected to {}", short);
-                            } else {
-                                info!("mDNS: reconnected to {}", short);
-                            }
-                        }
-                        Ok(None) => {
-                            tracing::debug!("mDNS: peer {} already connected", short)
-                        }
-                        Err(e) => warn!("mDNS: connect to {} failed: {}", short, e),
+                    if discovered_logged.insert(peer.node_id.clone()) {
+                        info!("discovery: mDNS found {}", short);
+                    }
+                    // Idempotent dial; connected/lost events come from scan loop.
+                    if let Err(e) = transport_for_mdns.connect_peer(&peer).await {
+                        tracing::debug!("mDNS dial {} failed: {}", short, e);
                     }
                 }
             }
@@ -171,6 +179,7 @@ async fn main() -> Result<()> {
 
     let nodes: Arc<dyn TypedCollection<NodeState>> = backend.typed_collection("nodes");
 
+    // Writer: decrement own counter every 2s and upsert.
     {
         let nodes = Arc::clone(&nodes);
         let name = args.name.clone();
@@ -191,16 +200,53 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Scan loop: diff peer set + remote doc state against previous tick, emit
+    // explicit connection/sync events. Print a periodic state snapshot so the
+    // user always sees "the loop is alive" between events.
+    let self_name = args.name.clone();
+    let mut last_connected: HashSet<EndpointId> = HashSet::new();
+    let mut ever_seen: HashSet<EndpointId> = HashSet::new();
+    let mut last_remote_state: HashMap<String, u32> = HashMap::new();
+
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let peer_count = transport.peer_count();
+
+        // --- Connection events ---
+        let current: HashSet<EndpointId> = transport.connected_peers().into_iter().collect();
+        for peer in current.difference(&last_connected) {
+            if ever_seen.insert(*peer) {
+                info!("connection: peer {} connected", short_id(peer));
+            } else {
+                info!("connection: peer {} reconnected", short_id(peer));
+            }
+        }
+        for peer in last_connected.difference(&current) {
+            info!("connection: peer {} lost — will retry", short_id(peer));
+        }
+        last_connected = current;
+
+        // --- Sync events (remote docs only — skip self) ---
         match nodes.scan() {
             Ok(all) => {
-                let summary: Vec<String> = all
-                    .iter()
-                    .map(|(id, s)| format!("{}={}", id, s.fuel_minutes))
-                    .collect();
-                info!("[peers={}] nodes: [{}]", peer_count, summary.join(", "));
+                let mut summary: Vec<String> = Vec::with_capacity(all.len());
+                for (id, state) in &all {
+                    let label = if id == &self_name {
+                        format!("me:{}={}", id, state.fuel_minutes)
+                    } else {
+                        match last_remote_state.get(id) {
+                            None => info!("sync: {} (new) fuel_minutes={}", id, state.fuel_minutes),
+                            Some(prev) if *prev != state.fuel_minutes => info!(
+                                "sync: {} (updated) fuel_minutes {} → {}",
+                                id, prev, state.fuel_minutes
+                            ),
+                            Some(_) => {}
+                        }
+                        last_remote_state.insert(id.clone(), state.fuel_minutes);
+                        format!("{}={}", id, state.fuel_minutes)
+                    };
+                    summary.push(label);
+                }
+                info!("[peers={}] {}", last_connected.len(), summary.join(" | "));
             }
             Err(e) => warn!("scan failed: {}", e),
         }

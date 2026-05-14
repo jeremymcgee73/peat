@@ -18,6 +18,11 @@ env:
   # Reduce debug info to save disk space on runners
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  # Pin the Linux fast linker for CI (mold + clang) — the unconditional pin used
+  # to live in .cargo/config.toml but was moved to env so devs without mold installed
+  # don't hit a hard build break. Each job's apt-get step still installs `mold` and `clang`.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
 jobs:
   # ============================================
@@ -211,6 +216,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        # `cargo install cargo-audit` below compiles cargo-audit from source, which
+        # links via the workflow-level mold/clang env override — install both.
+        run: sudo apt-get update && sudo apt-get install -y mold clang
       - run: cargo generate-lockfile
       - name: Install cargo-audit
         run: cargo install cargo-audit --quiet
