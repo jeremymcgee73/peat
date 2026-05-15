@@ -116,7 +116,9 @@ pub use blob_traits::{
     BlobToken, SharedBlobStore,
 };
 #[cfg(feature = "automerge-backend")]
-pub use file_distribution::IrohFileDistribution;
+pub use file_distribution::{
+    DistributionDocument, IrohFileDistribution, IROH_DISTRIBUTION_COLLECTION,
+};
 pub use file_distribution::{
     DistributionHandle, DistributionScope, DistributionStatus, FileDistribution,
     NodeTransferStatus, TransferPriority, TransferState,
