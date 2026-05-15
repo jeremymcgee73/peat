@@ -43,7 +43,7 @@
 //! println!("Completed: {}/{}", status.completed, status.total_targets);
 //! ```
 
-use super::blob_traits::{BlobHash, BlobToken};
+use super::blob_traits::{BlobHash, BlobMetadata, BlobToken};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -383,9 +383,46 @@ use super::automerge_store::AutomergeStore;
 #[cfg(feature = "automerge-backend")]
 use super::iroh_blob_store::NetworkedIrohBlobStore;
 
-/// Distribution collection for Iroh backend
+/// Distribution collection for Iroh backend.
+///
+/// Exposed publicly so receiver-side consumers (e.g. peat-node's attachment
+/// inbox) can address the same Automerge collection when writing back
+/// per-node transfer status — see issue #864.
 #[cfg(feature = "automerge-backend")]
-const IROH_DISTRIBUTION_COLLECTION: &str = "file_distributions";
+pub const IROH_DISTRIBUTION_COLLECTION: &str = "file_distributions";
+
+/// Wire-format of a distribution document stored in
+/// [`IROH_DISTRIBUTION_COLLECTION`].
+///
+/// Sender writes this on `distribute()`; CRDT-syncs to receivers; receivers
+/// read it to know whether they're a target, and write back their own
+/// [`NodeTransferStatus`] into `node_statuses` keyed by their short endpoint
+/// id. The sender's progress watcher (issue #864) then re-reads the doc on
+/// each change and publishes a [`DistributionStatus`] frame.
+///
+/// `node_statuses` is `#[serde(default)]` so legacy documents written before
+/// the schema extension still deserialize.
+#[cfg(feature = "automerge-backend")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DistributionDocument {
+    pub distribution_id: String,
+    /// Hex-encoded blob hash.
+    pub blob_hash: String,
+    pub blob_size: u64,
+    pub blob_metadata: BlobMetadata,
+    pub scope: DistributionScope,
+    pub priority: TransferPriority,
+    pub target_nodes: Vec<String>,
+    pub started_at: DateTime<Utc>,
+    /// Free-form status string: `"distributing"`, `"cancelled"`, …
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<DateTime<Utc>>,
+    /// Per-target-node transfer status, keyed by the same short endpoint id
+    /// used in `target_nodes`. Receivers append/update their own entry.
+    #[serde(default)]
+    pub node_statuses: HashMap<String, NodeTransferStatus>,
+}
 
 /// Iroh-based file distribution service
 ///
@@ -409,29 +446,57 @@ const IROH_DISTRIBUTION_COLLECTION: &str = "file_distributions";
 /// 5. Target nodes update their status in distribution doc
 /// ```
 #[cfg(feature = "automerge-backend")]
+type DistributionsMap = Arc<RwLock<HashMap<String, DistributionStatus>>>;
+#[cfg(feature = "automerge-backend")]
+type ProgressChannels = Arc<RwLock<HashMap<String, broadcast::Sender<DistributionStatus>>>>;
+
+#[cfg(feature = "automerge-backend")]
 pub struct IrohFileDistribution {
     /// Blob store for P2P file transfer
     blob_store: Arc<NetworkedIrohBlobStore>,
     /// Document store for distribution metadata
     document_store: Arc<AutomergeStore>,
     /// Active distributions (distribution_id -> status)
-    distributions: RwLock<HashMap<String, DistributionStatus>>,
+    distributions: DistributionsMap,
     /// Progress broadcast channels per distribution
-    progress_channels: RwLock<HashMap<String, broadcast::Sender<DistributionStatus>>>,
+    progress_channels: ProgressChannels,
+    /// Handle to the background watcher that reacts to receiver-side
+    /// `node_statuses` writes on the distribution document. Aborted on drop.
+    watcher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[cfg(feature = "automerge-backend")]
 impl IrohFileDistribution {
-    /// Create a new Iroh file distribution service
+    /// Create a new Iroh file distribution service.
+    ///
+    /// Spawns a background task subscribed to `AutomergeStore`'s observer
+    /// channel. The task reconciles per-node status writes (made by
+    /// receivers as they fetch the blob — see issue #864 / peat-node#75)
+    /// into the in-memory `distributions` map and publishes a fresh
+    /// `DistributionStatus` to any progress subscribers.
     pub fn new(
         blob_store: Arc<NetworkedIrohBlobStore>,
         document_store: Arc<AutomergeStore>,
     ) -> Self {
+        let distributions: DistributionsMap = Arc::new(RwLock::new(HashMap::new()));
+        let progress_channels: ProgressChannels = Arc::new(RwLock::new(HashMap::new()));
+
+        let watcher_handle = {
+            let document_store = Arc::clone(&document_store);
+            let distributions = Arc::clone(&distributions);
+            let progress_channels = Arc::clone(&progress_channels);
+            tokio::spawn(async move {
+                watch_distribution_documents(document_store, distributions, progress_channels)
+                    .await;
+            })
+        };
+
         Self {
             blob_store,
             document_store,
-            distributions: RwLock::new(HashMap::new()),
-            progress_channels: RwLock::new(HashMap::new()),
+            distributions,
+            progress_channels,
+            watcher_handle: Some(watcher_handle),
         }
     }
 
@@ -518,20 +583,20 @@ impl IrohFileDistribution {
 
         let doc_id = &handle.distribution_id;
 
-        // Create distribution document
-        let distribution_doc = serde_json::json!({
-            "distribution_id": handle.distribution_id,
-            "blob_hash": blob_token.hash.as_hex(),
-            "blob_size": blob_token.size_bytes,
-            "blob_metadata": blob_token.metadata,
-            "scope": handle.scope,
-            "priority": handle.priority,
-            "target_nodes": target_nodes,
-            "started_at": handle.started_at.to_rfc3339(),
-            "status": "distributing"
-        });
+        let distribution_doc = DistributionDocument {
+            distribution_id: handle.distribution_id.clone(),
+            blob_hash: blob_token.hash.as_hex().to_string(),
+            blob_size: blob_token.size_bytes,
+            blob_metadata: blob_token.metadata.clone(),
+            scope: handle.scope.clone(),
+            priority: handle.priority,
+            target_nodes: target_nodes.to_vec(),
+            started_at: handle.started_at,
+            status: "distributing".to_string(),
+            cancelled_at: None,
+            node_statuses: HashMap::new(),
+        };
 
-        // Serialize to bytes for storage
         let bytes = serde_json::to_vec(&distribution_doc)
             .map_err(|e| anyhow::anyhow!("Failed to serialize distribution doc: {}", e))?;
 
@@ -550,12 +615,138 @@ impl IrohFileDistribution {
     }
 
     /// Broadcast progress update to subscribers
-    #[allow(dead_code)]
     async fn broadcast_progress(&self, distribution_id: &str, status: &DistributionStatus) {
         let channels = self.progress_channels.read().await;
         if let Some(sender) = channels.get(distribution_id) {
             // Ignore send errors (no subscribers)
             let _ = sender.send(status.clone());
+        }
+    }
+}
+
+#[cfg(feature = "automerge-backend")]
+impl Drop for IrohFileDistribution {
+    fn drop(&mut self) {
+        if let Some(handle) = self.watcher_handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+/// Background task that reconciles receiver-written `node_statuses` from
+/// the distribution document back into the sender's in-memory state and
+/// publishes a fresh [`DistributionStatus`] to progress subscribers.
+///
+/// Subscribed to [`AutomergeStore::subscribe_to_observer_changes`], which
+/// fires for both local writes and sync-applied remote writes — so this
+/// task sees the receiver's `node_statuses` updates the moment they
+/// CRDT-sync back to the sender.
+///
+/// Broadcasts only when the merge actually changes the in-memory state.
+/// This filters out two noise sources:
+///  - The sender's own `distribute()` initial doc write (`node_statuses`
+///    is empty; merge is a no-op).
+///  - The sender's own `cancel()` doc write (skipped explicitly because
+///    `cancel()` already publishes a terminal frame on its own path).
+///
+/// Closes the broadcast channel after publishing a terminal frame so
+/// subscribers see `RecvError::Closed` once the distribution is complete.
+#[cfg(feature = "automerge-backend")]
+async fn watch_distribution_documents(
+    document_store: Arc<AutomergeStore>,
+    distributions: DistributionsMap,
+    progress_channels: ProgressChannels,
+) {
+    let mut rx = document_store.subscribe_to_observer_changes();
+    let prefix = format!("{}:", IROH_DISTRIBUTION_COLLECTION);
+
+    loop {
+        let key = match rx.recv().await {
+            Ok(k) => k,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!(
+                    lagged = n,
+                    "distribution watcher lagged on observer channel"
+                );
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+
+        let Some(doc_id) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+
+        // Only react to distributions this instance originated.
+        if !distributions.read().await.contains_key(doc_id) {
+            continue;
+        }
+
+        let collection = document_store.collection(IROH_DISTRIBUTION_COLLECTION);
+        let bytes = match collection.get(doc_id) {
+            Ok(Some(b)) => b,
+            Ok(None) => continue,
+            Err(e) => {
+                warn!(error = %e, doc_id, "failed to read distribution doc");
+                continue;
+            }
+        };
+
+        let doc: DistributionDocument = match serde_json::from_slice(&bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(error = %e, doc_id, "failed to deserialize distribution doc");
+                continue;
+            }
+        };
+
+        // The sender's own cancel() write flips status to "cancelled" and
+        // publishes its terminal frame on a separate synchronous path —
+        // skip so subscribers don't see a duplicate cancelled frame.
+        if doc.status != "distributing" {
+            continue;
+        }
+
+        // Merge node_statuses; track whether anything changed.
+        let (snapshot, complete) = {
+            let mut dists = distributions.write().await;
+            let Some(status) = dists.get_mut(doc_id) else {
+                continue;
+            };
+            let mut changed = false;
+            for (node_id, ns) in &doc.node_statuses {
+                let differs = match status.node_statuses.get(node_id) {
+                    Some(existing) => {
+                        existing.status != ns.status
+                            || existing.progress_bytes != ns.progress_bytes
+                            || existing.error != ns.error
+                    }
+                    None => true,
+                };
+                if differs {
+                    status.node_statuses.insert(node_id.clone(), ns.clone());
+                    changed = true;
+                }
+            }
+            if !changed {
+                continue;
+            }
+            status.recalculate_counts();
+            (status.clone(), status.is_complete())
+        };
+
+        // Publish the merged snapshot.
+        {
+            let channels = progress_channels.read().await;
+            if let Some(sender) = channels.get(doc_id) {
+                let _ = sender.send(snapshot);
+            }
+        }
+
+        // If the distribution is now complete, drop the sender so
+        // subscribers observe RecvError::Closed after the terminal frame.
+        if complete {
+            progress_channels.write().await.remove(doc_id);
         }
     }
 }
@@ -637,35 +828,50 @@ impl FileDistribution for IrohFileDistribution {
             "Cancelling distribution"
         );
 
-        // Update status to cancelled
-        {
+        // Update status to cancelled and capture a terminal snapshot for subscribers.
+        let cancelled_status = {
             let mut distributions = self.distributions.write().await;
-            if let Some(status) = distributions.get_mut(&handle.distribution_id) {
-                // Mark all pending/in-progress as failed
-                for node_status in status.node_statuses.values_mut() {
-                    if node_status.status != TransferState::Completed {
-                        node_status.status = TransferState::Failed;
-                        node_status.error = Some("Distribution cancelled".to_string());
+            distributions
+                .get_mut(&handle.distribution_id)
+                .map(|status| {
+                    for node_status in status.node_statuses.values_mut() {
+                        if node_status.status != TransferState::Completed {
+                            node_status.status = TransferState::Failed;
+                            node_status.error = Some("Distribution cancelled".to_string());
+                        }
                     }
-                }
-                status.recalculate_counts();
-            }
+                    status.recalculate_counts();
+                    status.clone()
+                })
+        };
+
+        // Publish the terminal frame and close the broadcast so subscribers see
+        // a final status followed by RecvError::Closed.
+        if let Some(status) = cancelled_status {
+            self.broadcast_progress(&handle.distribution_id, &status)
+                .await;
+            let mut channels = self.progress_channels.write().await;
+            channels.remove(&handle.distribution_id);
         }
 
-        // Update distribution document
+        // Update the distribution document via read-modify-write so we
+        // preserve target_nodes / blob_hash / node_statuses across cancel.
+        // The pre-typed-schema implementation overwrote the doc wholesale
+        // with a 2-field stub, which destroyed everything the slice-3
+        // watcher (and any receivers) need to interpret the document.
         #[allow(unused_imports)]
         use super::traits::Collection;
 
-        let cancel_update = serde_json::json!({
-            "status": "cancelled",
-            "cancelled_at": Utc::now().to_rfc3339()
-        });
-
-        let bytes = serde_json::to_vec(&cancel_update)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize cancel update: {}", e))?;
-
         let collection = self.document_store.collection(IROH_DISTRIBUTION_COLLECTION);
-        collection.upsert(&handle.distribution_id, bytes)?;
+        if let Some(existing) = collection.get(&handle.distribution_id)? {
+            let mut doc: DistributionDocument = serde_json::from_slice(&existing)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize distribution doc: {}", e))?;
+            doc.status = "cancelled".to_string();
+            doc.cancelled_at = Some(Utc::now());
+            let bytes = serde_json::to_vec(&doc)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize cancel update: {}", e))?;
+            collection.upsert(&handle.distribution_id, bytes)?;
+        }
 
         Ok(())
     }
@@ -786,6 +992,86 @@ mod tests {
         assert_eq!(status.failed, 1);
         assert!(status.is_complete());
         assert!(!status.is_success());
+    }
+
+    #[cfg(feature = "automerge-backend")]
+    #[test]
+    fn test_distribution_document_round_trip() {
+        let mut node_statuses = HashMap::new();
+        node_statuses.insert(
+            "node-a".to_string(),
+            NodeTransferStatus {
+                node_id: "node-a".to_string(),
+                status: TransferState::Completed,
+                progress_bytes: 1024,
+                total_bytes: 1024,
+                started_at: None,
+                completed_at: None,
+                error: None,
+            },
+        );
+
+        let doc = DistributionDocument {
+            distribution_id: "dist-1".to_string(),
+            blob_hash: "deadbeef".to_string(),
+            blob_size: 1024,
+            blob_metadata: BlobMetadata::default(),
+            scope: DistributionScope::AllNodes,
+            priority: TransferPriority::Normal,
+            target_nodes: vec!["node-a".to_string()],
+            started_at: Utc::now(),
+            status: "distributing".to_string(),
+            cancelled_at: None,
+            node_statuses,
+        };
+
+        let bytes = serde_json::to_vec(&doc).expect("serialize");
+        let restored: DistributionDocument = serde_json::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(restored.distribution_id, "dist-1");
+        assert_eq!(restored.target_nodes, vec!["node-a".to_string()]);
+        assert_eq!(restored.node_statuses.len(), 1);
+        assert_eq!(
+            restored.node_statuses["node-a"].status,
+            TransferState::Completed
+        );
+    }
+
+    /// Documents written before #864 lacked `node_statuses` entirely. They
+    /// must still deserialize so an in-flight distribution survives a
+    /// peat-protocol upgrade.
+    #[cfg(feature = "automerge-backend")]
+    #[test]
+    fn test_distribution_document_legacy_compat() {
+        // Build a current doc, serialize it, then strip node_statuses to
+        // mimic the pre-#864 wire format. The rest of the schema is
+        // identical to what distribute() wrote before this change.
+        let current = DistributionDocument {
+            distribution_id: "dist-legacy".to_string(),
+            blob_hash: "abc123".to_string(),
+            blob_size: 42,
+            blob_metadata: BlobMetadata::default(),
+            scope: DistributionScope::AllNodes,
+            priority: TransferPriority::Normal,
+            target_nodes: vec!["node-x".to_string()],
+            started_at: Utc::now(),
+            status: "distributing".to_string(),
+            cancelled_at: None,
+            node_statuses: HashMap::new(),
+        };
+        let mut value = serde_json::to_value(&current).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("node_statuses")
+            .expect("node_statuses present in current schema");
+
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let restored: DistributionDocument = serde_json::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(restored.distribution_id, "dist-legacy");
+        assert!(restored.node_statuses.is_empty());
+        assert!(restored.cancelled_at.is_none());
     }
 
     #[test]

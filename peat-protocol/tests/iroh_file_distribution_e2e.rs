@@ -29,9 +29,11 @@
 
 #![cfg(feature = "automerge-backend")]
 
+use chrono::Utc;
 use peat_protocol::storage::{
-    AutomergeStore, BlobMetadata, BlobStore, DistributionScope, FileDistribution,
-    IrohFileDistribution, NetworkedIrohBlobStore, TransferPriority,
+    AutomergeStore, BlobMetadata, BlobStore, DistributionDocument, DistributionScope,
+    FileDistribution, IrohFileDistribution, NetworkedIrohBlobStore, NodeTransferStatus,
+    TransferPriority, TransferState, IROH_DISTRIBUTION_COLLECTION,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -227,6 +229,199 @@ async fn test_cancel_distribution() {
     );
 
     println!("  ✓ Cancel distribution test passed");
+}
+
+/// Test: cancel() publishes a terminal frame then closes the progress stream.
+///
+/// Contract from issue #864: a subscriber that holds a `subscribe_progress`
+/// receiver across a `cancel()` call must observe exactly one final
+/// `DistributionStatus` frame followed by `RecvError::Closed`. Before this
+/// change, the broadcast channel was never written to and the receiver
+/// observed no frames for the lifetime of the distribution.
+#[tokio::test]
+async fn test_cancel_emits_terminal_frame_then_closes() {
+    let temp = TempDir::new().unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let (blob_store, doc_store) = create_integrated_stores(addr, temp.path()).await;
+    let distribution = IrohFileDistribution::new(Arc::clone(&blob_store), Arc::clone(&doc_store));
+
+    let token = blob_store
+        .create_blob_from_bytes(
+            b"payload",
+            BlobMetadata::with_name_and_type("payload.bin", "application/octet-stream"),
+        )
+        .await
+        .expect("create blob");
+
+    let handle = distribution
+        .distribute(
+            &token,
+            DistributionScope::AllNodes,
+            TransferPriority::Normal,
+        )
+        .await
+        .expect("start distribution");
+
+    let mut rx = distribution
+        .subscribe_progress(&handle)
+        .await
+        .expect("subscribe");
+
+    distribution.cancel(&handle).await.expect("cancel");
+
+    let frame = rx.recv().await.expect("terminal frame");
+    assert_eq!(frame.handle.distribution_id, handle.distribution_id);
+
+    match rx.recv().await {
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+        other => panic!("expected RecvError::Closed after terminal frame, got {other:?}"),
+    }
+}
+
+/// Test: cancel() preserves the distribution document via read-modify-write.
+///
+/// Before #864 the cancel path overwrote the doc wholesale with a
+/// `{status, cancelled_at}` stub, destroying `target_nodes`, `blob_hash`,
+/// and `node_statuses`. The slice 2 schema work flips this to a typed RMW
+/// so the doc retains all of its fields and only the status / cancelled_at
+/// transition.
+#[tokio::test]
+async fn test_cancel_preserves_distribution_document_fields() {
+    let temp = TempDir::new().unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let (blob_store, doc_store) = create_integrated_stores(addr, temp.path()).await;
+    let distribution = IrohFileDistribution::new(Arc::clone(&blob_store), Arc::clone(&doc_store));
+
+    let token = blob_store
+        .create_blob_from_bytes(
+            b"payload",
+            BlobMetadata::with_name_and_type("payload.bin", "application/octet-stream"),
+        )
+        .await
+        .expect("create blob");
+
+    let handle = distribution
+        .distribute(
+            &token,
+            DistributionScope::AllNodes,
+            TransferPriority::Normal,
+        )
+        .await
+        .expect("start distribution");
+
+    // Verify the doc is the full typed schema as written by distribute().
+    let collection = doc_store.collection(IROH_DISTRIBUTION_COLLECTION);
+    let before = collection
+        .get(&handle.distribution_id)
+        .expect("collection get")
+        .expect("doc present");
+    let before: DistributionDocument = serde_json::from_slice(&before).expect("deserialize");
+    assert_eq!(before.distribution_id, handle.distribution_id);
+    assert_eq!(before.blob_hash, token.hash.as_hex());
+    assert_eq!(before.status, "distributing");
+    assert!(before.cancelled_at.is_none());
+
+    distribution.cancel(&handle).await.expect("cancel");
+
+    let after = collection
+        .get(&handle.distribution_id)
+        .expect("collection get")
+        .expect("doc present after cancel");
+    let after: DistributionDocument = serde_json::from_slice(&after).expect("deserialize");
+
+    assert_eq!(after.distribution_id, before.distribution_id);
+    assert_eq!(after.blob_hash, before.blob_hash);
+    assert_eq!(after.blob_size, before.blob_size);
+    assert_eq!(after.target_nodes, before.target_nodes);
+    assert_eq!(after.status, "cancelled");
+    assert!(
+        after.cancelled_at.is_some(),
+        "cancelled_at must be set after cancel"
+    );
+}
+
+/// Test: the sender-side watcher publishes a `DistributionStatus` frame
+/// whenever a receiver writes its `NodeTransferStatus` into the
+/// distribution document.
+///
+/// Issue #864: prior to this change `subscribe_progress` returned a
+/// receiver that observed zero frames because nothing ever published.
+/// The slice-3 watcher subscribes to `AutomergeStore` observer events,
+/// reads any updated distribution document, merges its `node_statuses`
+/// into the in-memory state, and broadcasts a fresh snapshot. The test
+/// simulates the receiver-side write directly (which in production lives
+/// in peat-node — see peat-node#75).
+#[tokio::test]
+async fn test_watcher_publishes_frame_on_receiver_node_status_write() {
+    let temp = TempDir::new().unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let (blob_store, doc_store) = create_integrated_stores(addr, temp.path()).await;
+    let distribution = IrohFileDistribution::new(Arc::clone(&blob_store), Arc::clone(&doc_store));
+
+    let token = blob_store
+        .create_blob_from_bytes(
+            b"payload",
+            BlobMetadata::with_name_and_type("payload.bin", "application/octet-stream"),
+        )
+        .await
+        .expect("create blob");
+
+    let handle = distribution
+        .distribute(
+            &token,
+            DistributionScope::AllNodes,
+            TransferPriority::Normal,
+        )
+        .await
+        .expect("start distribution");
+
+    let mut rx = distribution
+        .subscribe_progress(&handle)
+        .await
+        .expect("subscribe");
+
+    // Simulate a receiver writing its NodeTransferStatus into the
+    // distribution document. With AllNodes scope and no real peers in
+    // this single-node test, target_nodes is empty, so we inject a
+    // synthetic "receiver-1" entry just to exercise the merge path.
+    let collection = doc_store.collection(IROH_DISTRIBUTION_COLLECTION);
+    let existing = collection
+        .get(&handle.distribution_id)
+        .unwrap()
+        .expect("doc present");
+    let mut doc: DistributionDocument = serde_json::from_slice(&existing).unwrap();
+    doc.node_statuses.insert(
+        "receiver-1".to_string(),
+        NodeTransferStatus {
+            node_id: "receiver-1".to_string(),
+            status: TransferState::Completed,
+            progress_bytes: 7,
+            total_bytes: 7,
+            started_at: None,
+            completed_at: Some(Utc::now()),
+            error: None,
+        },
+    );
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    collection
+        .upsert(&handle.distribution_id, bytes)
+        .expect("upsert receiver status");
+
+    // The watcher reacts asynchronously to the observer broadcast — give
+    // it a generous timeout but not so long that a real bug stalls CI.
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("watcher should publish within 2s")
+        .expect("recv frame");
+
+    assert_eq!(frame.handle.distribution_id, handle.distribution_id);
+    assert_eq!(
+        frame
+            .node_statuses
+            .get("receiver-1")
+            .map(|s| s.status.clone()),
+        Some(TransferState::Completed),
+    );
 }
 
 /// Test 4: Distribution with Formation Scope
