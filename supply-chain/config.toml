@@ -88,6 +88,10 @@ criteria = "safe-to-deploy"
 version = "0.9.0-rc.6"
 criteria = "safe-to-deploy"
 
+[[exemptions.peat-schema]]
+version = "0.9.0-rc.7"
+criteria = "safe-to-deploy"
+
 [[exemptions.peat-protocol]]
 version = "0.9.0-rc.1"
 criteria = "safe-to-deploy"
@@ -112,6 +116,10 @@ criteria = "safe-to-deploy"
 version = "0.9.0-rc.6"
 criteria = "safe-to-deploy"
 
+[[exemptions.peat-protocol]]
+version = "0.9.0-rc.7"
+criteria = "safe-to-deploy"
+
 # Top-level facade crate. `peat:0.9.0-rc.4` was published to
 # crates.io as part of the 2026-05-11 rc.4 release flow (currently
 # a reserved-name placeholder); the workspace member at rc.5 is
@@ -124,6 +132,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.peat]]
 version = "0.9.0-rc.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.peat]]
+version = "0.9.0-rc.7"
 criteria = "safe-to-deploy"
 
 # ADR-059 Amendment 4 Slice 4.d interim git-rev consumption —
