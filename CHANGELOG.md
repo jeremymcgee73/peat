@@ -14,6 +14,42 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.7] - 2026-05-15
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.6` → `0.9.0-rc.7`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change; the new behavior reaches FFI consumers transitively via the workspace's path dependency on `peat-protocol`).
+
+Closes the [#864](https://github.com/defenseunicorns/peat/issues/864) contract gap where `IrohFileDistribution::subscribe_progress` returned a broadcast receiver that observed zero frames for the lifetime of every distribution. Lands the receiver-side observer (Design A from the issue): the sender's `IrohFileDistribution` now spawns a background watcher subscribed to `AutomergeStore::subscribe_to_observer_changes`, re-reads the distribution document on receiver-written `node_statuses` updates, and publishes a fresh `DistributionStatus` to the broadcast channel. Terminal frame emitted on `cancel()`, then channel dropped so subscribers observe `RecvError::Closed`.
+
+This unblocks [peat-node#75](https://github.com/defenseunicorns/peat-node/pull/75), which wires the receiver-side write into `attachments::inbox` and un-ignores the two deferred PRD-006 tests (`subscribe_emits_progress_then_terminal`, `cancel_in_flight_stops_transfer`).
+
+### Added
+
+- **`pub DistributionDocument`** struct in `peat-protocol::storage::file_distribution` — typed schema for the `file_distributions` collection with `#[serde(default)] node_statuses: HashMap<String, NodeTransferStatus>`. Replaces the inline `serde_json::json!` doc shape; `#[serde(default)]` preserves wire compatibility with pre-rc.7 documents.
+- **`pub const IROH_DISTRIBUTION_COLLECTION`** — collection name promoted from module-private to public so consumers (e.g. peat-node's inbox watcher) can address the same Automerge collection the sender uses.
+- **Three new `iroh_file_distribution_e2e` tests**: `test_cancel_emits_terminal_frame_then_closes`, `test_cancel_preserves_distribution_document_fields`, `test_watcher_publishes_frame_on_receiver_node_status_write`.
+- **Two new in-module tests**: `test_distribution_document_round_trip`, `test_distribution_document_legacy_compat` (asserts a freshly-serialized doc with `node_statuses` stripped still deserializes — pre-rc.7 wire format survives upgrade).
+
+### Changed
+
+- **`IrohFileDistribution::cancel`** now calls `broadcast_progress` with the terminal `Cancelled` status and drops the broadcast sender. Previously `cancel` overwrote the distribution doc wholesale with a `{status, cancelled_at}` stub; it now does a read-modify-write on the typed `DistributionDocument`, preserving all other fields (sender, targets, file metadata, `node_statuses`).
+- **`broadcast_progress`** no longer `#[allow(dead_code)]` — callers exist (cancel path + the new receiver-side watcher).
+
+### Verification
+
+- `cargo test -p peat-protocol --features automerge-backend --test iroh_file_distribution_e2e` — 7/7 (including the 3 new tests).
+- `cargo test -p peat-protocol --features automerge-backend --lib file_distribution` — 7/7 (including the 2 new tests).
+- `cargo test -p peat-protocol --features automerge-backend --lib` — 996/996.
+- `cargo check --workspace --all-features` — clean.
+
+### Migration
+
+No source changes required for consumers depending on `peat-protocol = "0.9.0-rc.6"` — bump the pin to `"0.9.0-rc.7"`. The two new `pub` symbols (`DistributionDocument`, `IROH_DISTRIBUTION_COLLECTION`) are additive; consumers that want to participate in the receiver-side write protocol (i.e. signal `NodeTransferStatus` back to senders so their `subscribe_progress` consumers see real frames) can now import them. Consumers of `subscribe_progress` that did nothing receiver-side will continue to see zero frames until both sides are on rc.7+.
+
+### Open
+
+- **Concurrent writes** on the distribution doc accepted as-is for v1. `AutomergeCollection::upsert` reads-replaces the JSON `"data"` scalar wholesale, so simultaneous sender + receiver writes race; the watcher reconciles on the next observer event and Automerge convergence guarantees no permanent loss. A proper per-key Automerge-map shape on `node_statuses` is deferred — separate refactor of `AutomergeCollection`.
+- **IN_PROGRESS heartbeats** skipped for v1. One `Transferring` frame at fetch-start (written by the receiver in peat-node#75) satisfies PRD-006 test 23's "≥1 IN_PROGRESS frame" assertion. Byte-level progress remains available via the existing `FnMut(BlobProgress)` seam in `fetch_blob`.
+
 ## [0.9.0-rc.6] - 2026-05-12
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.5` → `0.9.0-rc.6`. `peat-ffi` bumps independently `0.2.2` → `0.2.3` (patch: pulls in `peat-mesh 0.9.0-rc.8` via the crates.io-resolved dep, no ABI surface change).
