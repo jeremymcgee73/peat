@@ -14,6 +14,35 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.8] - 2026-05-16
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.7` → `0.9.0-rc.8`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change; the new behavior reaches FFI consumers transitively via the workspace's path dependency on `peat-protocol`).
+
+Picks up [`peat-mesh 0.9.0-rc.10`](https://crates.io/crates/peat-mesh/0.9.0-rc.10), which ships the [peat-mesh#118](https://github.com/defenseunicorns/peat-mesh/pull/118) sync_cooldown defer-not-drop fix — closing the substrate-level race that left rc.7's `subscribe_progress` wire-up only half-working end-to-end. Receivers' back-to-back `Transferring → Completed` writes into the distribution doc no longer get silently dropped by the auto-sync push's 100ms `(peer, doc)` cooldown, so the sender's broadcast watcher now observes the full `Transferring → Completed` transition and emits both the IN_PROGRESS frame and the terminal frame to `subscribe_progress` subscribers for real cross-peer transfers.
+
+Closes [defenseunicorns/peat#864](https://github.com/defenseunicorns/peat/issues/864) end-to-end. rc.7 landed the wire-up; rc.10's substrate fix closes the missing-terminal-frame half.
+
+### Changed
+
+- **`peat-mesh` range floor**: `>=0.9.0-rc.8` → `>=0.9.0-rc.10` in `workspace.dependencies` (`Cargo.toml`). Upper bound `<0.9.1` unchanged — the wire-shape protection at the patch line stands. The intervening `peat-mesh 0.9.0-rc.9` (the [#116 fix](https://github.com/defenseunicorns/peat-mesh/pull/116) for the [#115 receive-path notify loop](https://github.com/defenseunicorns/peat-mesh/issues/115) + `AutomergeBackendConfig` BREAKING) was a no-op for this workspace; the floor moves to rc.10 because rc.10's source-level change in `AutomergeSyncCoordinator::initiate_sync` + `sync_document_with_all_peers` is what we materially depend on.
+- **`peat-protocol`'s `=peat-schema` pin** bumped from `0.9.0-rc.7` to `0.9.0-rc.8` to match the workspace's new floor.
+
+### Verification
+
+- `cargo update -p peat-mesh` resolves `peat-mesh 0.9.0-rc.10` from crates.io, no git fetches.
+- **Transitive lockfile shift**: `cargo update -p peat-mesh` re-resolved `prost-build`'s and `prost-derive`'s `itertools` selection from `0.14.0` → `0.10.5`. Both versions were already in the lockfile pre-PR; this is a transitive *selection* change, not a new-crate introduction. `prost-build` is build-time only (proto codegen) and runtime behavior is unaffected. Logged here so a future bisection on `Cargo.lock` drift in the rc.7→rc.8 window has the explicit explanation.
+- `cargo check --workspace --all-features` clean.
+- `cargo test -p peat-protocol --features automerge-backend --lib` — full suite green (the rc.7-era e2e tests remain green; no source change to peat-protocol in this release).
+- End-to-end confirmation (run on the rc.10 fix branch via `[patch.crates-io]` from peat-node, identical to what rc.10 just shipped to crates.io): PRD-006 test 23 (`subscribe_emits_progress_then_terminal`) passes in 5 seconds with exactly 1 IN_PROGRESS frame and exactly 1 terminal frame for a 4 MiB two-peer transfer. peat-node's new receiver-local doc-state regression test (`receiver_writes_node_status_into_distribution_doc`) also passes deterministically.
+
+### Migration
+
+No consumer-visible API change. Downstream consumers depending on `peat-protocol = "0.9.0-rc.7"` should bump to `"0.9.0-rc.8"`. The substrate timing-contract change (`AutomergeSyncCoordinator::initiate_sync` blocks up to `sync_cooldown` instead of fast-failing) propagates from peat-mesh; no in-workspace consumer relied on the prior fast-fail behavior. See peat-mesh's `[0.9.0-rc.10]` CHANGELOG entry for the substrate-side contract details.
+
+### Unblocks
+
+- [peat-node#76](https://github.com/defenseunicorns/peat-node/pull/76): bumps `peat-protocol >=0.9.0-rc.8`, un-ignores PRD-006 test 23 (`subscribe_emits_progress_then_terminal`) and the new receiver-side doc-state regression test, ships the receiver-side `attachments::inbox` writes that complete the contract.
+
 ## [0.9.0-rc.7] - 2026-05-15
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.6` → `0.9.0-rc.7`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change; the new behavior reaches FFI consumers transitively via the workspace's path dependency on `peat-protocol`).
