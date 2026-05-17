@@ -117,8 +117,9 @@ pub use blob_traits::{
 };
 #[cfg(feature = "automerge-backend")]
 pub use file_distribution::{
-    read_distribution_document, scan_distribution_documents, write_receiver_node_status,
-    DistributionDocument, IrohFileDistribution, IROH_DISTRIBUTION_COLLECTION,
+    clear_receive_test_directives, read_distribution_document, scan_distribution_documents,
+    set_receive_test_directive, write_receiver_node_status, DistributionDocument,
+    IrohFileDistribution, ReceiveSink, ReceiveTestDirective, IROH_DISTRIBUTION_COLLECTION,
 };
 pub use file_distribution::{
     DistributionHandle, DistributionScope, DistributionStatus, FileDistribution,
