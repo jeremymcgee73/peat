@@ -424,6 +424,266 @@ pub struct DistributionDocument {
     pub node_statuses: HashMap<String, NodeTransferStatus>,
 }
 
+/// Internal: the immutable-by-the-sender half of `DistributionDocument`
+/// (everything except `node_statuses`). On the Automerge wire this is
+/// serialized as a single JSON byte-scalar at `ROOT.metadata` — only the
+/// sender ever writes it, so the wholesale-scalar replacement semantics
+/// don't cause contention. Receivers' per-node status entries live as
+/// their own keyed entries under the `ROOT.node_statuses` Automerge map
+/// (one key per receiver short-id), so multiple receivers writing
+/// concurrently never compete for the same Automerge field.
+///
+/// This split is what closes the substrate race that
+/// [defenseunicorns/peat#864](https://github.com/defenseunicorns/peat/issues/864)
+/// surfaced: the pre-rc.9 schema embedded `node_statuses` inside a single
+/// wholesale-scalar `ROOT.data` blob, so concurrent sender + receiver
+/// writes (or, on resource-constrained CI runners, even the sender's
+/// initial `data` op vs the receiver's `Transferring` op being treated
+/// as concurrent by Automerge's actor-id tiebreak after a load-modify-
+/// write cycle) raced at the merge-tiebreak layer, leaving the
+/// receiver's local doc stuck at a stale state.
+#[cfg(feature = "automerge-backend")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DistributionMetadata {
+    distribution_id: String,
+    blob_hash: String,
+    blob_size: u64,
+    blob_metadata: BlobMetadata,
+    scope: DistributionScope,
+    priority: TransferPriority,
+    target_nodes: Vec<String>,
+    started_at: DateTime<Utc>,
+    status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cancelled_at: Option<DateTime<Utc>>,
+}
+
+/// Automerge field on the distribution document holding the sender's
+/// immutable metadata as a JSON byte-scalar. Only the sender writes this
+/// field; receivers never touch it.
+#[cfg(feature = "automerge-backend")]
+const METADATA_FIELD: &str = "metadata";
+
+/// Automerge field on the distribution document holding the per-receiver
+/// `NodeTransferStatus` entries as a typed `ObjType::Map`. Each receiver
+/// writes only its own key (`peer.fmt_short()`), so concurrent writes from
+/// different receivers never collide.
+#[cfg(feature = "automerge-backend")]
+const NODE_STATUSES_FIELD: &str = "node_statuses";
+
+/// Pre-rc.9 wholesale-scalar field. Read-only support kept so a rc.8
+/// document that synced before this node upgraded still deserializes;
+/// rc.9 nodes never write into this field.
+#[cfg(feature = "automerge-backend")]
+const LEGACY_DATA_FIELD: &str = "data";
+
+#[cfg(feature = "automerge-backend")]
+fn distribution_doc_key(distribution_id: &str) -> String {
+    format!("{IROH_DISTRIBUTION_COLLECTION}:{distribution_id}")
+}
+
+/// Read a single distribution document from the store, reconstructing the
+/// in-memory [`DistributionDocument`] from the on-wire typed Automerge
+/// structure (or the legacy wholesale-scalar format if this doc was
+/// written by a pre-rc.9 peer that hasn't seen a rc.9 write yet).
+#[cfg(feature = "automerge-backend")]
+pub fn read_distribution_document(
+    store: &AutomergeStore,
+    distribution_id: &str,
+) -> Result<Option<DistributionDocument>> {
+    let key = distribution_doc_key(distribution_id);
+    match store.get(&key)? {
+        Some(doc) => Ok(Some(distribution_document_from_automerge(&doc)?)),
+        None => Ok(None),
+    }
+}
+
+/// Scan every distribution document in the collection. Used by peat-node's
+/// `attachments::inbox` to discover docs targeting this peer; replaces the
+/// pre-rc.9 `Collection::scan` + `serde_json::from_slice` pattern.
+#[cfg(feature = "automerge-backend")]
+pub fn scan_distribution_documents(
+    store: &AutomergeStore,
+) -> Result<Vec<(String, DistributionDocument)>> {
+    let prefix = format!("{IROH_DISTRIBUTION_COLLECTION}:");
+    let raw = store.scan_prefix(&prefix)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for (full_key, doc) in raw {
+        let Some(dist_id) = full_key.strip_prefix(&prefix) else {
+            continue;
+        };
+        match distribution_document_from_automerge(&doc) {
+            Ok(d) => out.push((dist_id.to_string(), d)),
+            Err(e) => {
+                debug!(
+                    full_key = %full_key,
+                    error = %e,
+                    "skipping malformed distribution document during scan"
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Write one receiver's `NodeTransferStatus` into the distribution
+/// document's `node_statuses` Automerge map at the receiver's own
+/// `peer.fmt_short()` key.
+///
+/// **This is the only write peat-node's `attachments::inbox` makes to the
+/// distribution document** — and the only path the rc.9 schema is designed
+/// to support concurrently. Per-receiver writes go to per-receiver keys
+/// inside the typed `node_statuses` map, so two receivers writing at the
+/// same instant never compete for the same Automerge field, and a single
+/// receiver writing sequentially (Transferring → Completed) replaces its
+/// own key's prior value via the normal causally-ordered `put` semantics.
+///
+/// Returns `Ok(())` if the parent distribution document doesn't exist
+/// (synthetic write before sync delivers the metadata). Errors only on
+/// JSON serialization or backing-store I/O.
+#[cfg(feature = "automerge-backend")]
+pub fn write_receiver_node_status(
+    store: &AutomergeStore,
+    distribution_id: &str,
+    receiver_short_id: &str,
+    status: &NodeTransferStatus,
+) -> Result<()> {
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc, ScalarValue, Value, ROOT};
+
+    let key = distribution_doc_key(distribution_id);
+    // Serialize the get → transact → put sequence on this doc key.
+    // `AutomergeStore::put` is wholesale-replace at the byte level, so
+    // two parallel load-modify-write cycles for the same key would
+    // silently drop one writer's changes (whichever `put` ran last
+    // wins). The striped per-key lock makes the read-modify-write
+    // atomic against other writers on the same key (including the
+    // sender's own metadata writes and any concurrent receivers).
+    let _guard = store.lock_doc(&key);
+    let Some(mut doc) = store.get(&key)? else {
+        return Ok(());
+    };
+    let status_bytes = serde_json::to_vec(status)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize NodeTransferStatus: {}", e))?;
+    doc.transact::<_, _, automerge::AutomergeError>(|tx| {
+        let map_id = match tx.get(ROOT, NODE_STATUSES_FIELD)? {
+            Some((Value::Object(ObjType::Map), id)) => id,
+            _ => tx.put_object(ROOT, NODE_STATUSES_FIELD, ObjType::Map)?,
+        };
+        tx.put(&map_id, receiver_short_id, ScalarValue::Bytes(status_bytes))?;
+        Ok(())
+    })
+    .map_err(|e| anyhow::anyhow!("Automerge transact failed: {:?}", e))?;
+    store.put(&key, &doc)?;
+    Ok(())
+}
+
+/// Read a [`DistributionDocument`] out of an Automerge document, supporting
+/// both the rc.9+ typed schema and the legacy rc.7/rc.8 wholesale-scalar
+/// schema (read-only — rc.9 writes never produce the legacy shape).
+///
+/// Returns an error if neither schema's required fields are present.
+#[cfg(feature = "automerge-backend")]
+fn distribution_document_from_automerge(
+    doc: &automerge::Automerge,
+) -> Result<DistributionDocument> {
+    use automerge::{ObjType, ReadDoc, ScalarValue, Value, ROOT};
+
+    // Read the `ROOT.node_statuses` typed Automerge Map (if present)
+    // into a HashMap. Shared by both the rc.9 path and the legacy
+    // path: a rc.9 receiver's `write_receiver_node_status` always
+    // lands in this typed Map regardless of whether the document's
+    // metadata is still in the legacy `ROOT.data` shape, so BOTH read
+    // paths must consult it or cross-version receiver writes are
+    // silently dropped (the #864 failure mode, re-introduced).
+    let typed_node_statuses =
+        |doc: &automerge::Automerge| -> Result<HashMap<String, NodeTransferStatus>> {
+            let mut out = HashMap::new();
+            if let Some((Value::Object(ObjType::Map), map_id)) =
+                doc.get(ROOT, NODE_STATUSES_FIELD)?
+            {
+                for receiver_key in doc.keys(&map_id) {
+                    if let Some((Value::Scalar(scalar), _)) = doc.get(&map_id, &receiver_key)? {
+                        if let ScalarValue::Bytes(status_bytes) = scalar.as_ref() {
+                            match serde_json::from_slice::<NodeTransferStatus>(status_bytes) {
+                                Ok(ns) => {
+                                    out.insert(receiver_key, ns);
+                                }
+                                Err(e) => {
+                                    debug!(
+                                        receiver = %receiver_key,
+                                        error = %e,
+                                        "skipping malformed NodeTransferStatus entry"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(out)
+        };
+
+    // rc.9+: read the typed metadata + node_statuses map.
+    if let Some((Value::Scalar(scalar), _)) = doc.get(ROOT, METADATA_FIELD)? {
+        let bytes = match scalar.as_ref() {
+            ScalarValue::Bytes(b) => b.clone(),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "{METADATA_FIELD} field has unexpected scalar type {:?}",
+                    other
+                ));
+            }
+        };
+        let metadata: DistributionMetadata = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize metadata: {}", e))?;
+        let node_statuses = typed_node_statuses(doc)?;
+        return Ok(DistributionDocument {
+            distribution_id: metadata.distribution_id,
+            blob_hash: metadata.blob_hash,
+            blob_size: metadata.blob_size,
+            blob_metadata: metadata.blob_metadata,
+            scope: metadata.scope,
+            priority: metadata.priority,
+            target_nodes: metadata.target_nodes,
+            started_at: metadata.started_at,
+            status: metadata.status,
+            cancelled_at: metadata.cancelled_at,
+            node_statuses,
+        });
+    }
+
+    // Pre-rc.9 legacy: the sender's metadata + its (empty-at-publish)
+    // node_statuses are JSON-serialized into a single `ROOT.data`
+    // byte scalar. Read-only support for cross-version sync during an
+    // rc-cycle upgrade.
+    //
+    // CRITICAL: a rc.9 receiver writing against a not-yet-migrated
+    // legacy doc lands its `NodeTransferStatus` in the typed
+    // `ROOT.node_statuses` Map (next to the legacy `ROOT.data`), NOT
+    // inside `ROOT.data`. So the legacy read must overlay the typed
+    // map on top of whatever `node_statuses` the legacy `ROOT.data`
+    // carried — typed-map entries are strictly newer (a rc.9 write)
+    // and take precedence per receiver key. Without this overlay the
+    // receiver's status is invisible to the sender's watcher for any
+    // distribution that was in flight across the upgrade — exactly
+    // the #864 failure mode this whole change exists to close.
+    if let Some((Value::Scalar(scalar), _)) = doc.get(ROOT, LEGACY_DATA_FIELD)? {
+        if let ScalarValue::Bytes(bytes) = scalar.as_ref() {
+            let mut legacy: DistributionDocument = serde_json::from_slice(bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize legacy doc: {}", e))?;
+            for (receiver_key, ns) in typed_node_statuses(doc)? {
+                legacy.node_statuses.insert(receiver_key, ns);
+            }
+            return Ok(legacy);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "distribution document has neither {METADATA_FIELD} nor {LEGACY_DATA_FIELD} field"
+    ))
+}
+
 /// Iroh-based file distribution service
 ///
 /// Distributes files/models using NetworkedIrohBlobStore with:
@@ -571,19 +831,29 @@ impl IrohFileDistribution {
         }
     }
 
-    /// Store distribution metadata as Automerge document
-    #[allow(unused_imports)]
+    /// Store the sender's immutable distribution metadata + initialize an
+    /// empty `node_statuses` Automerge map. rc.9 schema: writes structured
+    /// Automerge fields (`ROOT.metadata` byte-scalar + `ROOT.node_statuses`
+    /// map) directly via `AutomergeStore::put`, bypassing the
+    /// `Collection::upsert` wholesale-scalar `ROOT.data` field that the
+    /// pre-rc.9 schema used (and that the receiver-local doc race in
+    /// defenseunicorns/peat#864 traced back to).
     async fn store_distribution_document(
         &self,
         handle: &DistributionHandle,
         blob_token: &BlobToken,
         target_nodes: &[String],
     ) -> Result<()> {
-        use super::traits::Collection;
+        use automerge::transaction::Transactable;
+        use automerge::{Automerge, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 
-        let doc_id = &handle.distribution_id;
+        let key = distribution_doc_key(&handle.distribution_id);
+        // Serialize the load-modify-write cycle on this doc key against
+        // concurrent receiver writes on the same key. See the matching
+        // lock in `write_receiver_node_status` for the rationale.
+        let _guard = self.document_store.lock_doc(&key);
 
-        let distribution_doc = DistributionDocument {
+        let metadata = DistributionMetadata {
             distribution_id: handle.distribution_id.clone(),
             blob_hash: blob_token.hash.as_hex().to_string(),
             blob_size: blob_token.size_bytes,
@@ -594,21 +864,40 @@ impl IrohFileDistribution {
             started_at: handle.started_at,
             status: "distributing".to_string(),
             cancelled_at: None,
-            node_statuses: HashMap::new(),
         };
+        let metadata_bytes = serde_json::to_vec(&metadata)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize metadata: {}", e))?;
 
-        let bytes = serde_json::to_vec(&distribution_doc)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize distribution doc: {}", e))?;
-
-        // Store in Automerge via Collection trait - this will sync to peers via CRDT
-        let collection = self.document_store.collection(IROH_DISTRIBUTION_COLLECTION);
-        collection.upsert(doc_id, bytes)?;
+        let mut doc = self
+            .document_store
+            .get(&key)?
+            .unwrap_or_else(Automerge::new);
+        doc.transact::<_, _, automerge::AutomergeError>(|tx| {
+            tx.put(
+                ROOT,
+                METADATA_FIELD,
+                ScalarValue::Bytes(metadata_bytes.clone()),
+            )?;
+            // Initialize an empty node_statuses map if it doesn't exist
+            // already. Don't overwrite an existing map — that would erase
+            // any receiver writes that landed before the sender's
+            // metadata write (rare but possible under aggressive sync).
+            if !matches!(
+                tx.get(ROOT, NODE_STATUSES_FIELD)?,
+                Some((Value::Object(ObjType::Map), _))
+            ) {
+                tx.put_object(ROOT, NODE_STATUSES_FIELD, ObjType::Map)?;
+            }
+            Ok(())
+        })
+        .map_err(|e| anyhow::anyhow!("Automerge transact failed: {:?}", e))?;
+        self.document_store.put(&key, &doc)?;
 
         debug!(
             distribution_id = %handle.distribution_id,
             blob_hash = %blob_token.hash,
             target_count = target_nodes.len(),
-            "Stored distribution document in Automerge"
+            "Stored distribution document (rc.9 typed schema) in Automerge"
         );
 
         Ok(())
@@ -682,20 +971,11 @@ async fn watch_distribution_documents(
             continue;
         }
 
-        let collection = document_store.collection(IROH_DISTRIBUTION_COLLECTION);
-        let bytes = match collection.get(doc_id) {
-            Ok(Some(b)) => b,
+        let doc = match read_distribution_document(document_store.as_ref(), doc_id) {
+            Ok(Some(d)) => d,
             Ok(None) => continue,
             Err(e) => {
-                warn!(error = %e, doc_id, "failed to read distribution doc");
-                continue;
-            }
-        };
-
-        let doc: DistributionDocument = match serde_json::from_slice(&bytes) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!(error = %e, doc_id, "failed to deserialize distribution doc");
+                warn!(error = %e, doc_id, "failed to read/decode distribution doc");
                 continue;
             }
         };
@@ -854,23 +1134,125 @@ impl FileDistribution for IrohFileDistribution {
             channels.remove(&handle.distribution_id);
         }
 
-        // Update the distribution document via read-modify-write so we
-        // preserve target_nodes / blob_hash / node_statuses across cancel.
-        // The pre-typed-schema implementation overwrote the doc wholesale
-        // with a 2-field stub, which destroyed everything the slice-3
-        // watcher (and any receivers) need to interpret the document.
-        #[allow(unused_imports)]
-        use super::traits::Collection;
+        // Read-modify-write only on the `ROOT.metadata` byte-scalar (the
+        // sender-owned half of the document). The `ROOT.node_statuses`
+        // Automerge map is left strictly alone — under the rc.9 schema
+        // the receivers own that map, and trampling their entries on
+        // cancel would re-introduce the wholesale-overwrite failure mode
+        // the typed schema exists to prevent. Receivers learn that the
+        // distribution is cancelled via `status: "cancelled"` in the
+        // metadata; their inbox watchers stop fetching on a non-
+        // "distributing" status.
+        use automerge::transaction::Transactable;
+        use automerge::{ObjType, ReadDoc, ScalarValue, Value, ROOT};
 
-        let collection = self.document_store.collection(IROH_DISTRIBUTION_COLLECTION);
-        if let Some(existing) = collection.get(&handle.distribution_id)? {
-            let mut doc: DistributionDocument = serde_json::from_slice(&existing)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize distribution doc: {}", e))?;
-            doc.status = "cancelled".to_string();
-            doc.cancelled_at = Some(Utc::now());
-            let bytes = serde_json::to_vec(&doc)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize cancel update: {}", e))?;
-            collection.upsert(&handle.distribution_id, bytes)?;
+        let key = distribution_doc_key(&handle.distribution_id);
+        // Serialize cancel's read-modify-write against concurrent
+        // receiver writes on the same doc; without this lock a
+        // cancel's metadata flip could overwrite a receiver's
+        // in-flight `node_statuses` write or vice versa.
+        let _guard = self.document_store.lock_doc(&key);
+        if let Some(mut doc) = self.document_store.get(&key)? {
+            // Legacy `node_statuses` seeding accumulator. Populated only
+            // when this is the first cancel after a rc.7/rc.8 → rc.9
+            // upgrade (the `_` arm of the match below); applied inside
+            // the same `doc.transact` so the metadata flip + legacy
+            // node_statuses migration land in a single Automerge change.
+            // Pre-serialize the legacy entries into `(receiver_key, bytes)`
+            // pairs so the `doc.transact` closure can't fail on serde —
+            // its error type is `automerge::AutomergeError` which has no
+            // serde-error variant.
+            let mut legacy_node_statuses_to_seed: Option<Vec<(String, Vec<u8>)>> = None;
+            let new_metadata_bytes = match doc.get(ROOT, METADATA_FIELD)? {
+                // rc.9 path
+                Some((Value::Scalar(scalar), _)) => {
+                    let bytes = match scalar.as_ref() {
+                        ScalarValue::Bytes(b) => b.clone(),
+                        other => {
+                            return Err(anyhow::anyhow!(
+                                "metadata field has unexpected scalar type {:?}",
+                                other
+                            ));
+                        }
+                    };
+                    let mut metadata: DistributionMetadata = serde_json::from_slice(&bytes)
+                        .map_err(|e| anyhow::anyhow!("Failed to deserialize metadata: {}", e))?;
+                    metadata.status = "cancelled".to_string();
+                    metadata.cancelled_at = Some(Utc::now());
+                    serde_json::to_vec(&metadata)
+                        .map_err(|e| anyhow::anyhow!("Failed to serialize cancel update: {}", e))?
+                }
+                // Legacy rc.7/rc.8 doc with `ROOT.data`. Read the full
+                // legacy structure, flip status to "cancelled", and
+                // serialize the metadata half back as the rc.9
+                // `ROOT.metadata` field. The legacy doc's `node_statuses`
+                // entries are seeded into a fresh `ROOT.node_statuses`
+                // typed Map below so receiver progress recorded under
+                // the pre-rc.9 schema is preserved across the migration
+                // — without this seeding, the first cancel after a
+                // rc.7/rc.8 → rc.9 upgrade would silently drop every
+                // receiver's status entry.
+                _ => {
+                    let legacy = distribution_document_from_automerge(&doc)?;
+                    let migrated = DistributionMetadata {
+                        distribution_id: legacy.distribution_id,
+                        blob_hash: legacy.blob_hash,
+                        blob_size: legacy.blob_size,
+                        blob_metadata: legacy.blob_metadata,
+                        scope: legacy.scope,
+                        priority: legacy.priority,
+                        target_nodes: legacy.target_nodes,
+                        started_at: legacy.started_at,
+                        status: "cancelled".to_string(),
+                        cancelled_at: Some(Utc::now()),
+                    };
+                    // Pre-serialize each receiver's NodeTransferStatus
+                    // here so the closure below only does infallible
+                    // Automerge ops.
+                    let mut pairs: Vec<(String, Vec<u8>)> =
+                        Vec::with_capacity(legacy.node_statuses.len());
+                    for (k, v) in &legacy.node_statuses {
+                        let bytes = serde_json::to_vec(v).map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to serialize legacy NodeTransferStatus during migration: {}",
+                                e
+                            )
+                        })?;
+                        pairs.push((k.clone(), bytes));
+                    }
+                    legacy_node_statuses_to_seed = Some(pairs);
+                    serde_json::to_vec(&migrated).map_err(|e| {
+                        anyhow::anyhow!("Failed to serialize migrated metadata: {}", e)
+                    })?
+                }
+            };
+            doc.transact::<_, _, automerge::AutomergeError>(|tx| {
+                tx.put(
+                    ROOT,
+                    METADATA_FIELD,
+                    ScalarValue::Bytes(new_metadata_bytes.clone()),
+                )?;
+                // Migration path: seed `ROOT.node_statuses` from the
+                // legacy doc's embedded entries. Only runs once per
+                // legacy doc (subsequent reads take the rc.9 path
+                // because METADATA_FIELD is now present).
+                if let Some(ref pairs) = legacy_node_statuses_to_seed {
+                    let map_id = match tx.get(ROOT, NODE_STATUSES_FIELD)? {
+                        Some((Value::Object(ObjType::Map), id)) => id,
+                        _ => tx.put_object(ROOT, NODE_STATUSES_FIELD, ObjType::Map)?,
+                    };
+                    for (receiver_short_id, bytes) in pairs {
+                        tx.put(
+                            &map_id,
+                            receiver_short_id.as_str(),
+                            ScalarValue::Bytes(bytes.clone()),
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|e| anyhow::anyhow!("Automerge transact failed on cancel: {:?}", e))?;
+            self.document_store.put(&key, &doc)?;
         }
 
         Ok(())

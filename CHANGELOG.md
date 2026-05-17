@@ -14,6 +14,51 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.9] - 2026-05-16
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.8` → `0.9.0-rc.9`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). **Wire-format change** on `IROH_DISTRIBUTION_COLLECTION` documents — see Migration.
+
+Closes the substrate-level half of [#864](https://github.com/defenseunicorns/peat/issues/864) that rc.7 and rc.8 left exposed under CI-runner scheduling: receivers' back-to-back writes to `node_statuses` (the `Transferring` → `Completed` sequence in peat-node's attachment inbox) could leave the receiver-local doc stuck at a stale state, because both writes targeted the same wholesale-scalar `ROOT.data` field on the Automerge document and Automerge's actor-id tiebreak under load-modify-write cycles could pick the wrong op when concurrent inbound sync delivered an older version of that same scalar.
+
+The fix is a schema split: the sender's immutable metadata (distribution_id, blob_hash, scope, target_nodes, status, etc.) stays as a JSON byte-scalar at `ROOT.metadata`, but `node_statuses` moves out of the scalar entirely into a typed `ObjType::Map` at `ROOT.node_statuses`. Each receiver writes only to its own keyed entry (`peer.fmt_short()`) inside that map, so concurrent writes from different receivers target *different* Automerge fields and never compete; a single receiver's sequential writes (Transferring → Completed) replace the receiver's own key's prior value via the normal causally-ordered `put` semantics with no merge-tiebreak race.
+
+### Changed
+
+- **`IROH_DISTRIBUTION_COLLECTION` wire-format**: the distribution document is now structured Automerge (`ROOT.metadata` byte-scalar + `ROOT.node_statuses` typed Map) rather than a single `ROOT.data` JSON byte-scalar. The pre-rc.9 wholesale-scalar layout is still read-only-supported during an rc-cycle upgrade — a rc.9 node can read an rc.7/rc.8 doc, but rc.7/rc.8 nodes cannot read an rc.9-written doc. See Migration.
+- **`IrohFileDistribution::store_distribution_document`** writes the typed Automerge structure directly via `AutomergeStore::put` instead of going through `Collection::upsert`'s wholesale-scalar shim.
+- **`IrohFileDistribution::cancel`** does read-modify-write on `ROOT.metadata` only; the `ROOT.node_statuses` Automerge map is strictly preserved. Pre-rc.9 cancel could trample receiver-written `node_statuses` entries; rc.9 cancel cannot.
+- **`watch_distribution_documents`** reads the typed structure via the new `read_distribution_document` helper.
+
+### Added
+
+- **`peat_protocol::storage::write_receiver_node_status(store, dist_id, receiver_short_id, status)`** — the public API peat-node's `attachments::inbox` will call on rc.9+ to record a receiver's `NodeTransferStatus` into the distribution document. Writes only to the receiver's own keyed entry in the `node_statuses` map; never touches the sender's metadata field.
+- **`peat_protocol::storage::read_distribution_document(store, dist_id) -> Option<DistributionDocument>`** — reads the typed structure and reconstructs the in-memory `DistributionDocument`. Supports both rc.9+ typed schema and pre-rc.9 wholesale-scalar legacy reads (transparent during rc-cycle upgrade).
+- **`peat_protocol::storage::scan_distribution_documents(store) -> Vec<(String, DistributionDocument)>`** — bulk read for consumers iterating the collection (peat-node's inbox watcher uses this instead of `Collection::scan` + manual deserialize on rc.9+).
+- **Two new substrate-regression tests** in `tests/iroh_file_distribution_e2e.rs`:
+  - `test_concurrent_receiver_writes_dont_collide` — pins that two receivers writing their own `node_statuses` entries against the same distribution document both survive (would fail deterministically on the pre-rc.9 wholesale-scalar schema).
+  - `test_sequential_receiver_writes_converge_on_latest` — pins that a single receiver's Transferring → Completed sequence on the same key converges on Completed (catches a regression of the underlying merge-tiebreak race surfacing on the per-key map after a future refactor).
+
+### Verification
+
+- `cargo check --workspace --all-features` clean.
+- `cargo clippy --workspace --all-features --all-targets -- -D warnings` clean.
+- `cargo test -p peat-protocol --features automerge-backend --lib` — 996/996 passed.
+- `cargo test -p peat-protocol --features automerge-backend --test iroh_file_distribution_e2e` — 9/9 passed (5 pre-existing including the rc.7 watcher test, 2 cancel-path tests from rc.7, plus the 2 new substrate-regression tests above).
+
+### Migration (BREAKING wire-format)
+
+This is an rc-cycle wire-format break on `IROH_DISTRIBUTION_COLLECTION`. Pre-rc.9 nodes that sync with a rc.9 node will not be able to deserialize distribution documents rc.9 wrote. Consumers should upgrade peat-protocol consumers together; the dual-read support in `read_distribution_document` covers the transient case where a rc.9 node sees a pre-rc.9 doc that synced before everyone upgraded, but the reverse direction is not supported.
+
+Downstream consumers depending on `peat-protocol = "0.9.0-rc.8"` should bump to `"0.9.0-rc.9"` and switch reader/writer call sites:
+
+- **Reading distribution docs**: replace `collection.get(&dist_id)` + `serde_json::from_slice::<DistributionDocument>` with `peat_protocol::storage::read_distribution_document(&store, &dist_id)`.
+- **Scanning the collection**: replace `collection.scan()` + per-entry deserialize with `peat_protocol::storage::scan_distribution_documents(&store)`.
+- **Writing receiver status**: replace any direct write into `DistributionDocument::node_statuses` followed by `collection.upsert` with `peat_protocol::storage::write_receiver_node_status(&store, &dist_id, receiver_short_id, &status)`.
+
+### Unblocks
+
+- [defenseunicorns/peat-node#76 follow-up](https://github.com/defenseunicorns/peat-node) — peat-node's `attachments::inbox::write_node_status` switches to the new typed peat-protocol API, both deferred PRD-006 tests un-ignore (`subscribe_emits_progress_then_terminal` and `receiver_writes_node_status_into_distribution_doc`).
+
 ## [0.9.0-rc.8] - 2026-05-16
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.7` → `0.9.0-rc.8`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change; the new behavior reaches FFI consumers transitively via the workspace's path dependency on `peat-protocol`).
