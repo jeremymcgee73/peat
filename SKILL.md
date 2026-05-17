@@ -144,7 +144,12 @@ Links to related issues or PRs in other repos.
 
 Populate as sessions run. One line per gotcha plus a `Why:` line.
 
-- *(none recorded yet)*
+- Cross-repo changes: develop with `[patch.crates-io]` path overrides pointing at local sibling checkouts; run the release chain only after the change works end-to-end against the consumer.
+  Why: serializing through publish-per-layer (PR → merge → tag → crates.io → bump consumer) costs hours per round-trip and you can't iterate the consumer until the upstream publish lands; the override workflow caught a `tokio::spawn` concurrency race and a cross-version legacy-read BLOCKER before either reached a release (peat#864 chain).
+- A single surface symptom can have multiple independent root causes at different layers — keep bisecting after the first fix lands instead of declaring victory.
+  Why: peat#864 ("`subscribe_progress` emits no terminal frame") was three separate defects — a peat-mesh sync_cooldown silent-drop, a missing peat-protocol watcher, and a wholesale-scalar Automerge merge race — each fixed in a different repo; closing the issue after the first fix would have been wrong.
+- Don't close an issue when the wire-up lands but the end-to-end acceptance test still fails; reopen with a narrowed title rather than filing a vague follow-up.
+  Why: peat#864 was prematurely closed at the rc.7 wire-up while its named acceptance test still stalled; reopening with the narrowed scope kept the bisect trail intact.
 
 ---
 
