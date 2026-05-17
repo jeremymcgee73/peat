@@ -14,6 +14,24 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.10] - 2026-05-17
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.9` → `0.9.0-rc.10`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). No wire-format change — the `IROH_DISTRIBUTION_COLLECTION` schema is identical to rc.9.
+
+Moves the receive-side distribution lifecycle into peat-protocol, where it belongs. Before rc.10, peat-protocol owned only the *sender* side; every consumer that wanted delivery had to re-implement the receive loop (observe synced distribution documents, target-match, dedup, fetch the blob, write per-receiver `node_statuses` so the sender's progress watcher emits cross-peer frames, plus the deterministic test fault seam). peat-node carried that as an explicitly-stopgap `attachments/inbox.rs`. rc.10 lifts the whole orchestration upstream so every consumer gets identical, tested behavior and supplies only a thin sink. Closes the [peat-node#68](https://github.com/defenseunicorns/peat-node/issues/68) tracker.
+
+### Added
+
+- **`peat_protocol::storage::ReceiveSink`** — the per-consumer tail of the receive path: `already_delivered(&doc) -> bool` (durable restart-idempotency gate) and `deliver(&doc, blob_path)` (persist the fetched bytes). Everything orchestration-shaped is owned by peat-protocol.
+- **`IrohFileDistribution::start_receive_watcher(own_short_id, sink, poll_interval)`** — spawns the receive watcher (aborted on drop, mirroring the sender-side watcher lifecycle). Polls synced distribution documents, skips self-originated distributions (via the in-memory `distributions` map), target-matches `own_short_id` against `target_nodes`, consults the sink's `already_delivered` gate, writes `Transferring`, fetches the blob, hands bytes to the sink, writes `Completed`. Transient fetch/deliver errors retry on the next sweep with no terminal `Failed` flip.
+- **`peat_protocol::storage::{ReceiveTestDirective, set_receive_test_directive, clear_receive_test_directives}`** — the `#[doc(hidden)]` deterministic receive-path test fault seam (relocated from peat-node), used by PRD §Testing Plan tests 24 (`HoldInFlight`) and 29 (`FailFetch`). Not a supported library API.
+
+### Verification
+
+- `cargo clippy -p peat-protocol --features automerge-backend --all-targets` clean.
+- `cargo test -p peat-protocol --features automerge-backend --lib` — 996/996 passed.
+- End-to-end verified via a peat-node `[patch.crates-io]` path override before release: the full attachment suite (`attachments_e2e_test`, `attachments_deferred_test`, `attachments_multi_peer_test`, `attachments_acceptance_test`, `attachments_subscribe_test`, `attachments_smoke_test`) passes byte-for-byte two-peer delivery, the #864 cross-peer progress/terminal regression, and the relocated seam tests — no behaviour regression.
+
 ## [0.9.0-rc.9] - 2026-05-16
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.8` → `0.9.0-rc.9`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). **Wire-format change** on `IROH_DISTRIBUTION_COLLECTION` documents — see Migration.

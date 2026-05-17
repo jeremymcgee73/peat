@@ -43,7 +43,7 @@
 //! println!("Completed: {}/{}", status.completed, status.total_targets);
 //! ```
 
-use super::blob_traits::{BlobHash, BlobMetadata, BlobToken};
+use super::blob_traits::{BlobHash, BlobMetadata, BlobStore, BlobToken};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -723,6 +723,9 @@ pub struct IrohFileDistribution {
     /// Handle to the background watcher that reacts to receiver-side
     /// `node_statuses` writes on the distribution document. Aborted on drop.
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the receive-side watcher (set by
+    /// [`Self::start_receive_watcher`]). Aborted on drop.
+    receive_watcher_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 #[cfg(feature = "automerge-backend")]
@@ -757,6 +760,46 @@ impl IrohFileDistribution {
             distributions,
             progress_channels,
             watcher_handle: Some(watcher_handle),
+            receive_watcher_handle: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Start the receive-side watcher: a background task that polls
+    /// synced distribution documents, fetches any blob whose
+    /// `target_nodes` includes `own_short_id`, and hands the bytes to
+    /// `sink`. Distributions this instance originated (present in the
+    /// in-memory `distributions` map via `distribute()`) are skipped —
+    /// a sender is not its own receiver.
+    ///
+    /// Idempotent per instance: a second call aborts the prior receive
+    /// watcher and starts a fresh one. The task is aborted on drop.
+    pub fn start_receive_watcher(
+        &self,
+        own_short_id: String,
+        sink: Arc<dyn ReceiveSink>,
+        poll_interval: Duration,
+    ) {
+        let document_store = Arc::clone(&self.document_store);
+        let blob_store = Arc::clone(&self.blob_store);
+        let originated = Arc::clone(&self.distributions);
+        let handle = tokio::spawn(async move {
+            watch_receive_documents(
+                document_store,
+                blob_store,
+                sink,
+                own_short_id,
+                originated,
+                poll_interval,
+            )
+            .await;
+        });
+        if let Some(prev) = self
+            .receive_watcher_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(handle)
+        {
+            prev.abort();
         }
     }
 
@@ -919,6 +962,14 @@ impl Drop for IrohFileDistribution {
         if let Some(handle) = self.watcher_handle.take() {
             handle.abort();
         }
+        if let Some(handle) = self
+            .receive_watcher_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
     }
 }
 
@@ -1027,6 +1078,467 @@ async fn watch_distribution_documents(
         // subscribers observe RecvError::Closed after the terminal frame.
         if complete {
             progress_channels.write().await.remove(doc_id);
+        }
+    }
+}
+
+// ===========================================================================
+// Receive-side distribution lifecycle (issue #68)
+// ===========================================================================
+//
+// The receive side — observe synced distribution documents that target
+// this node, fetch the referenced blob, write per-receiver
+// `node_statuses` so the sender's `watch_distribution_documents` emits
+// progress frames — is owned here in peat-protocol, not in consumers.
+// Consumers supply only a [`ReceiveSink`]: where the fetched bytes land
+// and whether a prior delivery already satisfies a distribution
+// (restart idempotency). Everything orchestration-shaped (targeting,
+// dedup, fetch, retry, status writes, the test fault seam) lives in
+// this module so every consumer gets identical, tested behavior.
+
+/// Where a received blob's bytes go, and whether a prior delivery
+/// already satisfied a distribution. The receive watcher
+/// ([`IrohFileDistribution::start_receive_watcher`]) owns observe /
+/// target / dedup / fetch / status-write orchestration; a `ReceiveSink`
+/// is the thin per-consumer tail: persist the bytes, and answer "do I
+/// already have this?" durably enough to survive a process restart.
+#[cfg(feature = "automerge-backend")]
+#[async_trait::async_trait]
+pub trait ReceiveSink: Send + Sync {
+    /// Consulted before every fetch. Return `true` if this
+    /// distribution's blob is already durably present (e.g. on the
+    /// receiver's filesystem from a prior process) so the fetch and
+    /// inbox write are skipped. The in-memory dedup set is cleared on
+    /// restart; this is the durable source of truth. Return `false` on
+    /// any ambiguity/error — re-delivering is safer than silently
+    /// skipping a file that ought to land.
+    async fn already_delivered(&self, doc: &DistributionDocument) -> bool;
+
+    /// Persist the fetched blob (downloaded to `blob_path` on local
+    /// disk) for `doc`. Implementations should write atomically
+    /// (tmp + rename) so readers never observe a partial file. An
+    /// `Err` return is retried on the next sweep (no terminal Failed
+    /// status is written for transient delivery errors).
+    async fn deliver(&self, doc: &DistributionDocument, blob_path: &std::path::Path) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// Test fault/throttle seam (PRD §Testing Plan tests 24 & 29)
+// ---------------------------------------------------------------------------
+//
+// Tests 24 (`cancel_in_flight_stops_transfer`) and 29
+// (`subscribe_mixed_state_emits_snapshot_for_terminal_then_live_for_inflight`)
+// both need to control a receiver's blob fetch deterministically: 24
+// needs a measurable in-flight window to cancel into, 29 needs one
+// distribution driven to FAILED while another stays IN_PROGRESS.
+//
+// This is a process-global, default-empty registry consulted once per
+// distribution per sweep. **Not** a Cargo feature or `#[cfg(test)]`:
+// integration tests are a separate crate (so `#[cfg(test)]` lib gates
+// are inert for them), and a feature flag would exclude these PRD
+// acceptance tests from the default `cargo test` CI run — the entire
+// point of un-ignoring them is that CI exercises them. The cost when
+// unpopulated (production) is one `RwLock` read returning `None` per
+// distribution per sweep tick: negligible, and a complete behavioral
+// no-op. Keyed by **blob_hash** (hex), not distribution_id, so a test
+// can arm a directive *before* the distribution_id is minted —
+// race-free against the receiver's first sweep. `#[doc(hidden)]`: the
+// seam must be a non-`cfg(test)` `pub` symbol so the separate
+// integration-test crate can reach it under the default `cargo test`,
+// but it is NOT a supported library API.
+#[cfg(feature = "automerge-backend")]
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub enum ReceiveTestDirective {
+    /// Hold this distribution in-flight: after the `Transferring`
+    /// write, skip the fetch *this sweep* and move on (do NOT block the
+    /// sweep loop, do NOT mark handled) so the distribution stays
+    /// IN_PROGRESS and is revisited next sweep. Each revisit re-reads
+    /// the doc: once the sender cancels (status != "distributing") the
+    /// receiver stops — it must not deliver a cancelled distribution
+    /// (a correctness property, and the basis of PRD test 24's
+    /// deterministic mid-flight cancel).
+    ///
+    /// Non-blocking by design: an inline `sleep` inside the sequential
+    /// per-distribution sweep loop would starve every *other*
+    /// distribution in the same sweep for the pause duration
+    /// (order-dependent flake in PRD test 29's two-distribution bundle).
+    HoldInFlight,
+    /// Skip the fetch entirely and write a `Failed` node_status with
+    /// this error string. Drives one distribution to FAILED
+    /// deterministically for PRD test 29.
+    FailFetch(String),
+}
+
+#[cfg(feature = "automerge-backend")]
+static RECEIVE_TEST_HOOK: std::sync::OnceLock<
+    std::sync::RwLock<HashMap<String, ReceiveTestDirective>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(feature = "automerge-backend")]
+fn receive_test_hook() -> &'static std::sync::RwLock<HashMap<String, ReceiveTestDirective>> {
+    RECEIVE_TEST_HOOK.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+/// Test-only: arm a receive-path directive for blobs whose hex
+/// `blob_hash` equals `blob_hash`. Production never calls this; an
+/// unarmed hash is a no-op. See [`ReceiveTestDirective`].
+#[cfg(feature = "automerge-backend")]
+#[doc(hidden)]
+pub fn set_receive_test_directive(blob_hash: &str, directive: ReceiveTestDirective) {
+    receive_test_hook()
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(blob_hash.to_string(), directive);
+}
+
+/// Test-only: clear all armed receive-path directives.
+#[cfg(feature = "automerge-backend")]
+#[doc(hidden)]
+pub fn clear_receive_test_directives() {
+    receive_test_hook()
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+#[cfg(feature = "automerge-backend")]
+fn peek_receive_directive(blob_hash: &str) -> Option<ReceiveTestDirective> {
+    let guard = receive_test_hook()
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.get(blob_hash).cloned()
+}
+
+/// Receiver-side node-status writes the receive watcher emits via
+/// [`write_receiver_node_status`].
+///
+/// `Transferring` once fetch begins; `Completed` once the sink's
+/// delivery lands. `Failed` is normally NOT written — fetch/delivery
+/// failures retry on the next sweep rather than being treated as
+/// permanent — and is reachable only through the test fault seam
+/// ([`ReceiveTestDirective::FailFetch`]). A production
+/// retry-budget-exhaustion give-up would also use this arm.
+#[cfg(feature = "automerge-backend")]
+enum ReceiverStatusWrite {
+    Transferring,
+    Completed,
+    /// error string carried into the written `NodeTransferStatus`.
+    Failed(String),
+}
+
+/// Write a receiver's `NodeTransferStatus` into the distribution doc
+/// via [`write_receiver_node_status`]. Each receiver writes only to its
+/// own keyed entry in `node_statuses` (a typed Automerge Map), so
+/// concurrent receivers don't collide and a receiver's sequential
+/// writes (Transferring → Completed) are causally ordered against
+/// themselves on the same key.
+#[cfg(feature = "automerge-backend")]
+fn write_receiver_status(
+    document_store: &AutomergeStore,
+    doc: &DistributionDocument,
+    own_short_id: &str,
+    state: ReceiverStatusWrite,
+) -> Result<()> {
+    let now = Utc::now();
+    let ns = match state {
+        ReceiverStatusWrite::Transferring => NodeTransferStatus {
+            node_id: own_short_id.to_string(),
+            status: TransferState::Transferring,
+            progress_bytes: 0,
+            total_bytes: doc.blob_size,
+            started_at: Some(now),
+            completed_at: None,
+            error: None,
+        },
+        ReceiverStatusWrite::Completed => {
+            // Preserve started_at if the sweep snapshot saw our own
+            // Transferring write; otherwise stamp now so the doc has
+            // some timing signal at all.
+            let started_at = doc
+                .node_statuses
+                .get(own_short_id)
+                .and_then(|s| s.started_at)
+                .or(Some(now));
+            NodeTransferStatus {
+                node_id: own_short_id.to_string(),
+                status: TransferState::Completed,
+                progress_bytes: doc.blob_size,
+                total_bytes: doc.blob_size,
+                started_at,
+                completed_at: Some(now),
+                error: None,
+            }
+        }
+        ReceiverStatusWrite::Failed(ref msg) => {
+            let started_at = doc
+                .node_statuses
+                .get(own_short_id)
+                .and_then(|s| s.started_at)
+                .or(Some(now));
+            NodeTransferStatus {
+                node_id: own_short_id.to_string(),
+                status: TransferState::Failed,
+                progress_bytes: 0,
+                total_bytes: doc.blob_size,
+                started_at,
+                completed_at: None,
+                error: Some(msg.clone()),
+            }
+        }
+    };
+
+    write_receiver_node_status(document_store, &doc.distribution_id, own_short_id, &ns)?;
+
+    debug!(
+        distribution_id = %doc.distribution_id,
+        node = %own_short_id,
+        new_status = ?match state {
+            ReceiverStatusWrite::Transferring => "Transferring",
+            ReceiverStatusWrite::Completed => "Completed",
+            ReceiverStatusWrite::Failed(_) => "Failed",
+        },
+        "wrote receiver node_status into distribution doc"
+    );
+    Ok(())
+}
+
+/// One receive sweep: discover synced distribution documents, deliver
+/// any that target this node and aren't already handled.
+///
+/// `originated` returns `true` for distributions this node *sent*
+/// (so the receive path skips them — a sender is not its own
+/// receiver). For [`IrohFileDistribution`] this is the in-memory
+/// `distributions` map populated by `distribute()`.
+#[cfg(feature = "automerge-backend")]
+async fn receive_sweep_once(
+    document_store: &Arc<AutomergeStore>,
+    blob_store: &Arc<NetworkedIrohBlobStore>,
+    sink: &Arc<dyn ReceiveSink>,
+    own_short_id: &str,
+    originated: &DistributionsMap,
+    handled: &mut std::collections::HashSet<String>,
+) -> Result<()> {
+    let docs = scan_distribution_documents(document_store.as_ref())?;
+    debug!(
+        doc_count = docs.len(),
+        already_handled = handled.len(),
+        "receive sweep"
+    );
+    for (doc_id, doc) in docs {
+        if handled.contains(&doc_id) {
+            continue;
+        }
+
+        // Self-skip: distributions this node originated live in the
+        // in-memory `distributions` map; a receiver never has an entry
+        // there because that map is populated only by `distribute()`.
+        if originated.read().await.contains_key(&doc_id) {
+            handled.insert(doc_id);
+            continue;
+        }
+
+        debug!(
+            distribution_id = %doc.distribution_id,
+            blob_hash = %doc.blob_hash,
+            target_nodes = ?doc.target_nodes,
+            own = %own_short_id,
+            "receive: seen distribution doc"
+        );
+
+        // Targeting check: my short endpoint id must be in the
+        // sender's resolved target_nodes list.
+        if !doc.target_nodes.contains(&own_short_id.to_string()) {
+            debug!(distribution_id = %doc.distribution_id, "receive: not a target, skipping");
+            handled.insert(doc_id);
+            continue;
+        }
+
+        // Durable "already delivered" gate. Distinct from the in-memory
+        // `handled` set: this survives process restart, so a
+        // long-running receiver that restarts doesn't re-fetch and
+        // re-deliver every historical distribution.
+        if sink.already_delivered(&doc).await {
+            debug!(
+                distribution_id = %doc.distribution_id,
+                "receive: sink reports already delivered, skipping fetch"
+            );
+            handled.insert(doc_id);
+            continue;
+        }
+
+        // Write Transferring before fetching. The sender's progress
+        // watcher re-reads the doc on each observer event and emits an
+        // IN_PROGRESS frame to subscribers. Best-effort: a failure here
+        // does not block the fetch — the worst case is the sender never
+        // observes our in-flight state.
+        if let Err(e) = write_receiver_status(
+            document_store,
+            &doc,
+            own_short_id,
+            ReceiverStatusWrite::Transferring,
+        ) {
+            warn!(
+                distribution_id = %doc.distribution_id,
+                error = %e,
+                "failed to write Transferring node status; sender will see no in-progress frame"
+            );
+        }
+
+        // Test fault/throttle seam (no-op in production). Consulted
+        // after the Transferring write so the sender has already
+        // observed IN_PROGRESS.
+        match peek_receive_directive(&doc.blob_hash) {
+            Some(ReceiveTestDirective::FailFetch(msg)) => {
+                if let Err(e) = write_receiver_status(
+                    document_store,
+                    &doc,
+                    own_short_id,
+                    ReceiverStatusWrite::Failed(msg),
+                ) {
+                    warn!(
+                        distribution_id = %doc.distribution_id,
+                        error = %e,
+                        "test seam: failed to write injected Failed node status"
+                    );
+                }
+                handled.insert(doc_id);
+                continue;
+            }
+            Some(ReceiveTestDirective::HoldInFlight) => {
+                // Re-read (cheap): if the sender cancelled while we
+                // were holding, stop — a receiver must not deliver a
+                // cancelled distribution (basis of PRD test 24's
+                // deterministic mid-flight cancel).
+                match read_distribution_document(document_store.as_ref(), &doc.distribution_id) {
+                    Ok(Some(fresh)) if fresh.status != "distributing" => {
+                        debug!(
+                            distribution_id = %doc.distribution_id,
+                            status = %fresh.status,
+                            "test seam: distribution no longer distributing; releasing hold"
+                        );
+                        handled.insert(doc_id);
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!(
+                            distribution_id = %doc.distribution_id,
+                            error = %e,
+                            "test seam: hold re-read failed; will retry next sweep"
+                        );
+                    }
+                }
+                // Skip fetch this sweep; NOT marked handled → revisited
+                // next sweep, staying IN_PROGRESS. Non-blocking: other
+                // distributions in this sweep proceed normally.
+                continue;
+            }
+            None => {}
+        }
+
+        // Fetch the blob. `NetworkedIrohBlobStore::fetch_blob` iterates
+        // known iroh peers internally. If the sender isn't yet
+        // reachable (handshake still settling, transient network), the
+        // call returns Err and we retry on the next sweep.
+        let token = BlobToken {
+            hash: BlobHash(doc.blob_hash.clone()),
+            size_bytes: doc.blob_size,
+            metadata: doc.blob_metadata.clone(),
+        };
+        let handle = match blob_store.fetch_blob(&token, |_| {}).await {
+            Ok(h) => h,
+            Err(e) => {
+                debug!(
+                    distribution_id = %doc.distribution_id,
+                    error = %e,
+                    "fetch_blob not yet succeeding; will retry next sweep"
+                );
+                continue;
+            }
+        };
+
+        // Hand the bytes to the consumer's sink.
+        match sink.deliver(&doc, &handle.path).await {
+            Ok(()) => {
+                info!(
+                    distribution_id = %doc.distribution_id,
+                    blob_hash = %doc.blob_hash,
+                    size_bytes = doc.blob_size,
+                    "attachment received and delivered to sink"
+                );
+                // Completed terminal status — the sender's watcher
+                // observes this, emits one final frame with
+                // completed=total_targets, and drops the broadcast
+                // sender so subscribers see RecvError::Closed.
+                if let Err(e) = write_receiver_status(
+                    document_store,
+                    &doc,
+                    own_short_id,
+                    ReceiverStatusWrite::Completed,
+                ) {
+                    warn!(
+                        distribution_id = %doc.distribution_id,
+                        error = %e,
+                        "failed to write Completed node status; sender will see no terminal frame for this node"
+                    );
+                }
+                handled.insert(doc_id);
+            }
+            Err(e) => {
+                warn!(
+                    distribution_id = %doc.distribution_id,
+                    error = %e,
+                    "sink delivery failed; will retry next sweep"
+                );
+                // No `handled.insert` — retry next sweep. No Failed
+                // node-status either: retries are intentional and a
+                // Failed flip would prematurely close the sender's
+                // broadcast channel for this distribution.
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Background task: poll synced distribution documents and deliver any
+/// that target this node via `sink`. Mirrors the sender-side
+/// [`watch_distribution_documents`] lifecycle (spawned + aborted on
+/// drop) but for the receive path.
+#[cfg(feature = "automerge-backend")]
+async fn watch_receive_documents(
+    document_store: Arc<AutomergeStore>,
+    blob_store: Arc<NetworkedIrohBlobStore>,
+    sink: Arc<dyn ReceiveSink>,
+    own_short_id: String,
+    originated: DistributionsMap,
+    poll_interval: Duration,
+) {
+    info!(
+        endpoint = %own_short_id,
+        interval_secs = poll_interval.as_secs_f64(),
+        "attachment receive watcher started"
+    );
+    let mut handled: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ticker = tokio::time::interval(poll_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Discard the immediate-first tick — the collection is empty at
+    // startup; the first useful sweep is after at least one tick of
+    // upstream sync.
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        if let Err(e) = receive_sweep_once(
+            &document_store,
+            &blob_store,
+            &sink,
+            &own_short_id,
+            &originated,
+            &mut handled,
+        )
+        .await
+        {
+            warn!(error = %e, "receive sweep failed; will retry next tick");
         }
     }
 }
