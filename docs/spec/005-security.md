@@ -42,7 +42,7 @@ The Peat security framework ensures that tactical mesh networks operate securely
 | Objective | Mechanism |
 |-----------|-----------|
 | Authenticity | Ed25519 signatures |
-| Confidentiality | ChaCha20-Poly1305 AEAD |
+| Confidentiality | AES-256-GCM AEAD (FIPS 140-3 approved — see ADR-060 §5) |
 | Integrity | Cryptographic hashes + signatures |
 | Authorization | RBAC + hierarchy verification |
 | Non-repudiation | Signed audit logs |
@@ -377,13 +377,16 @@ pub fn check_authorization(
 
 ### 7.1 Algorithms
 
+All algorithms are on the FIPS 140-3 approved list per ADR-060 §5.
+
 | Purpose | Algorithm | Key Size |
 |---------|-----------|----------|
-| Symmetric encryption | ChaCha20-Poly1305 | 256 bits |
-| Key exchange | X25519 | 256 bits |
-| Signing | Ed25519 | 256 bits |
-| Hashing | SHA-256 | 256 bits |
-| Key derivation | HKDF-SHA256 | Variable |
+| Symmetric encryption | AES-256-GCM (NIST SP 800-38D) | 256 bits |
+| Key exchange | ECDH on P-256 / P-384 (NIST SP 800-56A); X25519 marginal pending FIPS review | 256 / 384 bits |
+| Signing | Ed25519 (FIPS 186-5) | 256 bits |
+| Hashing | SHA-256 / SHA-384 (FIPS 180-4) | 256 / 384 bits |
+| Key derivation | HKDF-SHA-256 (NIST SP 800-56C / SP 800-108) | Variable |
+| MAC | HMAC-SHA-256 (FIPS 198-1) | 256 bits |
 
 ### 7.2 Secure Channel Establishment
 
@@ -415,7 +418,7 @@ pub fn encrypt_message(
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
 
-    let cipher = ChaCha20Poly1305::new(key.as_ref().into());
+    let cipher = Aes256Gcm::new(key.as_ref().into());  // amended 2026-05-18 per ADR-060 §5 (FIPS)
     let ciphertext = cipher.encrypt(&nonce.into(), plaintext)?;
 
     Ok(EncryptedData {
@@ -428,7 +431,7 @@ pub fn decrypt_message(
     encrypted: &EncryptedData,
     key: &SymmetricKey,
 ) -> Result<Vec<u8>, EncryptionError> {
-    let cipher = ChaCha20Poly1305::new(key.as_ref().into());
+    let cipher = Aes256Gcm::new(key.as_ref().into());  // amended 2026-05-18 per ADR-060 §5 (FIPS)
     let nonce = GenericArray::from_slice(&encrypted.nonce);
 
     cipher.decrypt(nonce, encrypted.ciphertext.as_ref())
@@ -622,7 +625,7 @@ Entry[n].signature = Sign(Entry[n] - signature field)
 
 | Threat | Mitigation |
 |--------|------------|
-| Eavesdropping | TLS 1.3, ChaCha20-Poly1305 encryption |
+| Eavesdropping | TLS 1.3 (FIPS-mode provider) + AES-256-GCM encryption |
 | Impersonation | Ed25519 device authentication |
 | Replay attacks | Timestamp + nonce + sequence numbers |
 | Man-in-the-middle | Public key verification, challenge-response |
@@ -646,7 +649,7 @@ Entry[n].signature = Sign(Entry[n] - signature field)
 - Ed25519 device keypair generation and storage
 - Challenge-response authentication
 - Formation key verification
-- ChaCha20-Poly1305 encryption for group messages
+- AES-256-GCM encryption for group messages
 - Basic audit logging (auth, security violations)
 
 ### 11.2 SHOULD Implement
@@ -673,7 +676,7 @@ Implementations MUST use:
 - Approved algorithm implementations (audited libraries)
 
 RECOMMENDED libraries:
-- Rust: `ed25519-dalek`, `x25519-dalek`, `chacha20poly1305`
+- Rust: `aes-gcm` (or `aws-lc-rs` for FIPS-mode), `ed25519-dalek`, `p256` / `p384` for ECDH, `hkdf`, `hmac`, `sha2`
 - C: libsodium
 - Android: Android Keystore + Tink
 - iOS: CryptoKit
@@ -684,14 +687,20 @@ RECOMMENDED libraries:
 
 - RFC 8032: Edwards-Curve Digital Signature Algorithm (Ed25519)
 - RFC 7748: Elliptic Curves for Security (X25519)
-- RFC 8439: ChaCha20 and Poly1305 for IETF Protocols
+- NIST SP 800-38D: AES-GCM (AEAD primitive used for confidentiality)
+- NIST SP 800-56A / SP 800-56C: ECDH key agreement + HKDF
+- NIST SP 800-186: Approved elliptic curves (P-256, P-384, Curve25519)
+- FIPS 186-5: Digital Signature Standard (Ed25519, ECDSA)
+- FIPS 140-3: Security Requirements for Cryptographic Modules
 - RFC 9420: The Messaging Layer Security (MLS) Protocol
 - NIST SP 800-57: Key Management Guidelines
-- ADR-006: Security Authentication Authorization
-- ADR-044: E2E Encryption and Key Management
+- ADR-006: Security Authentication Authorization (amended 2026-05-18 for FIPS)
+- ADR-044: E2E Encryption and Key Management (amended 2026-05-18 for FIPS)
+- ADR-060: Encryption Tiers — At-Rest and In-Transit Across the Peat Stack (§5 is the authoritative FIPS primitive list)
 
 ## Appendix B: Revision History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1.0 | 2025-01-07 | Initial draft |
+| 0.2.0 | 2026-05-18 | FIPS-posture amendment per ADR-060 §5: ChaCha20-Poly1305 → AES-256-GCM throughout; X25519 flagged as marginal pending FIPS review (prefer ECDH-P256/P384); MLS suite must be FIPS-aligned (e.g., `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`); TLS/QUIC must run under a FIPS-mode provider (e.g., `aws-lc-rs`). |

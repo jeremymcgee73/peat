@@ -17,7 +17,7 @@ ADR-006 describes a full PKI model with X509 certificates and external CA hierar
 
 ### Current Problem
 
-Mesh encryption (ChaCha20-Poly1305 via peat-btle) proves a sender has the mesh key, but does NOT authenticate *which* mesh member sent a message. This enables spoofing:
+Mesh encryption (ChaCha20-Poly1305 via peat-btle — flagged for FIPS amendment per ADR-060 §5; the substantive change lives in the peat-btle sibling repo) proves a sender has the mesh key, but does NOT authenticate *which* mesh member sent a message. This enables spoofing:
 
 1. Attacker joins mesh (has mesh key)
 2. Attacker sends CannedMessage with `sourceNodeId` = victim's nodeId

@@ -1,15 +1,17 @@
 # ADR-044: End-to-End Encryption and Key Management
 
-**Status**: Proposed
+**Status**: Proposed (amended 2026-05-18 for FIPS posture per ADR-060)
 **Date**: 2025-01-07
 **Authors**: Codex, Kit Plummer
-**Related**: ADR-006 (Security Architecture), ADR-042 (UDP Bypass), ADR-005 (Data Sync)
+**Related**: ADR-006 (Security Architecture), ADR-042 (UDP Bypass), ADR-005 (Data Sync), [ADR-060 §5 Cryptographic primitives (FIPS posture)](060-encryption-tiers-rest-and-transit.md#5-cryptographic-primitives-fips-posture)
+
+> **Amendment 2026-05-18 (via PR #870):** ChaCha20-Poly1305 references in this ADR are superseded by **AES-256-GCM** and the MLS ciphersuite selection moves from a ChaCha20/X25519 suite to **`MLS_128_DHKEMP256_AES128GCM_SHA256_P256`** per ADR-060 §5 driver #6 (FIPS-approved primitives only). X25519 references in §Context are flagged as marginal under FIPS — Curve25519 is approved in SP 800-186 but CMVP coverage of ECDH-with-X25519 is uneven; prefer ECDH-P256/P384 where the design has a choice. The peer-to-peer key-exchange path is queued for review against this constraint as part of MLS integration; the change is non-trivial because it interacts with the existing FormationKey infrastructure. Inline edits below update the ChaCha20-Poly1305 references; the X25519 review is tracked as an open question rather than a same-PR rewrite. ADR-060 §5 is the authoritative primitive list.
 
 ## Context
 
 Peat Protocol has a solid security foundation (ADR-006) with:
 - Device identity (Ed25519 keypairs)
-- Peer-to-peer encryption (X25519 + ChaCha20-Poly1305)
+- Peer-to-peer encryption — amended 2026-05-18 per ADR-060 §5: target **AES-256-GCM** for symmetric AEAD; X25519 key-exchange flagged for FIPS review (prefer ECDH-P256/P384 where the design has a choice; tracked as MLS-integration follow-up)
 - Formation keys (pre-shared secret authentication)
 - Group keys (cell broadcast encryption with generation tracking)
 
@@ -65,12 +67,12 @@ We will integrate the Messaging Layer Security protocol for cell-level key manag
 | Criteria | OpenMLS | mls-rs |
 |----------|---------|--------|
 | Maturity | More production usage | Newer |
-| Ciphersuite | ChaCha20-Poly1305 ✓ | Multiple options |
+| Ciphersuite | `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (FIPS-aligned, per ADR-060 §5) | Multiple options |
 | License | MIT | Apache-2.0 |
 | X.509 Support | Limited | Full |
 | Audit Status | Partial | None |
 
-OpenMLS aligns with Peat's existing crypto (ChaCha20-Poly1305, Ed25519) and has more real-world deployment experience.
+OpenMLS supports the FIPS-aligned MLS ciphersuite `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (per ADR-060 §5 amendment 2026-05-18) and has more real-world deployment experience. The crypto provider must be a FIPS-mode backend (e.g., `aws-lc-rs`); `openmls_rust_crypto` defaults to `ring` and is not FIPS-validated — provider selection is part of the MLS integration work, not a default.
 
 ### Architecture
 
@@ -345,7 +347,7 @@ Use Keyhive's CRDT-native key management:
 ```toml
 [dependencies]
 openmls = "0.5"
-openmls_rust_crypto = "0.2"  # ChaCha20-Poly1305 provider
+openmls_rust_crypto = "0.2"  # placeholder — must be replaced with a FIPS-mode provider (e.g., aws-lc-rs backed) before MLS ships, per ADR-060 §5
 openmls_traits = "0.2"
 ```
 

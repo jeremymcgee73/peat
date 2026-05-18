@@ -216,7 +216,7 @@ make build-consumer-plugin                    # consumer plugin APK
 | Language | Rust (2021 edition) |
 | CRDT Engine | Automerge + Iroh (open-source) |
 | Transport | QUIC (Iroh), BLE (BlueZ/CoreBluetooth/NimBLE), UDP, HTTP (Axum) |
-| Security | Ed25519 identity, X25519 key exchange, ChaCha20-Poly1305, HKDF |
+| Security | Ed25519 identity, ECDH (P-256/P-384) key exchange, AES-256-GCM, HKDF-SHA-256 (FIPS 140-3 approved primitives — see ADR-060 §5) |
 | Serialization | Protobuf (prost) + Serde |
 | Async Runtime | Tokio |
 | Mobile | UniFFI (Kotlin/Swift) + JNI — AAR on Maven Central |
@@ -244,13 +244,17 @@ With that context, Peat implements a five-layer security model designed for cont
 
 ### Cryptographic Primitives
 
+All primitives are on the FIPS 140-3 approved list (see ADR-060 §5).
+
 | Function | Algorithm | Key Size |
 |----------|-----------|----------|
-| Device Identity | Ed25519 | 256-bit |
-| Symmetric Encryption | ChaCha20-Poly1305 AEAD | 256-bit |
-| Key Exchange | X25519 Diffie-Hellman | 256-bit |
-| Hashing | SHA-256 | 256-bit |
-| Key Derivation | HKDF-SHA256 | — |
+| Device Identity | Ed25519 (FIPS 186-5) | 256-bit |
+| Symmetric Encryption | AES-256-GCM AEAD (NIST SP 800-38D) | 256-bit |
+| Key Exchange | ECDH on P-256 / P-384 (NIST SP 800-56A); X25519 marginal pending FIPS review | 256-bit / 384-bit |
+| Hashing | SHA-256 / SHA-384 (FIPS 180-4) | 256-bit / 384-bit |
+| Key Derivation | HKDF-SHA-256 (NIST SP 800-56C / SP 800-108) | — |
+| MAC | HMAC-SHA-256 (FIPS 198-1) | 256-bit |
+| TLS / QUIC | rustls under a FIPS-mode provider (e.g., `aws-lc-rs`); the default `ring` backend is **not** FIPS-validated | — |
 
 ### Security Layers
 
@@ -260,7 +264,7 @@ With that context, Peat implements a five-layer security model designed for cont
 
 **Layer 3 — Protocol Security.** Cell admission requires proof of a pre-shared formation key via HMAC-SHA256 — the key itself never crosses the wire. All CRDT operations are cryptographically signed by the originating device to prevent injection of forged state. Role-based access control (RBAC) enforces five privilege levels: Observer, Member, Operator, Leader, and Supervisor.
 
-**Layer 4 — Group Key Agreement.** Cells use MLS (Messaging Layer Security, RFC 9420) for group key management, providing forward secrecy (removed members cannot read future messages) and post-compromise security. Symmetric encryption uses ChaCha20-Poly1305 AEAD.
+**Layer 4 — Group Key Agreement.** Cells use MLS (Messaging Layer Security, RFC 9420) for group key management, providing forward secrecy (removed members cannot read future messages) and post-compromise security. The MLS ciphersuite is `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (FIPS-aligned per ADR-060 §5); symmetric encryption uses AES-256-GCM AEAD.
 
 **Layer 5 — Audit.** All security-relevant events (authentication attempts, privilege changes, data access) are logged to a tamper-evident audit trail for forensics and compliance.
 
