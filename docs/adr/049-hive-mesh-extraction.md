@@ -597,10 +597,11 @@ full = ["iroh", "ble"]
 | TBD | API surface design | Clean-sheet Rust-native (not Ditto-compat) |
 | TBD | Repository structure | Currently monorepo workspace, separate repo planned |
 | TBD | Transport ownership | peat-mesh owns transport trait + Iroh default |
+| 2026-05-18 | Security primitives FIPS amendment (PR #870) | ChaCha20-Poly1305 superseded by AES-256-GCM in peat-mesh substrate per ADR-060 §5; X25519 flagged as marginal pending FIPS review. The 2026-02-11 Phase 5 row above is preserved as a historical record of what shipped; the FIPS amendment is the forward-looking decision. peat-mesh sibling-repo code changes tracked separately under the cross-repo workflow. |
 
 ---
 
-**Last Updated**: 2026-02-12
+**Last Updated**: 2026-05-18
 **Status**: IMPLEMENTED — All 8 phases complete (PRs #622-#629)
 **Result**: 50,124 lines of standalone mesh code, 1,151 unit tests, zero peat-protocol/peat-schema dependencies
 **Next Action**: README, examples, crates.io publish, Collection convenience API

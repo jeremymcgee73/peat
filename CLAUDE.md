@@ -16,6 +16,31 @@ A task in this repo is not done until the verification checklist in `SKILL.md` p
 
 Cross-repo changes require one PR per repo, linked through a tracking issue — not a single PR that reaches across repos.
 
+## Hard rule: FIPS-approved cryptographic primitives only
+
+**Every cryptographic algorithm used anywhere in the peat ecosystem must appear on the FIPS 140-3 approved list.** This is procurement-driven (tactical/DoD customers) and non-negotiable. The deployment target is "FIPS-mode aligned" — use only approved algorithms even where the consuming crypto module is not itself 140-3 validated.
+
+**Approved primitives:**
+
+- **AEAD:** AES-256-GCM (or AES-128-GCM). Fresh per-encryption nonce. NIST SP 800-38D.
+- **Signatures:** Ed25519 (FIPS 186-5, Feb 2023) or ECDSA-P256/P384.
+- **Key agreement:** ECDH on P-256/P-384. X25519 is *marginal* — Curve25519 is approved in SP 800-186 but CMVP module coverage of ECDH-with-X25519 is uneven; treat any X25519 reference as needing explicit review.
+- **KDF:** HKDF-SHA-256 / HKDF-SHA-384 (SP 800-56C / SP 800-108).
+- **MAC:** HMAC-SHA-256 / HMAC-SHA-384 (FIPS 198-1).
+- **Hashes:** SHA-256 / SHA-384 / SHA-512 (FIPS 180-4).
+- **TLS / QUIC (Iroh / rustls):** must run under a FIPS-mode provider such as `aws-lc-rs`. The default `ring` backend is **not** FIPS-validated.
+- **MLS ciphersuite (ADR-044):** must be a FIPS-aligned suite (e.g. `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`), not the X25519/ChaCha20 suites.
+
+**Explicitly non-approved (do not introduce):**
+
+- **ChaCha20-Poly1305** — IETF RFC 8439, never blessed by NIST. Any new code or doc reference is a constraint violation. Existing references in ADR-006, ADR-044, ADR-048, ADR-049, `README.md`, `docs/spec/005-security.md`, and `docs/whitepaper/10b-spec-appendix.md` predate this rule and are tracked for amendment (see ADR-060 §References → Follow-up amendments).
+- Deterministic / order-preserving / homomorphic encryption schemes.
+- Any non-NIST primitive (Salsa20, BLAKE2/3 as a primary hash, etc.) without an explicit ADR justifying a deviation.
+
+**If you find yourself proposing or reviewing a primitive that's not on the approved list:** stop. Either it should be on the list (then this rule needs amending via ADR), or the proposal should change. Do not silently introduce a primitive on the basis of "ecosystem convention" — driver #6 of ADR-060 overrides ecosystem convention.
+
+The canonical reference is ADR-060 §5 "Cryptographic primitives (FIPS posture)". When in doubt, consult that section before consulting ADR-006 or ADR-044, since those predate the FIPS rule and currently contain ChaCha20-Poly1305 references queued for amendment.
+
 ## Hard rule: no consumer-specific references in peat
 
 **peat is the generic mesh protocol.** Consumers (mobile-app plugins, wearable firmware, CLI tools, server bridges) live in their own repos and depend on peat. peat does NOT reference any specific consumer by name in code, comments, examples, READMEs, operational docs, JNI symbol names, package paths, or test fixtures.

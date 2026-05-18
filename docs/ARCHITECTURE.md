@@ -368,7 +368,7 @@ See [ADR-006](adr/006-security-authentication-authorization.md) and [ADR-044](ad
 
 1. **Device Identity**: Ed25519 keypairs, challenge-response authentication
 2. **User Authentication**: RBAC, authority level integration
-3. **Encryption**: ChaCha20-Poly1305 AEAD, X25519 key exchange
+3. **Encryption**: AES-256-GCM AEAD (FIPS 140-3 approved per ADR-060 §5), ECDH-P256/P384 key exchange (X25519 marginal pending FIPS review)
 4. **Cell Key Management**: MLS-based group key agreement (planned)
 5. **Hardware Root of Trust**: PUF/TPM integration (future)
 

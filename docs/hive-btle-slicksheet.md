@@ -2,6 +2,8 @@
 
 **Tactical BLE Mesh Networking for Disconnected Operations**
 
+> **Note 2026-05-18:** This slicksheet describes peat-btle's current implementation; the ChaCha20-Poly1305 / X25519 references below are flagged for FIPS amendment per ADR-060 §5. The substantive change lives in the peat-btle sibling repo (not in this repo); when that change lands, this slicksheet will be updated to match. See ADR-060 §5 "Cryptographic primitives (FIPS posture)" for the authoritative primitive list.
+
 ---
 
 ## What It Is

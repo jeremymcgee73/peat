@@ -1,9 +1,11 @@
 # ADR-006: Security, Authentication, and Authorization for Peat Protocol
 
-**Status**: Proposed
+**Status**: Proposed (amended 2026-05-18 for FIPS posture per ADR-060)
 **Date**: 2025-11-04
 **Authors**: Codex, Kit Plummer
-**Related**: ADR-005 (Data Sync Abstraction Layer), ADR-004 (Human-Machine Cell Composition)
+**Related**: ADR-005 (Data Sync Abstraction Layer), ADR-004 (Human-Machine Cell Composition), [ADR-060 §5 Cryptographic primitives (FIPS posture)](060-encryption-tiers-rest-and-transit.md#5-cryptographic-primitives-fips-posture)
+
+> **Amendment 2026-05-18 (via PR #870):** ChaCha20-Poly1305 references in this ADR are superseded by **AES-256-GCM** per ADR-060 §5 driver #6 (FIPS-approved primitives only). The original code samples and acceptance criteria below have been updated inline; the original record is preserved in git history. This amendment also resolves the latent contradiction this ADR has carried since its initial draft — the "Compliance Considerations" section already named FIPS 140-2/3 as a target, but the rest of the ADR specified the non-FIPS-approved ChaCha20-Poly1305. ADR-060 §5 is the authoritative primitive list for the peat ecosystem.
 
 ## Context
 
@@ -555,7 +557,7 @@ impl EncryptionManager {
         Ok(SecureChannel {
             peer_id: *peer_id,
             symmetric_key,
-            cipher: ChaCha20Poly1305::new(&symmetric_key),
+            cipher: Aes256Gcm::new(&symmetric_key),  // amended 2026-05-18 for FIPS posture (ADR-060 §5)
         })
     }
 
@@ -949,7 +951,7 @@ if !user.has_clearance_for_level(HierarchyLevel::Platoon) {
 
 - [ ] Define security traits and types
 - [ ] Implement device identity and PKI verification
-- [ ] Basic encryption (ChaCha20-Poly1305)
+- [ ] Basic encryption (AES-256-GCM — see ADR-060 §5 FIPS posture)
 - [ ] File-based audit logging
 - [ ] **Milestone**: Two devices can authenticate and establish encrypted channel
 
