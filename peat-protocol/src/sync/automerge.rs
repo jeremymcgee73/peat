@@ -2316,6 +2316,45 @@ impl DocumentStore for IrohDocumentStore {
 }
 
 // PeerDiscovery implementation for AutomergeIrohBackend
+/// Type alias for the optional "should I attempt to connect to this peer?"
+/// callback that AutomergeIrohBackend wires to peat-mesh's circuit breaker
+/// (peat#873). Returns `true` if the connection attempt is allowed,
+/// `false` if it should be skipped.
+#[cfg(feature = "automerge-backend")]
+type PeerAvailabilityCheck = Arc<dyn Fn(&iroh::EndpointId) -> bool + Send + Sync + 'static>;
+
+/// Build the peat#873 peer-availability check from a storage backend.
+///
+/// The returned closure captures `Arc<storage::AutomergeBackend>` and on each
+/// invocation looks up `backend.sync_coordinator() → error_handler() →
+/// should_block_sync(peer_id)`, returning `!should_block_sync` (so `true` =
+/// peer is worth attempting, `false` = breaker is open, skip).
+///
+/// When the coordinator isn't yet populated (pre-`start_sync`), the closure
+/// falls through to `true` — the gate is strictly additive over the pre-fix
+/// "always attempt" behavior. This matters because `peer_discovery()` is
+/// called during backend setup, sometimes before sync has been started.
+///
+/// **Why this is a free fn:** extracted from the inline `peer_discovery()`
+/// construction so the closure's negation can be tested directly without
+/// downcasting through `Arc<dyn PeerDiscovery>`. A silently-flipped sense
+/// (returning `should_block_sync(peer_id)` instead of its negation, or
+/// flipping the `Some`/`None` arms) would either nullify the leak fix or
+/// block all peers when the breaker is closed — both silent failures. The
+/// behavioral tests in `mod tests` lock the three states (no coordinator /
+/// breaker closed / breaker open).
+#[cfg(feature = "automerge-backend")]
+fn build_peer_availability_check(
+    backend: Arc<crate::storage::AutomergeBackend>,
+) -> PeerAvailabilityCheck {
+    Arc::new(
+        move |peer_id: &iroh::EndpointId| match backend.sync_coordinator() {
+            Some(coordinator) => !coordinator.error_handler().should_block_sync(peer_id),
+            None => true,
+        },
+    )
+}
+
 struct IrohPeerDiscovery {
     transport: Arc<crate::network::IrohTransport>,
     peer_callbacks: PeerCallbacks,
@@ -2333,6 +2372,15 @@ struct IrohPeerDiscovery {
     /// Maximum peer connections when topology manager is not configured
     #[cfg(feature = "automerge-backend")]
     max_connections: usize,
+    /// peat#873: optional "should I attempt to connect?" gate, wired by
+    /// AutomergeIrohBackend to peat-mesh's `SyncErrorHandler` circuit
+    /// breaker. When set, the mDNS / topology / discovery-loop handlers
+    /// consult it before invoking `transport.connect_*()` so that
+    /// known-unreachable peers don't trigger fresh `endpoint.connect()`
+    /// allocations every rediscovery. `None` = backward-compatible "always
+    /// attempt" behavior.
+    #[cfg(feature = "automerge-backend")]
+    peer_availability_check: Option<PeerAvailabilityCheck>,
 }
 
 #[async_trait]
@@ -2461,6 +2509,19 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let mdns = mdns.clone();
             let transport = Arc::clone(&self.transport);
             let formation_key_mdns = formation_key.clone();
+            // peat#873: a "should I attempt to connect to this peer?"
+            // check provided by the data-sync owner (AutomergeIrohBackend),
+            // wired to peat-mesh's sync-error-handler circuit breaker.
+            // Without this gate, every mDNS rediscovery (~10s on Android)
+            // triggers a fresh `endpoint.connect()`, which allocates QUIC
+            // handshake state that doesn't reliably deallocate on failed
+            // handshakes (iroh-side leak — the 60s connection recycler
+            // at iroh_transport.rs:182 only partially mitigates it).
+            // peat-mesh#132 gated the downstream `sync_all_documents_with_peer`
+            // call, which stopped the sync-push allocations but left the
+            // iroh-connect allocations firing per rediscovery. Cloning
+            // the Arc<dyn Fn> here so it lives across the tokio::spawn.
+            let availability_check = self.peer_availability_check.clone();
 
             tokio::spawn(async move {
                 use crate::network::formation_handshake::perform_initiator_handshake;
@@ -2484,6 +2545,31 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                     "Already connected to mDNS-discovered peer"
                                 );
                                 continue;
+                            }
+
+                            // peat#873: skip if the availability check
+                            // (wired by AutomergeIrohBackend to peat-mesh's
+                            // sync-error-handler circuit breaker) says
+                            // this peer isn't currently worth attempting.
+                            // The breaker tracks peers that have repeatedly
+                            // failed sync (e.g., iroh-unreachable peers
+                            // that mDNS keeps rediscovering). Skipping
+                            // here means no fresh `endpoint.connect()` →
+                            // no fresh QUIC state allocation on failed
+                            // handshakes. peat-mesh#132's downstream
+                            // `sync_all_documents_with_peer` gate covers
+                            // the sync-push side; this gate covers the
+                            // iroh-connect side. Together they bound
+                            // work to actual progress rather than
+                            // rediscovery cadence.
+                            if let Some(check) = availability_check.as_ref() {
+                                if !check(&peer_id) {
+                                    tracing::debug!(
+                                        peer_id = %peer_id,
+                                        "Skipping mDNS-discovered peer — circuit breaker open (peat#873)"
+                                    );
+                                    continue;
+                                }
                             }
 
                             // Connect using just the EndpointId (addresses from mDNS discovery)
@@ -3370,6 +3456,10 @@ impl DataSyncBackend for AutomergeIrohBackend {
     }
 
     fn peer_discovery(&self) -> Arc<dyn PeerDiscovery> {
+        #[cfg(feature = "automerge-backend")]
+        let peer_availability_check: Option<PeerAvailabilityCheck> =
+            Some(build_peer_availability_check(Arc::clone(&self.backend)));
+
         Arc::new(IrohPeerDiscovery {
             transport: Arc::clone(&self.transport),
             peer_callbacks: Arc::clone(&self.peer_callbacks),
@@ -3382,6 +3472,8 @@ impl DataSyncBackend for AutomergeIrohBackend {
             topology_event_rx: Arc::clone(&self.topology_event_rx),
             #[cfg(feature = "automerge-backend")]
             max_connections: self.max_connections,
+            #[cfg(feature = "automerge-backend")]
+            peer_availability_check,
         })
     }
 
@@ -4052,6 +4144,171 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    /// peat#873 — structural pin for the mDNS-discovery breaker gate.
+    ///
+    /// The `IrohPeerDiscovery::start()` mDNS handler MUST consult the
+    /// `peer_availability_check` (which AutomergeIrohBackend wires to
+    /// peat-mesh's circuit breaker via `should_block_sync`) before
+    /// calling `transport.connect_by_id(peer_id)`. Without the gate,
+    /// every mDNS rediscovery (~10s on Android) triggers a fresh
+    /// `endpoint.connect()`, which allocates QUIC handshake state that
+    /// iroh doesn't reliably deallocate on failed handshakes — the
+    /// 60s connection recycler at `iroh_transport.rs:182` only
+    /// partially mitigates this. peat-mesh#132 gated the downstream
+    /// `sync_all_documents_with_peer`; this gate is its upstream
+    /// counterpart at the iroh-connect layer.
+    ///
+    /// This test is purely structural — it source-greps the file to
+    /// confirm the gate sits before the connect call in the mDNS
+    /// Discovered branch. Mirror of the peat-mesh
+    /// `production_call_sites_use_should_block_sync_not_is_circuit_open`
+    /// pattern.
+    #[test]
+    fn mdns_discovery_handler_gates_connect_on_availability_check() {
+        let source = include_str!("automerge.rs");
+
+        // Anchor on the unique mDNS Discovered-branch log line. The
+        // needle is built at runtime from two pieces so this test's
+        // own source doesn't contain the contiguous literal — otherwise
+        // the source-grep would self-match and the "exactly one
+        // occurrence" assertion would always fail.
+        let needle: String = ["mDNS discovered peer", ", attempting connection"].concat();
+        let def_count = source.matches(needle.as_str()).count();
+        assert_eq!(
+            def_count, 1,
+            "expected exactly one production-site occurrence of the mDNS \
+             discovery log line; found {def_count} — refine the locator \
+             before trusting the windowed slice"
+        );
+        let branch_idx = source.find(needle.as_str()).unwrap();
+        let branch = &source[branch_idx..branch_idx.saturating_add(3000)];
+
+        let check_idx = branch.find("availability_check.as_ref()").expect(
+            "mDNS Discovered branch must consult the availability check — \
+                 peat#873 gate missing, every rediscovery will trigger a fresh \
+                 iroh endpoint.connect() and allocate QUIC handshake state",
+        );
+        let connect_idx = branch.find("transport.connect_by_id(peer_id)").expect(
+            "mDNS Discovered branch must call transport.connect_by_id(peer_id) — \
+                 if this call moved, the structural pin needs an updated locator",
+        );
+
+        assert!(
+            check_idx < connect_idx,
+            "peat#873 gate must precede the iroh connect call — availability_check \
+             at offset {check_idx} vs connect_by_id at offset {connect_idx}. Re-ordering \
+             these breaks the leak fix: the connect will fire before the breaker is \
+             consulted.\n\n\
+             IF YOU REFACTOR THIS, THE TEST IS A STRUCTURAL PIN, NOT A STYLE CHECK. \
+             A failing assertion here means either the gate was removed OR the test's \
+             locator strings need updating to match a renamed/relocated production \
+             site. Verify the production code still consults the availability check \
+             before connect_by_id before adjusting the locators."
+        );
+    }
+
+    /// peat#873 — behavioral coverage for the `build_peer_availability_check`
+    /// closure semantics. The closure built in `peer_discovery()` returns
+    /// `!coordinator.error_handler().should_block_sync(peer_id)` — a flipped
+    /// sense would either nullify the leak fix (closure always returns
+    /// true) or block all peers (closure always returns false). The
+    /// structural pin above catches "is the gate present" but not "does
+    /// the gate return the right value." These three tests lock the
+    /// three states.
+    #[test]
+    fn peer_availability_check_returns_true_when_coordinator_absent() {
+        // Pre-`start_sync` state: `AutomergeBackend::new(store)` does not
+        // initialize a coordinator. The closure must fall through to
+        // "always attempt" so the gate is strictly additive over the
+        // pre-fix behavior.
+        let store = Arc::new(crate::storage::AutomergeStore::in_memory());
+        let backend = Arc::new(crate::storage::AutomergeBackend::new(store));
+        assert!(
+            backend.sync_coordinator().is_none(),
+            "precondition: AutomergeBackend::new should not initialize a sync coordinator"
+        );
+
+        let check = build_peer_availability_check(backend);
+        let mut rng = rand::rng();
+        let peer_id = iroh::SecretKey::generate(&mut rng).public();
+
+        assert!(
+            check(&peer_id),
+            "closure must return true (attempt) when no coordinator exists — \
+             otherwise pre-`start_sync` peer_discovery() blocks every peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_availability_check_returns_true_when_breaker_closed() {
+        // Fresh coordinator → breaker closed → closure returns true.
+        let store = Arc::new(crate::storage::AutomergeStore::in_memory());
+        let transport = Arc::new(crate::network::IrohTransport::new().await.unwrap());
+        let backend = Arc::new(crate::storage::AutomergeBackend::with_transport(
+            store, transport,
+        ));
+        assert!(
+            backend.sync_coordinator().is_some(),
+            "precondition: with_transport must initialize a sync coordinator"
+        );
+
+        let check = build_peer_availability_check(Arc::clone(&backend));
+        let mut rng = rand::rng();
+        let peer_id = iroh::SecretKey::generate(&mut rng).public();
+
+        assert!(
+            check(&peer_id),
+            "closure must return true (attempt) when breaker is closed — \
+             negation flip would silently block all peers"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_availability_check_returns_false_when_breaker_open() {
+        // Coordinator + tripped breaker → closure returns false.
+        let store = Arc::new(crate::storage::AutomergeStore::in_memory());
+        let transport = Arc::new(crate::network::IrohTransport::new().await.unwrap());
+        let backend = Arc::new(crate::storage::AutomergeBackend::with_transport(
+            store, transport,
+        ));
+
+        let coordinator = backend
+            .sync_coordinator()
+            .expect("with_transport must initialize a sync coordinator");
+
+        let mut rng = rand::rng();
+        let peer_id = iroh::SecretKey::generate(&mut rng).public();
+
+        // Trip the breaker. Default `CircuitBreakerConfig::failure_threshold`
+        // is 5; record 8 failures to be robust against env-overridden
+        // thresholds in CI.
+        use peat_mesh::storage::sync_errors::SyncError;
+        for _ in 0..8 {
+            let _ = coordinator
+                .error_handler()
+                .handle_error(&peer_id, SyncError::Network("trip-breaker".to_string()));
+        }
+        assert!(
+            coordinator.error_handler().should_block_sync(&peer_id),
+            "precondition: 8 failures must open the breaker for this peer"
+        );
+
+        let check = build_peer_availability_check(Arc::clone(&backend));
+        assert!(
+            !check(&peer_id),
+            "closure must return false (skip) when breaker is open — \
+             missing negation would nullify the peat#873 leak fix"
+        );
+
+        // Sanity: a different peer (breaker closed) is still allowed.
+        let other_peer = iroh::SecretKey::generate(&mut rng).public();
+        assert!(
+            check(&other_peer),
+            "closure must allow other peers when their breaker is closed — \
+             the gate must be per-peer, not all-or-nothing"
+        );
+    }
 
     /// Helper: Create test BackendConfig with valid credentials
     fn test_config() -> BackendConfig {
