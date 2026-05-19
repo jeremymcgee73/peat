@@ -265,6 +265,13 @@ user-id = 65577
 user-login = "rklaehn"
 user-name = "Rüdiger Klaehn"
 
+[[publisher.base16ct]]
+version = "0.2.0"
+when = "2023-02-26"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
+
 [[publisher.base32]]
 version = "0.5.1"
 when = "2024-07-18"
@@ -598,6 +605,13 @@ user-id = 11478
 user-login = "eira-fransham"
 user-name = "Eira Fransham"
 
+[[publisher.crypto-bigint]]
+version = "0.5.5"
+when = "2023-11-18"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
+
 [[publisher.crypto-common]]
 version = "0.1.7"
 when = "2025-11-12"
@@ -789,6 +803,13 @@ user-id = 988
 user-login = "kornelski"
 user-name = "Kornel"
 
+[[publisher.ecdsa]]
+version = "0.16.9"
+when = "2023-11-16"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
+
 [[publisher.ed25519]]
 version = "2.2.3"
 when = "2023-10-15"
@@ -816,6 +837,13 @@ when = "2025-09-04"
 user-id = 6979
 user-login = "rozbb"
 user-name = "Michael Rosenberg"
+
+[[publisher.elliptic-curve]]
+version = "0.13.8"
+when = "2023-11-19"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
 
 [[publisher.encoding_rs]]
 version = "0.8.35"
@@ -858,6 +886,13 @@ when = "2025-09-09"
 user-id = 6825
 user-login = "sunfishcode"
 user-name = "Dan Gohman"
+
+[[publisher.ff]]
+version = "0.13.1"
+when = "2025-03-09"
+user-id = 6289
+user-login = "str4d"
+user-name = "Jack Grigg"
 
 [[publisher.fixedbitset]]
 version = "0.5.7"
@@ -1045,6 +1080,13 @@ version = "0.8.2"
 when = "2024-04-29"
 user-id = 4103
 user-login = "m4b"
+
+[[publisher.group]]
+version = "0.13.0"
+when = "2022-12-06"
+user-id = 6289
+user-login = "str4d"
+user-name = "Jack Grigg"
 
 [[publisher.h2]]
 version = "0.4.13"
@@ -1801,6 +1843,13 @@ user-id = 163
 user-login = "alex"
 user-name = "Alex Gaynor"
 
+[[publisher.p256]]
+version = "0.13.2"
+when = "2023-04-15"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
+
 [[publisher.papaya]]
 version = "0.2.4"
 when = "2026-03-29"
@@ -1851,8 +1900,8 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-mesh]]
-version = "0.9.0-rc.10"
-when = "2026-05-16"
+version = "0.9.0-rc.12"
+when = "2026-05-19"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1982,6 +2031,13 @@ when = "2025-08-19"
 user-id = 3618
 user-login = "dtolnay"
 user-name = "David Tolnay"
+
+[[publisher.primeorder]]
+version = "0.13.6"
+when = "2023-11-16"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
 
 [[publisher.proc-macro-crate]]
 version = "3.5.0"
@@ -2189,6 +2245,13 @@ user-id = 4556
 user-login = "djc"
 user-name = "Dirkjan Ochtman"
 
+[[publisher.rfc6979]]
+version = "0.4.0"
+when = "2023-02-28"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
+
 [[publisher.ring]]
 version = "0.17.14"
 when = "2025-03-11"
@@ -2340,6 +2403,13 @@ when = "2025-07-17"
 user-id = 19682
 user-login = "wvwwvwwv"
 user-name = "Changgyoo Park"
+
+[[publisher.sec1]]
+version = "0.7.3"
+when = "2023-07-16"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
 
 [[publisher.security-framework]]
 version = "3.7.0"
@@ -4126,6 +4196,12 @@ who = "Chris Fallin <chris@cfallin.org>"
 criteria = "safe-to-deploy"
 version = "2.2.1"
 notes = "forbid-unsafe crate with straightforward imports."
+
+[[audits.bytecode-alliance.audits.pem-rfc7468]]
+who = "Chris Fallin <chris@cfallin.org>"
+criteria = "safe-to-deploy"
+version = "0.7.0"
+notes = "Only `unsafe` around a `from_utf8_unchecked`, and no IO."
 
 [[audits.bytecode-alliance.audits.percent-encoding]]
 who = "Alex Crichton <alex@alexcrichton.com>"

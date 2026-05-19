@@ -595,11 +595,17 @@ user-id = 11478 # Eira Fransham (eira-fransham)
 start = "2019-05-07"
 end = "2027-03-26"
 
+[[trusted.crypto-bigint]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2021-04-30"
+end = "2027-05-19"
+
 [[trusted.crypto-common]]
 criteria = "safe-to-deploy"
 user-id = 267 # Tony Arcieri (tarcieri)
 start = "2021-04-28"
-end = "2027-03-26"
+end = "2027-05-19"
 
 [[trusted.crypto-common]]
 criteria = "safe-to-deploy"
@@ -697,6 +703,12 @@ user-id = 429 # diwic
 start = "2019-09-18"
 end = "2027-03-26"
 
+[[trusted.der]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2020-12-17"
+end = "2027-05-19"
+
 [[trusted.der-parser]]
 criteria = "safe-to-deploy"
 user-id = 4791 # Pierre Chifflier (chifflier)
@@ -793,6 +805,12 @@ user-id = 3618 # David Tolnay (dtolnay)
 start = "2019-12-23"
 end = "2027-03-26"
 
+[[trusted.ecdsa]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-10-29"
+end = "2027-05-19"
+
 [[trusted.ed25519]]
 criteria = "safe-to-deploy"
 user-id = 267 # Tony Arcieri (tarcieri)
@@ -804,6 +822,12 @@ criteria = "safe-to-deploy"
 user-id = 6979 # Michael Rosenberg (rozbb)
 start = "2023-02-04"
 end = "2027-03-26"
+
+[[trusted.elliptic-curve]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2019-12-05"
+end = "2027-05-19"
 
 [[trusted.enum-as-inner]]
 criteria = "safe-to-deploy"
@@ -864,6 +888,12 @@ criteria = "safe-to-deploy"
 user-id = 27661
 start = "2023-09-05"
 end = "2027-03-26"
+
+[[trusted.ff]]
+criteria = "safe-to-deploy"
+user-id = 6289 # Jack Grigg (str4d)
+start = "2021-08-11"
+end = "2027-05-19"
 
 [[trusted.find_cuda_helper]]
 criteria = "safe-to-deploy"
@@ -1075,6 +1105,12 @@ user-id = 4103 # m4b
 start = "2019-04-14"
 end = "2027-03-26"
 
+[[trusted.group]]
+criteria = "safe-to-deploy"
+user-id = 6289 # Jack Grigg (str4d)
+start = "2022-10-13"
+end = "2027-05-19"
+
 [[trusted.gstreamer]]
 criteria = "safe-to-deploy"
 user-id = 3623
@@ -1212,6 +1248,12 @@ criteria = "safe-to-deploy"
 user-id = 359 # Sean McArthur (seanmonstar)
 start = "2019-07-03"
 end = "2027-03-26"
+
+[[trusted.hybrid-array]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2022-05-07"
+end = "2027-05-19"
 
 [[trusted.hyper]]
 criteria = "safe-to-deploy"
@@ -1951,6 +1993,12 @@ user-id = 152041
 start = "2023-11-12"
 end = "2027-03-26"
 
+[[trusted.p256]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2020-01-06"
+end = "2027-05-19"
+
 [[trusted.papaya]]
 criteria = "safe-to-deploy"
 user-id = 103448 # Ibraheem Ahmed (ibraheemdev)
@@ -2039,7 +2087,7 @@ end = "2027-03-26"
 criteria = "safe-to-deploy"
 user-id = 267 # Tony Arcieri (tarcieri)
 start = "2020-06-12"
-end = "2027-03-26"
+end = "2027-05-19"
 
 [[trusted.plotters]]
 criteria = "safe-to-deploy"
@@ -2124,6 +2172,12 @@ criteria = "safe-to-deploy"
 user-id = 3618 # David Tolnay (dtolnay)
 start = "2022-01-04"
 end = "2027-03-26"
+
+[[trusted.primeorder]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2022-06-30"
+end = "2027-05-19"
 
 [[trusted.proc-macro-crate]]
 criteria = "safe-to-deploy"
@@ -2317,6 +2371,12 @@ user-id = 4556 # Dirkjan Ochtman (djc)
 start = "2025-03-13"
 end = "2027-03-26"
 
+[[trusted.rfc6979]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2021-02-09"
+end = "2027-05-19"
+
 [[trusted.ring]]
 criteria = "safe-to-deploy"
 user-id = 2342 # Brian Smith (briansmith)
@@ -2496,6 +2556,12 @@ criteria = "safe-to-deploy"
 user-id = 19682 # Changgyoo Park (wvwwvwwv)
 start = "2024-04-14"
 end = "2027-03-26"
+
+[[trusted.sec1]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2020-08-26"
+end = "2027-05-19"
 
 [[trusted.security-framework]]
 criteria = "safe-to-deploy"
