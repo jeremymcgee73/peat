@@ -71,8 +71,15 @@ repository = "https://github.com/defenseunicorns/peat"
 # turnkey adapter (peat-mesh#110) + the #107/#108/#109 sync
 # coordinator fix train + the rc.9 #115 ping-pong fix. Upper bound
 # `<0.9.1` keeps the wire-shape protection at the patch line — any
-# `0.9.1+` release requires an explicit re-pin here.
-peat-mesh = { version = ">=0.9.0-rc.10, <0.9.1", default-features = false }
+# `0.9.1+` release requires an explicit re-pin here. Floor advanced to
+# rc.12 on 2026-05-18 (peat-mesh#129) — rc.12 is the FIPS-posture
+# release per peat ADR-060 §5 (AES-256-GCM + ECDH-P256) and ships the
+# at-rest `Cipher` trait (peat-mesh#124). peat-protocol's test
+# `reexport_encryption_keypair_dh_exchange` requires the
+# `ecdh::SharedSecret::raw_secret_bytes()` accessor that rc.12
+# introduced — pinning the floor below rc.12 would let the test fail
+# to compile on a downgrade resolve.
+peat-mesh = { version = ">=0.9.0-rc.12, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

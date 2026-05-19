@@ -43,7 +43,13 @@ mod tests {
         let bob = EncryptionKeypair::generate();
         let alice_shared = alice.dh_exchange(bob.public_key());
         let bob_shared = bob.dh_exchange(alice.public_key());
-        assert_eq!(alice_shared.as_bytes(), bob_shared.as_bytes());
+        // peat-mesh rc.12 (peat ADR-060 §5) swapped DH from X25519 to ECDH-P256;
+        // the shared-secret accessor is now `raw_secret_bytes()` on
+        // `p256::ecdh::SharedSecret`, not the old `as_bytes()`.
+        assert_eq!(
+            alice_shared.raw_secret_bytes().as_slice(),
+            bob_shared.raw_secret_bytes().as_slice()
+        );
     }
 
     #[test]
@@ -76,6 +82,10 @@ mod tests {
     fn reexport_constants_accessible() {
         assert_eq!(NONCE_SIZE, 12);
         assert_eq!(SYMMETRIC_KEY_SIZE, 32);
-        assert_eq!(X25519_PUBLIC_KEY_SIZE, 32);
+        // peat-mesh rc.12 (peat ADR-060 §5) replaced X25519_PUBLIC_KEY_SIZE
+        // with ECDH_PUBLIC_KEY_SIZE (33 bytes, compressed SEC1 P-256) +
+        // ECDH_SECRET_KEY_SIZE (32 bytes).
+        assert_eq!(ECDH_PUBLIC_KEY_SIZE, 33);
+        assert_eq!(ECDH_SECRET_KEY_SIZE, 32);
     }
 }

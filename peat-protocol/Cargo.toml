@@ -56,9 +56,12 @@ sha2 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 argon2 = "0.5"  # Password hashing (Phase 3: User Auth)
 hmac = "0.12"   # TOTP implementation (Phase 3: User Auth)
-# Encryption (Phase 4: Encryption & Audit)
-chacha20poly1305 = "0.10"  # AEAD encryption (ChaCha20-Poly1305)
-x25519-dalek = { version = "2", features = ["static_secrets"] }  # X25519 key exchange
+# Encryption (Phase 4: Encryption & Audit). Symmetric AEAD + DH primitives
+# live in peat-mesh per ADR-060 §5 (FIPS posture: AES-256-GCM + ECDH-P256).
+# peat-protocol re-exports them via `pub use peat_mesh::security::{...}`.
+# The previous direct `chacha20poly1305` + `x25519-dalek` entries here were
+# dead manifest declarations (grep `src/` returned zero uses) AND contradicted
+# the FIPS rule — removed 2026-05-18 alongside the rc.12 bump.
 hkdf = "0.12"              # HKDF key derivation
 subtle = "2.6"             # Constant-time comparison (formation key auth)
 

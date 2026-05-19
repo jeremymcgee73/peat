@@ -79,19 +79,23 @@ pub use peat_mesh::security::{
     // Module-level constants
     CHALLENGE_NONCE_SIZE,
     DEFAULT_CHALLENGE_TIMEOUT_SECS,
+    // Encryption constants — ECDH_PUBLIC_KEY_SIZE / ECDH_SECRET_KEY_SIZE
+    // replaced the X25519-specific constant per peat-mesh rc.12 (peat
+    // ADR-060 §5: X25519 → ECDH-P256; public key is 33 bytes compressed
+    // SEC1, was 32 bytes raw X25519).
+    ECDH_PUBLIC_KEY_SIZE,
+    ECDH_SECRET_KEY_SIZE,
     // Formation constants
     FORMATION_CHALLENGE_SIZE,
     FORMATION_RESPONSE_SIZE,
     // Constants
     MAX_CALLSIGN_LENGTH,
     NATO_ALPHABET,
-    // Encryption constants
     NONCE_SIZE,
     PUBLIC_KEY_SIZE,
     SIGNATURE_SIZE,
     SYMMETRIC_KEY_SIZE,
     TOTAL_CALLSIGNS,
-    X25519_PUBLIC_KEY_SIZE,
 };
 
 // --- Peat-specific exports ---
