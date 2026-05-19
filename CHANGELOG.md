@@ -14,6 +14,46 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.12] - 2026-05-19
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.11` → `0.9.0-rc.12`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). No wire-format change.
+
+Bug-fix release closing [#873](https://github.com/defenseunicorns/peat/issues/873) — the Android OOM chain a consumer reported on rc.8 and that survived [peat-mesh rc.13](https://github.com/defenseunicorns/peat-mesh/releases/tag/v0.9.0-rc.13)'s peer-level sync gate. Adds an upstream gate at the mDNS-discovery layer in `IrohPeerDiscovery` so unreachable peers don't trigger fresh iroh `endpoint.connect()` calls every rediscovery cycle, eliminating the per-attempt QUIC handshake-state allocations that drove the leak.
+
+### Fixed
+
+- **mDNS-discovery-driven iroh-connect attempts now consult peat-mesh's circuit breaker** ([#873](https://github.com/defenseunicorns/peat/issues/873), [#874](https://github.com/defenseunicorns/peat/pull/874)). Before this fix, every mDNS rediscovery (~10s on Android against an unreachable peer) fired `transport.connect_by_id(peer_id)` → iroh's `endpoint.connect()`, which allocates QUIC handshake state that doesn't reliably deallocate on failed handshakes. The 60s connection recycler at `peat-protocol/src/network/iroh_transport.rs:182` only partially mitigated this; allocation rate outpaced recycle rate 6×. peat-mesh rc.13 closed the downstream sync-push side of the chain (every rediscovery still scheduled an N-document push that immediately bailed), but the iroh-connect upstream of that bail still fired. **Post-fix**: the `IrohPeerDiscovery` mDNS handler at `peat-protocol/src/sync/automerge.rs:~2520` consults a `PeerAvailabilityCheck` closure (wired by `AutomergeIrohBackend::peer_discovery()` to `coordinator.error_handler().should_block_sync(peer_id)`) before invoking `connect_by_id`. When the breaker is open, the iroh-connect never fires — no fresh QUIC state allocation. The per-rediscovery native-heap growth pattern reported by the consumer should resolve.
+
+### Added
+
+- **`PeerAvailabilityCheck` type alias + `build_peer_availability_check()` free fn** at `peat-protocol/src/sync/automerge.rs:~2324`. The closure-builder is extracted from inline `peer_discovery()` construction so its negation semantic (`!coordinator.error_handler().should_block_sync(peer_id)`) is directly testable. Three behavior tests lock the three state arms: no coordinator (pre-`start_sync`) → allow; coordinator with closed breaker → allow; coordinator with open breaker → block (and per-peer — other peers still allowed in the same call).
+- **Structural pin test** `mdns_discovery_handler_gates_connect_on_availability_check` source-greps the file to confirm the mDNS Discovered branch consults `availability_check.as_ref()` *before* calling `transport.connect_by_id(peer_id)`. Includes an "IF YOU REFACTOR THIS, THE TEST IS A STRUCTURAL PIN, NOT A STYLE CHECK" guidance comment for future maintainers reading a failing assertion.
+
+### Verification
+
+- `cargo check --workspace` clean across all features.
+- `cargo test -p peat-protocol --lib` — 1000 tests pass (was 996 pre-PR; +4 new: 3 behavioral closure tests + 1 structural pin).
+- `cargo test --workspace --lib` clean.
+- `cargo fmt --check` clean.
+- `cargo vet` — supply-chain rc.12 exemption stanzas added pre-emptively (per `supply-chain/README.md` — same release-bookkeeping discipline; without this, CI on a hypothetical post-merge PR would fail with the rc-bookkeeping miss the rc.10 ADR-060 branch hit).
+
+### Migration
+
+Pure consumer migration. Bump the pin:
+
+```toml
+peat-protocol = "0.9.0-rc.12"
+peat-schema   = "=0.9.0-rc.12"
+peat-mesh     = ">=0.9.0-rc.12, <0.9.1"  # unchanged from rc.11
+```
+
+No public API changes. The new `PeerAvailabilityCheck` plumbing is internal — backward-compatible default is "always attempt" when no check is wired.
+
+### Known follow-ups (not in this release)
+
+- **[#875](https://github.com/defenseunicorns/peat/issues/875)** — two structurally-identical iroh-connect call sites in `IrohPeerDiscovery::start()` remain ungated: the topology-driven `connect_peer` at `automerge.rs:~2645` and the periodic-discovery-loop `connect_peer` at `automerge.rs:~2830`. The reported trace was mDNS-only, so the immediate leak is closed. Filed as a follow-up; trigger conditions for prioritization documented (bump if a topology-driven or periodic-discovery deployment reports the same pattern).
+- **[peat-mesh#130](https://github.com/defenseunicorns/peat-mesh/issues/130)** — orthogonal Iroh-side `swarm_discovery::sender` announce-side failure on Android. Per the rc.13 retest data, the symptom is no longer observed in the reporting environment; tracking remains open pending an iroh upstream resolution.
+
 ## [0.9.0-rc.11] - 2026-05-18
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.10` → `0.9.0-rc.11`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). No wire-format change — the `IROH_DISTRIBUTION_COLLECTION` schema is identical to rc.10.
