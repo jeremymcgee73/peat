@@ -14,6 +14,59 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.11] - 2026-05-18
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.10` → `0.9.0-rc.11`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). No wire-format change — the `IROH_DISTRIBUTION_COLLECTION` schema is identical to rc.10.
+
+FIPS-posture release. Lands [ADR-060](docs/adr/060-encryption-tiers-rest-and-transit.md) (encryption tiers at-rest and in-transit) as the ecosystem-spanning crypto contract, propagates the FIPS-approved-primitives-only hard rule into `CLAUDE.md` / `SKILL.md` + every existing ecosystem doc that referenced ChaCha20-Poly1305, and consumes peat-mesh [rc.12](https://github.com/defenseunicorns/peat-mesh/releases/tag/v0.9.0-rc.12) — the matching peat-mesh release that swapped the actual primitives. Two merged PRs: [#870](https://github.com/defenseunicorns/peat/pull/870) (the ADR + amendments) and [#871](https://github.com/defenseunicorns/peat/pull/871) (the consumer-side dep bump + peat-protocol test fix).
+
+### Added
+
+- **`docs/adr/060-encryption-tiers-rest-and-transit.md`** — ADR-060, six revisions in the landing PR. Names the threat tiers T1–T6 explicitly (T4 = formation member without payload key, the load-bearing role for tactical deployments). Maps every encryption phase of the stack (discovery, connection setup, doc sync, doc at-rest, attachments, file_distributions, bypass) to its own decision. Introduces driver #6 "FIPS-approved primitives only" + §5 "Cryptographic primitives (FIPS posture)" as the authoritative ecosystem primitive list. Commits per-collection encryption posture (`Plaintext` / `FieldValues` / `FullOpacity`) with strict-monotonic strengthen-only LUB merge semantics for concurrent posture edits + a dedicated CAS-guarded `DowngradeCollectionPosture` RPC for the weakening path. Commits attachment encryption inline (§Decision §6: two-layer cipher, chunked AES-256-GCM at 64 KiB, Deterministic + Randomized nonce modes, peat-registry / peat-sim / peat-node consumer surfaces). Commits a per-collection `format_version` axis for the legacy-envelope → posture migration with explicit sidecar opt-in + a `peat-node migrate-collection` tool. Closes six [BLOCKER]/[ARCH]/[WARNING] QA-review findings inline.
+- **`CLAUDE.md` "Hard rule: FIPS-approved cryptographic primitives only"** + **`SKILL.md` "FIPS-approved cryptographic primitives only"** invariant. Both call out AES-GCM / Ed25519 / ECDH-P256-P384 / HKDF-SHA-2 / HMAC-SHA-2 / SHA-2 / rustls-under-FIPS-mode-provider as approved, explicitly non-approve ChaCha20-Poly1305, flag X25519 as marginal, and route conflicting consultations to ADR-060 §5 over the legacy ADR-006 / ADR-044 references.
+- **`supply-chain/README.md`** — durable home for the operational guidance about why each `[policy.*]` / `[[exemptions.*]]` block exists. `cargo vet` rewrites `config.toml` on every invocation (alphabetizes + strips comments), so this README is where the audit-as-crates-io footgun, the `[policy.peat]` reserved-name flow, the Slice-4.d cutover note, and the per-rc-release-bump workflow live now.
+- **`peat-protocol` re-exports** `ECDH_PUBLIC_KEY_SIZE` (33 bytes, compressed SEC1 P-256) and `ECDH_SECRET_KEY_SIZE` (32 bytes) from peat-mesh's amended security module.
+
+### Changed
+
+- **Workspace `peat-mesh` pin floor advanced rc.10 → rc.12.** rc.12 is the [peat-mesh FIPS-posture release](https://github.com/defenseunicorns/peat-mesh/releases/tag/v0.9.0-rc.12) — `EncryptionKeypair` / `EncryptionManager` / `BypassChannelSecurity` swapped from ChaCha20-Poly1305 + X25519 to AES-256-GCM + ECDH-P256 (FIPS 140-3 approved equivalents, NIST SP 800-38D + SP 800-56A) and the at-rest `Cipher` trait shipped. The floor is rc.12-specific because peat-protocol's `reexport_encryption_keypair_dh_exchange` test calls the new `ecdh::SharedSecret::raw_secret_bytes()` accessor; pinning the floor below rc.12 would let the test fail to compile on a downgrade resolve.
+- **ADR-006 (`docs/adr/006-security-authentication-authorization.md`)** amended with an explicit FIPS-posture amendment block superseding the inline ChaCha20-Poly1305 references; the latent contradiction between the existing FIPS 140-2/3 line and the prior ChaCha20-Poly1305 acceptance criterion is resolved. **ADR-044 (`docs/adr/044-e2e-encryption-key-management.md`)** amended: MLS ciphersuite selection moves from a ChaCha20/X25519 suite to `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`; the OpenMLS provider is flagged as a placeholder needing a FIPS-mode (e.g. `aws-lc-rs`-backed) provider before MLS ships. **ADR-048** flags peat-btle's ChaCha20-Poly1305 reference for the sibling-repo FIPS amendment. **ADR-049** records the 2026-05-18 FIPS amendment in its decision log (Phase 5 historical row preserved).
+- **README.md** (tech stack + cryptographic primitives table + Layer 4 prose), **`docs/ARCHITECTURE.md`** (encryption layer line), **`docs/spec/005-security.md`** + **`docs/whitepaper/10b-spec-appendix.md`** (security objectives, §7.1 algorithms, §7.3 code samples, §10.2 threats, §11 implementation requirements, Appendix A references, revision history) all updated to AES-256-GCM / ECDH-P256 + ADR-060 §5 cites. **`docs/hive-btle-slicksheet.md`** carries an amendment note flagging the peat-btle sibling-repo work.
+- **`peat-protocol/src/security/encryption.rs`** test `reexport_encryption_keypair_dh_exchange` updated: `shared.as_bytes()` → `shared.raw_secret_bytes().as_slice()` to match the new `p256::ecdh::SharedSecret` accessor. `reexport_constants_accessible` updated to assert `ECDH_PUBLIC_KEY_SIZE = 33` + `ECDH_SECRET_KEY_SIZE = 32` (replacing `X25519_PUBLIC_KEY_SIZE = 32`).
+- **`peat-protocol/Cargo.toml`** — direct `chacha20poly1305 = "0.10"` and `x25519-dalek = "2"` entries removed. Grep of `peat-protocol/{src,tests,examples,benches}` returned zero uses; they were dead manifest declarations contradicting the FIPS hard rule. Symmetric AEAD + DH primitives are re-exported from peat-mesh now.
+- **`supply-chain/config.toml`** rc.10 exemptions added (`peat`, `peat-protocol`, `peat-schema` at `0.9.0-rc.10` `safe-to-deploy`).
+- **`supply-chain/audits.toml`** publisher-trust extended: 9 new `[[trusted.*]]` blocks rooted at `user-id = 267` (Tony Arcieri / tarcieri, RustCrypto maintainer — same trust path as the ambient `aead` / `aes` / `ed25519` / `sha2`) covering the new `p256` transitive deps (`p256`, `ecdsa`, `elliptic-curve`, `primeorder`, `sec1`, `rfc6979`, `crypto-bigint`, `hybrid-array`, `der`). 2 new blocks rooted at `user-id = 6289` (Jack Grigg / str4d) for `ff` + `group`. All `safe-to-deploy`; no new exemptions.
+
+### Verification
+
+- `cargo check --workspace` clean across all features.
+- `cargo test --workspace --lib` clean.
+- `cargo test -p peat-protocol --lib` — 996/996 passed (the FIPS-updated `reexport_encryption_keypair_dh_exchange` + `reexport_constants_accessible` both green).
+- `cargo fmt --check` clean.
+- `cargo vet` clean: "Vetting Succeeded (681 fully audited, 30 exempted)" — was 670 audited pre-rc.11; +11 from the new publisher-trust blocks, no new exemptions.
+
+### Migration
+
+Default consumers depending on `peat-protocol` (or the workspace) only need to bump pins:
+
+```toml
+peat-protocol = "0.9.0-rc.11"
+peat-schema   = "=0.9.0-rc.11"  # peat-protocol pins peat-schema as `=`
+peat-mesh     = ">=0.9.0-rc.12, <0.9.1"  # via peat-protocol's workspace dep
+```
+
+The peat-mesh primitive swap is **BREAKING at the wire** (peers on the previous primitives cannot interoperate with peers on the new ones) and **BREAKING at the API** (`EncryptionKeypair::public_key_bytes` is now `[u8; 33]`, `from_secret_bytes` returns `Result<Self, SecurityError>`). See [peat-mesh CHANGELOG entry for 0.9.0-rc.12](https://github.com/defenseunicorns/peat-mesh/blob/main/CHANGELOG.md#090-rc12---2026-05-18) for the full migration breakdown — peat-protocol consumers that didn't touch those surfaces directly (the common case) are unaffected.
+
+### Tracked follow-ups (not in this release)
+
+- **peat-registry `RegistryClient` adapter** for ADR-060 §6.5 (encrypt-on-push / decrypt-on-pull adapter + plaintext-offset checkpoint semantics). Needs sibling-repo maintainer ack before the adapter shape is final.
+- **peat-sim `create_blob_from_bytes` signature change** for ADR-060 §6.6. Same coordination path.
+- **peat-node `SendAttachments` proto `encryption_mode` extension** for ADR-060 §6.4 + Phase E.
+- **FIPS-mode rustls/Iroh provider swap** — Iroh's quinn/rustls defaults to non-FIPS-validated `ring`; switching to `aws-lc-rs` is assigned to peat-mesh as the canonical Iroh consumer.
+- **peat-node-side `Cipher` plumb-through** — peat-node already ships `StoreCipher` (AES-256-GCM, FIPS-approved); a follow-up consumer PR will plumb that into peat-mesh's `AutomergeBackendConfig.cipher` to exercise ADR-060 Phase A end-to-end.
+- **rPi-class perf evidence** for the AEAD + DH swap on ARM-without-crypto-extensions targets — [peat-mesh#126](https://github.com/defenseunicorns/peat-mesh/issues/126).
+- **`blake3` → SHA-256** for identity fingerprinting in peat-btle — NodeId-derivation blast radius warrants its own design pass.
+
 ## [0.9.0-rc.10] - 2026-05-17
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.9` → `0.9.0-rc.10`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). No wire-format change — the `IROH_DISTRIBUTION_COLLECTION` schema is identical to rc.9.

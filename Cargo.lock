@@ -3831,7 +3831,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peat"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 
 [[package]]
 name = "peat-btle"
@@ -3872,7 +3872,7 @@ dependencies = [
 
 [[package]]
 name = "peat-discovery"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3964,7 +3964,7 @@ dependencies = [
 
 [[package]]
 name = "peat-persistence"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3989,7 +3989,7 @@ dependencies = [
 
 [[package]]
 name = "peat-protocol"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3997,7 +3997,6 @@ dependencies = [
  "automerge",
  "base64",
  "bitflags 2.11.0",
- "chacha20poly1305",
  "chrono",
  "criterion",
  "dotenvy",
@@ -4034,12 +4033,11 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "x25519-dalek",
 ]
 
 [[package]]
 name = "peat-quickstart"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -4054,7 +4052,7 @@ dependencies = [
 
 [[package]]
 name = "peat-schema"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4071,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "peat-tak-bridge"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4092,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "peat-transport"
-version = "0.9.0-rc.10"
+version = "0.9.0-rc.11"
 dependencies = [
  "anyhow",
  "async-trait",
