@@ -93,6 +93,10 @@ criteria = "safe-to-deploy"
 version = "0.9.0-rc.11"
 criteria = "safe-to-deploy"
 
+[[exemptions.peat]]
+version = "0.9.0-rc.12"
+criteria = "safe-to-deploy"
+
 [[exemptions.peat-btle]]
 version = "0.4.0"
 criteria = "safe-to-deploy"
@@ -141,6 +145,10 @@ criteria = "safe-to-deploy"
 version = "0.9.0-rc.11"
 criteria = "safe-to-deploy"
 
+[[exemptions.peat-protocol]]
+version = "0.9.0-rc.12"
+criteria = "safe-to-deploy"
+
 [[exemptions.peat-schema]]
 version = "0.9.0-rc.1"
 criteria = "safe-to-deploy"
@@ -183,6 +191,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.peat-schema]]
 version = "0.9.0-rc.11"
+criteria = "safe-to-deploy"
+
+[[exemptions.peat-schema]]
+version = "0.9.0-rc.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.pin-project]]
