@@ -5,13 +5,13 @@ Internet-Draft                                              K. Plummer
 Intended Status: Standards Track                       Defense Unicorns
                                                            December 2025
 
-      Hierarchical Intelligence for Versatile Entities (Peat) Protocol
+                            Peat Protocol
                         draft-peat-protocol-00
 ```
 
 ## Abstract
 
-This document specifies the Hierarchical Intelligence for Versatile Entities (Peat) Protocol, a distributed coordination protocol for autonomous systems operating in constrained, partition-prone networks. Peat enables scalable coordination through CRDT-based hierarchical capability composition, achieving O(n log n) message complexity while maintaining eventual consistency guarantees.
+This document specifies the Peat Protocol, a distributed coordination protocol for autonomous systems operating in constrained, partition-prone networks. Peat enables scalable coordination through CRDT-based hierarchical capability composition, achieving O(n log n) message complexity while maintaining eventual consistency guarantees.
 
 ## Status of This Memo
 
@@ -70,7 +70,7 @@ Peat addresses these challenges through:
 |------|--------|
 | Message complexity | O(n log n) vs O(n²) baseline |
 | Bandwidth reduction | 95%+ via differential updates |
-| Priority 1 latency | < 5 seconds through 4-level hierarchy |
+| Priority 1 latency | < 5 seconds through the 3-tier aggregation hierarchy (squad → platoon → company) |
 | Scale | 100+ nodes validated, 1000+ architected |
 | Partition tolerance | Full operation during network splits |
 
@@ -102,7 +102,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 | Term | Definition |
 |------|------------|
 | **Node** | A single platform (UAV, UGV, sensor, soldier system) participating in the Peat mesh |
-| **Cell** | A bounded group of nodes (typically 5-8) with a single elected leader |
+| **Cell** | A bounded group of nodes (4–11 members, default maximum 8; see §7.1) with a single elected leader |
 | **Beacon** | Discovery broadcast message advertising node presence and capabilities |
 | **Capability** | A discrete function a node or cell can perform (sense, compute, relay, etc.) |
 | **Composition** | The process of aggregating individual capabilities into team capabilities |
@@ -466,6 +466,8 @@ When concurrent updates conflict:
 3. **OR-Set fields**: Observed-remove semantics (see CRDT literature)
 4. **Tie-breaking**: Lexicographically lowest node ID wins
 
+Tombstone lifecycle for OR-Set fields (when tombstones may be garbage-collected, how long they MUST be retained across partitions) is implementation-defined in this revision; see Peat ADR-034 for the design discussion that informs implementations.
+
 ### 9.4 Consistency Guarantees
 
 Peat provides **eventual consistency**:
@@ -527,7 +529,9 @@ Implementations SHOULD provide:
 
 - Node identity authentication (PKI/certificates)
 - Operator credential verification
-- Message integrity (signatures)
+- Message integrity (signatures using Ed25519 or ECDSA-P256/P384 per Peat ADR-060 §5)
+
+Peat ADR-044 specifies the end-to-end encryption and key-management model (including the MLS ciphersuite selection — FIPS-aligned suites only); Peat ADR-048 specifies the tactical membership-certificate and enrollment model that underpins node identity in disconnected and partitioned environments.
 
 ### 11.2 Authorization
 
@@ -535,15 +539,18 @@ Implementations SHOULD enforce:
 
 - Role-based access control for commands
 - Authority level requirements for ROE
-- Cell membership authorization
+- Cell membership authorization, with membership claims bound to the certificates defined in Peat ADR-048
 
 ### 11.3 Confidentiality
 
-For classified environments, implementations SHOULD provide:
+For classified or otherwise sensitive environments, implementations SHOULD provide:
 
-- Message encryption (ChaCha20-Poly1305 RECOMMENDED)
-- Key management (X25519 RECOMMENDED)
-- Forward secrecy
+- Message encryption using a FIPS 140-3 approved AEAD; AES-256-GCM RECOMMENDED (NIST SP 800-38D)
+- Key agreement using ECDH on NIST curves P-256 or P-384 (NIST SP 800-56A); X25519 MAY be used only where module-level FIPS coverage has been independently verified
+- Key derivation using HKDF-SHA-256 or HKDF-SHA-384 (NIST SP 800-56C / SP 800-108)
+- Forward secrecy via ephemeral key agreement per session
+
+The complete normative list of approved cryptographic primitives — including AEAD, signatures, key agreement, KDF, MAC, hashes, and the TLS/QUIC FIPS-mode provider requirement — is defined in Peat ADR-060 §5 "Cryptographic primitives (FIPS posture)". Implementations MUST NOT introduce non-approved primitives (e.g., ChaCha20-Poly1305, deterministic or order-preserving schemes) without an explicit superseding decision recorded in that ADR.
 
 ### 11.4 Denial of Service
 
@@ -551,7 +558,11 @@ Implementations SHOULD mitigate:
 
 - Beacon flooding (rate limiting)
 - Invalid capability claims (validation)
-- Leader election manipulation (deterministic scoring)
+- Leader election manipulation (deterministic scoring; membership-certificate verification per ADR-048 before a node is admitted as an election candidate)
+
+### 11.5 Compromised-Node Response
+
+When a node is determined to be compromised (e.g., by observed misbehaviour, lost device, or out-of-band intelligence), implementations SHOULD support coordinated ejection from the mesh: revocation of the node's membership claims, propagation of the revocation through the OR-Set membership state, and exclusion from future leader-election candidacy. The detection criteria, quorum semantics for revocation, and recovery procedures are specified in Peat ADR-056; this revision of the protocol leaves them informative pending normative inclusion in a future draft.
 
 ---
 
@@ -580,6 +591,17 @@ Future versions may request:
 - Shapiro, M., Preguiça, N., Baquero, C., and M. Zawirski, "Conflict-free Replicated Data Types", SSS 2011.
 - Kleppmann, M., "Making Sense of Stream Processing", O'Reilly Media, 2016.
 - NATO STANAG 4586, "Standard Interfaces of UAV Control System (UCS) for NATO UAV Interoperability".
+- NIST FIPS 140-3, "Security Requirements for Cryptographic Modules", March 2019.
+- NIST FIPS 186-5, "Digital Signature Standard (DSS)", February 2023.
+- NIST FIPS 198-1, "The Keyed-Hash Message Authentication Code (HMAC)", July 2008.
+- NIST SP 800-38D, "Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC", November 2007.
+- NIST SP 800-56A Rev. 3, "Recommendation for Pair-Wise Key-Establishment Schemes Using Discrete Logarithm Cryptography", April 2018.
+- NIST SP 800-56C Rev. 2, "Recommendation for Key-Derivation Methods in Key-Establishment Schemes", August 2020.
+- Peat ADR-034, "Record Deletion and Tombstone Management".
+- Peat ADR-044, "End-to-End Encryption and Key Management".
+- Peat ADR-048, "Membership Certificates and Tactical Trust".
+- Peat ADR-056, "Compromised Node Ejection".
+- Peat ADR-060, "Encryption Tiers — At-Rest and In-Transit Across the Peat Stack". *(authoritative FIPS primitive list — see §5)*
 
 ---
 
