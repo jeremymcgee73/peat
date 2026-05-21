@@ -56,6 +56,23 @@ static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<GlobalRef>>> =
 static DOCUMENT_SUBSCRIPTION_ACTIVE: LazyLock<std::sync::atomic::AtomicBool> =
     LazyLock::new(|| std::sync::atomic::AtomicBool::new(false));
 
+// peat#885 fault-injection flag, test-only. When armed via
+// `forceStoreErrorForTestingJni`, the next `getDocumentJni` call
+// short-circuits to the Err branch (throws RuntimeException) without
+// touching the underlying store. Self-clears on consumption — one
+// trigger per arm. Process-wide rather than per-handle because tests
+// typically run sequentially on a single instrumented runner; if
+// concurrent multi-handle fault injection is ever needed, promote
+// to a `HashMap<handle, AtomicBool>` keyed by node handle.
+//
+// Always present in non-test builds (the function name's "ForTesting"
+// suffix is the API marker; calling it from production code does no
+// harm beyond setting a flag that a non-test code path never reads
+// because production never calls forceStoreErrorForTestingJni).
+#[cfg(feature = "sync")]
+static FORCE_STORE_ERROR_FOR_TESTING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ADR-059 Slice 1.b.2: outbound BLE frame callback. The Kotlin listener
 // receives `onFrame(transportId, collection, bytes)` for every encoded
 // document the BLE translator produces in `TransportManager`'s fan-out.
@@ -6703,6 +6720,17 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
     if handle == 0 {
         return std::ptr::null_mut();
     }
+    // peat#885 fault-injection short-circuit, consumed before any
+    // store interaction. `swap(false, ...)` is one-shot — the next
+    // call returns to the normal read path. Test-only by API
+    // contract; production callers never arm the flag.
+    if FORCE_STORE_ERROR_FOR_TESTING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let _ = env.throw_new(
+            "java/lang/RuntimeException",
+            "getDocumentJni: forced store error (test fault injection)",
+        );
+        return std::ptr::null_mut();
+    }
     let collection_str: String = match env.get_string(&collection) {
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
@@ -6743,6 +6771,33 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
             std::ptr::null_mut()
         }
     }
+}
+
+/// JNI: Test-only fault injection. Arms a one-shot flag so the next
+/// `getDocumentJni` call short-circuits to the Err branch (throws
+/// RuntimeException) without touching the underlying store. Self-
+/// clears on consumption.
+///
+/// Exists so consumers can write a deterministic regression test for
+/// the `getDocumentJni` `Err(_) → env.throw_new` contract without
+/// depending on Automerge LRU eviction behavior. See peat#885 /
+/// peat-mesh#138 M4b carryover.
+///
+/// Returns 1 on success, 0 if the handle is invalid.
+///
+/// Kotlin signature: external fun forceStoreErrorForTestingJni(handle: Long): Boolean
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_forceStoreErrorForTestingJni(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    FORCE_STORE_ERROR_FOR_TESTING.store(true, std::sync::atomic::Ordering::SeqCst);
+    1
 }
 
 /// JNI: Get connected peer IDs as a JSON array
@@ -8972,6 +9027,13 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
+            name: "forceStoreErrorForTestingJni".into(),
+            sig: "(J)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_forceStoreErrorForTestingJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
             name: "startSyncJni".into(),
             sig: "(J)Z".into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_startSyncJni as *mut c_void,
@@ -9403,6 +9465,15 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
             }
         },
         Err(_) => {
+            // CRITICAL: clear the pending ClassNotFoundException
+            // before any further JNI call. Without this, the very
+            // next find_class (for PeatJni at line 9418) detects a
+            // pending exception and the JNI runtime aborts the
+            // process with SIGABRT. Consumers that don't ship a
+            // PeerEventManager (anything other than peat-atak-plugin)
+            // crash at System.loadLibrary("peat_ffi"). Surfaced by
+            // peat-mesh#145 / peat#887.
+            let _ = env.exception_clear();
             #[cfg(target_os = "android")]
             android_log(
                 "JNI_OnLoad: PeerEventManager class not found (OK if loading before class init)",
@@ -9487,6 +9558,13 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "getDocumentJni".into(),
                     sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getDocumentJni as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "forceStoreErrorForTestingJni".into(),
+                    sig: "(J)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_forceStoreErrorForTestingJni
+                        as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
@@ -9700,6 +9778,11 @@ fn notify_peer_event(method_name: &str, peer_id: &str, reason: Option<&str>) {
                     android_log("notify_peer_event: PeerEventManager class found and cached!");
                 }
             } else {
+                // Clear the pending ClassNotFoundException for the
+                // same reason as the JNI_OnLoad branch above
+                // (peat#887). A consumer without PeerEventManager
+                // is fine — peer events just don't get notified.
+                let _ = env.exception_clear();
                 #[cfg(target_os = "android")]
                 android_log("notify_peer_event: PeerEventManager class not found");
             }

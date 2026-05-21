@@ -12,7 +12,20 @@ group = "com.defenseunicorns"
 // `getDocumentJni`. No removed or renamed symbols. Pre-1.0 patch
 // bump signals additive-only; bump to 0.2.x when the next breaking
 // JNI change lands.
-version = "0.1.1"
+//
+// 0.1.2 (was 0.1.1): patch release closing peat#885 + peat#886 +
+// peat#887. Additive across the JNI surface (forceStoreErrorForTestingJni)
+// AND the AAR contract (PeatJni.kt + PeerEventManager.kt now shipped
+// in the artifact). The Rust-side env.exception_clear() fix removes
+// the SIGABRT consumers without a PeerEventManager were hitting
+// at System.loadLibrary.
+//
+// Consumers should drop hand-rolled PeatJni / PeerEventManager
+// declarations on bump (the AAR's classpath copies replace them
+// canonically). peat-mesh#145 was the first consumer to take this
+// path. peat-atak-plugin can migrate at its own pace; classpath
+// precedence keeps both copies working until then.
+version = "0.1.2"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"
@@ -50,6 +63,25 @@ android {
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
+            // Canonical Kotlin bindings shipped in the AAR (peat#886).
+            // Before 0.1.2, consumers had to hand-roll their own
+            // PeatJni declarations (peat-atak-plugin had one;
+            // peat-mesh#145's M4b had another). Divergence between
+            // those copies and peat-ffi's actual extern fn surface
+            // didn't surface until instrumented-test runtime — the
+            // foot-gun peat-mesh#145 QA called out as the binding-
+            // drift WARNING. 0.1.2 ships a canonical copy here so
+            // every consumer imports the same source of truth.
+            java.srcDir("src/main/kotlin")
+        }
+        getByName("androidTest") {
+            // Instrumented tests live alongside the AAR sources so
+            // peat-ffi's JNI surface gets surface-tier coverage in
+            // its own repo (not just downstream in peat-mesh).
+            // Driven by ci.yml's android-test job on the
+            // peat-arm64-linux-gb10 self-hosted runner; mirrors
+            // peat-mesh#145's pattern. peat#888 / peat#885.
+            java.srcDir("src/androidTest/kotlin")
         }
     }
 
@@ -64,6 +96,13 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.annotation:annotation:1.7.1")
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+
+    // Instrumented tests (peat#888, surface-tier coverage of the
+    // forceStoreErrorForTestingJni / getDocumentJni throw contract).
+    // Runs on the self-hosted peat-arm64-linux-gb10 runner via the
+    // new android-test workflow.
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
 
 // Build native libraries using cargo from the workspace root

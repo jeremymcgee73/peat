@@ -269,3 +269,126 @@ jobs:
 
       - name: Run cargo-vet
         run: cargo vet
+
+  android-test:
+    # peat-ffi surface-tier instrumented tests (peat#885 / peat#888).
+    # Runs on the peat-arm64-linux-gb10 self-hosted runner with a real
+    # arm64 Android device attached via adb — same physical runner as
+    # peat-mesh#145's android-test. NDK, SDK, JDK, and adb are
+    # assumed pre-installed on the host.
+    #
+    # Scope: locks in JNI-bridge contracts that the in-crate Rust unit
+    # tests can't cover (env.throw_new ↔ Kotlin RuntimeException
+    # propagation, RegisterNatives, System.loadLibrary survival
+    # without consumer-supplied PeerEventManager). peat-mesh#145
+    # carries the broader two-backend sync surface coverage on the
+    # consumer side.
+    name: peat-ffi Android Surface Test
+    runs-on: peat-arm64-linux-gb10
+    env:
+      ANDROID_HOME: /home/kit/Android/Sdk
+      ANDROID_SDK_ROOT: /home/kit/Android/Sdk
+      ANDROID_NDK_HOME: /home/kit/Android/Sdk/ndk/android-ndk-r27d
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export Android tools to PATH
+        run: |
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_PATH"
+
+      - name: Install protoc
+        # peat-schema's build script invokes `prost-build`, which shells
+        # out to `protoc`. Hosted ubuntu-latest runners install it via
+        # apt-get, but the self-hosted Arch runner has no apt. Pulling
+        # the pinned upstream release binary is portable across runner
+        # distros and needs no sudo. peat#888 first surfaced this gap.
+        run: |
+          set -euo pipefail
+          PROTOC_VERSION=28.3
+          # SHA256 of protoc-28.3-linux-aarch_64.zip from the upstream
+          # release: https://github.com/protocolbuffers/protobuf/releases/tag/v28.3
+          # Pinned to integrity-protect the supply chain. Bump alongside
+          # PROTOC_VERSION when the build script needs a newer protoc.
+          PROTOC_SHA256=1de522032a8b194002fe35cab86d747848238b5e4de4f99648372079f5b46f9a
+          PROTOC_DIR="$RUNNER_TEMP/protoc-$PROTOC_VERSION"
+          if [ ! -x "$PROTOC_DIR/bin/protoc" ]; then
+            mkdir -p "$PROTOC_DIR"
+            curl -fsSL -o "$RUNNER_TEMP/protoc.zip" \
+              "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-aarch_64.zip"
+            echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
+            unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$PROTOC_DIR"
+          fi
+          echo "$PROTOC_DIR/bin" >> "$GITHUB_PATH"
+          echo "PROTOC=$PROTOC_DIR/bin/protoc" >> "$GITHUB_ENV"
+          "$PROTOC_DIR/bin/protoc" --version
+
+      - name: Set up Rust (with Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # arm64 device + the AAR's other two ABIs for the buildNativeLibs
+          # task. The Gradle task builds all three by design (AAR ships
+          # arm64-v8a + armeabi-v7a + x86_64); even though the device
+          # only loads arm64-v8a, the buildNativeLibs script fails fast
+          # if any target rustup isn't installed.
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Wait for adb device
+        timeout-minutes: 1
+        run: |
+          adb start-server
+          adb wait-for-device
+          adb devices -l
+          DEVICE_COUNT=$(adb devices | awk 'NR>1 && /device$/ {n++} END{print n+0}')
+          if [ "$DEVICE_COUNT" -ne 1 ]; then
+            echo "expected exactly 1 attached device, got $DEVICE_COUNT" >&2
+            exit 1
+          fi
+
+      - name: Clear device logcat buffer
+        run: adb logcat -c
+
+      - name: Build native libraries
+        working-directory: peat-ffi/android
+        # connectedCheck packages the test APK from src/main/jniLibs/,
+        # which is populated by this task. The standard `buildAar`
+        # task chain includes this dependency; connectedCheck doesn't,
+        # so we run it explicitly.
+        run: ./gradlew buildNativeLibs
+
+      - name: Run instrumented tests on attached device
+        working-directory: peat-ffi/android
+        # connectedCheck → connectedDebugAndroidTest builds the test
+        # APK + main APK, installs both via adb, runs the
+        # androidTest source set via AndroidJUnitRunner, collects
+        # results into build/outputs/androidTest-results/.
+        run: ./gradlew connectedCheck
+
+      - name: Capture logcat
+        if: always()
+        run: |
+          mkdir -p peat-ffi/android/build/logcat
+          adb logcat -d > peat-ffi/android/build/logcat/full.txt
+          adb logcat -d \
+            *:E \
+            PeatRust:V \
+            DEBUG:V \
+            AndroidRuntime:V \
+            TestRunner:V \
+            > peat-ffi/android/build/logcat/peat-and-crash.txt || true
+          echo "--- error-level + peat-tagged logcat (tail 200) ---"
+          tail -n 200 peat-ffi/android/build/logcat/peat-and-crash.txt
+
+      - name: Upload logcat + test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: peat-ffi-android-test-artifacts-${{ github.run_id }}
+          path: |
+            peat-ffi/android/build/logcat/
+            peat-ffi/android/build/reports/androidTests/
+            peat-ffi/android/build/outputs/androidTest-results/
+          if-no-files-found: warn
+          retention-days: 7
