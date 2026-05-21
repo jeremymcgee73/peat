@@ -14,6 +14,12 @@ path = "src/main.rs"
 [dependencies]
 peat-protocol = { path = "../../peat-protocol", default-features = false, features = ["automerge-backend"] }
 peat-schema = { path = "../../peat-schema" }
+# mDNS discovery moved to peat-mesh under peat#898 — the previous
+# `peat_protocol::discovery::peer::MdnsDiscovery` was a duplicate of
+# `peat_mesh::discovery::MdnsDiscovery` and violated the transport-
+# agnosticism rule in `peat/SKILL.md`. Resolved via the workspace
+# `[patch.crates-io]` to the in-flight peat-mesh PR until release.
+peat-mesh = { workspace = true }
 
 tokio = { workspace = true }
 anyhow = { workspace = true }

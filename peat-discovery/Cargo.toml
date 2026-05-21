@@ -17,7 +17,9 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 
 # Discovery-specific dependencies
-mdns-sd = "0.11"
+# Note: `mdns-sd` removed under peat#898 (mDNS module retired in favor of
+# peat-mesh::discovery::MdnsDiscovery; per SKILL.md transport-agnosticism
+# rule, IP-stack-specific discovery code lives in peat-mesh, not here).
 toml = "0.8"
 
 [dev-dependencies]

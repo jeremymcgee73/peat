@@ -14,6 +14,16 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+### Changed
+
+- **mDNS service type changed: `_peat-node._tcp.local.` → `_peat._udp.local.`** ([#898](https://github.com/defenseunicorns/peat/issues/898), [#900](https://github.com/defenseunicorns/peat/pull/900)). Phase 1 of the mDNS-discovery consolidation retires three divergent `MdnsDiscovery` implementations (one in `peat-protocol`, one in the `peat-discovery` workspace subcrate, one in the `peat-mesh` sibling) down to peat-mesh's canonical, transport-agnostic version. The peat-mesh implementation has always used `_peat._udp.local.`; quickstart and any other in-tree consumers now align on that string. **Wire-visible**: a node running the post-PR quickstart binary will not discover — and will not be discovered by — any node still running a pre-PR binary. Operators of mixed-version fleets should use static `--peer NODE_ID@ADDR` until all nodes are upgraded.
+
+### Removed
+
+- **`peat_protocol::discovery::peer::MdnsDiscovery`** and **`peat_protocol::discovery::peer::RelayDiscovery`** (the latter was vestigial — its `start()` body was a `// TODO` and no in-repo caller existed). `DiscoveryStrategy`, `StaticDiscovery`, `DiscoveryManager`, and the `PeerInfo` re-export stay in place — only the IP-stack-specific strategy implementations moved.
+- **`peat_discovery::mdns` module** (workspace subcrate). The crate had no in-repo consumers of its `MdnsDiscovery`; the module + `mdns-sd` dep are removed. `HybridDiscovery` and `StaticDiscovery` are unaffected.
+- **`mdns-sd` dependency** dropped from `peat-protocol/Cargo.toml` (no remaining call sites) and from `peat-discovery/Cargo.toml`.
+
 ## [0.9.0-rc.12] - 2026-05-19
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.11` → `0.9.0-rc.12`. `peat-ffi` unchanged at `0.2.3` (no JNI ABI surface change). No wire-format change.

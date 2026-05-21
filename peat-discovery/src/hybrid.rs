@@ -12,15 +12,11 @@ use tracing::{debug, info, warn};
 ///
 /// Example usage:
 /// ```no_run
-/// use peat_discovery::{HybridDiscovery, MdnsDiscovery, StaticDiscovery};
+/// use peat_discovery::{HybridDiscovery, StaticDiscovery};
 /// use std::path::Path;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut discovery = HybridDiscovery::new();
-///
-/// // Add mDNS for local network discovery
-/// let mdns = MdnsDiscovery::new()?;
-/// discovery.add_strategy("mdns", Box::new(mdns));
 ///
 /// // Add static config for pre-configured peers
 /// let static_disc = StaticDiscovery::from_file(Path::new("config/peers.toml"))?;
@@ -34,6 +30,10 @@ use tracing::{debug, info, warn};
 /// # Ok(())
 /// # }
 /// ```
+///
+/// For mDNS-based local network discovery, use `peat_mesh::discovery::MdnsDiscovery`
+/// from the `peat-mesh` sibling crate — the duplicate that previously lived in
+/// `peat_discovery::MdnsDiscovery` was removed under peat#898 (mDNS consolidation).
 pub struct HybridDiscovery {
     strategies: HashMap<String, Box<dyn DiscoveryStrategy>>,
     combined_peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
