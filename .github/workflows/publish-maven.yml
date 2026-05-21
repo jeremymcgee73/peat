@@ -1,15 +1,38 @@
 name: Publish peat-ffi to Maven Central
 
+# Tag-triggered release pipeline for peat-ffi's Android AAR.
+#
+# On push of a `peat-ffi-v*` tag, this workflow:
+#   1. Builds the AAR for arm64-v8a + armeabi-v7a + x86_64.
+#   2. Signs + publishes `com.defenseunicorns:peat-ffi:<version>` to
+#      Maven Central.
+#   3. Creates a GitHub Release for the tag with a placeholder body
+#      (maintainer can flesh out the release notes after publish).
+#
+# Tag format: `peat-ffi-v<maven-version>` (e.g. `peat-ffi-v0.1.1`).
+# The version is parsed off the tag and asserted to match
+# `peat-ffi/android/build.gradle.kts:version` so a typo'd tag doesn't
+# publish whatever the working tree happens to contain.
+#
+# peat-ffi's Maven cadence is intentionally decoupled from the
+# workspace crates.io release stream (see docs/RELEASING.md "Two
+# distribution channels, independent cadences"). The workspace
+# `release.yml` handles `v*` tags for peat-schema / peat-protocol;
+# this workflow handles `peat-ffi-v*` tags for the AAR.
+#
+# Prerequisites:
+#   - `MAVEN_CENTRAL_USER` / `MAVEN_CENTRAL_TOKEN` repository secrets
+#     (Sonatype OSSRH credentials).
+#   - `GPG_SECRET_KEY` / `GPG_SECRET_PASSPHRASE` repository secrets
+#     for in-memory signing.
+
 permissions:
-  contents: read
+  contents: write   # for `gh release create`
 
 on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: 'Git ref to publish (tag or branch)'
-        required: true
-        default: 'main'
+  push:
+    tags:
+      - 'peat-ffi-v*'
 
 jobs:
   publish-maven:
@@ -17,8 +40,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.ref }}
+
+      - name: Parse + verify version
+        # Tag → expected Maven version. The build.gradle.kts version
+        # MUST match — catches "bumped Cargo but forgot Maven" or
+        # "tagged the wrong commit" at workflow time instead of at
+        # Maven Central rejection time.
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Strip the `peat-ffi-v` prefix; `peat-ffi-v0.1.1` → `0.1.1`.
+          EXPECTED="${TAG#peat-ffi-v}"
+          if [ "$TAG" = "$EXPECTED" ]; then
+            echo "tag '$TAG' does not match expected 'peat-ffi-v<version>' format" >&2
+            exit 1
+          fi
+          ACTUAL=$(grep -E '^version\s*=\s*"' peat-ffi/android/build.gradle.kts \
+            | head -1 \
+            | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "tag version '$EXPECTED' does not match peat-ffi/android/build.gradle.kts version '$ACTUAL'" >&2
+            echo "bump the gradle version before tagging, or retag at the right commit" >&2
+            exit 1
+          fi
+          echo "tag=$TAG"        >> "$GITHUB_OUTPUT"
+          echo "version=$EXPECTED" >> "$GITHUB_OUTPUT"
+          echo "publishing peat-ffi $EXPECTED from tag $TAG"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v4
@@ -58,3 +106,29 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SECRET_PASSPHRASE }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        # Idempotent: if a release already exists for this tag (e.g.
+        # maintainer drafted it ahead of the publish), `gh release edit`
+        # updates the title in place. Otherwise create from scratch.
+        # Body is intentionally minimal — the maintainer fleshes it
+        # out post-publish with the changelog entries. Mirrors what
+        # release.yml does for workspace tags.
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "peat-ffi $VERSION (Maven AAR)"
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "peat-ffi $VERSION (Maven AAR)" \
+              --notes "Published \`com.defenseunicorns:peat-ffi:$VERSION\` to Maven Central.
+
+Maintainer: edit this release to add changelog entries, breaking-change notes, and consumer migration guidance."
+          fi

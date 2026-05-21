@@ -13,7 +13,7 @@ Only two crates from this workspace go to crates.io:
 
 All other workspace members (`peat-transport`, `peat-persistence`, `peat-discovery`, `peat-ffi`, `examples/*`) share the workspace version but stay internal. They are not published.
 
-`peat-ffi` publishes to **Maven Central** on its own cadence via `.github/workflows/publish-maven.yml`; it is decoupled from the crates.io release flow.
+`peat-ffi` publishes to **Maven Central** on its own cadence via `.github/workflows/publish-maven.yml`; it is decoupled from the crates.io release flow. The workflow fires on push of a `peat-ffi-v*` tag (see "[Cutting a peat-ffi release](#cutting-a-peat-ffi-release)" below).
 
 ## Versioning
 
@@ -116,6 +116,29 @@ git push origin v0.9.0-rc.1
 ```
 
 Then watch the workflow at `gh run watch` or in the Actions tab. On success, the crates appear on crates.io and the GitHub Release lands automatically.
+
+### Cutting a peat-ffi release
+
+peat-ffi's Maven AAR is released independently of the crates.io workspace cadence, on its own tag stream. The flow:
+
+1. **Bump versions in a PR**:
+   - `peat-ffi/android/build.gradle.kts` — the Maven AAR version (e.g. `0.1.0` → `0.1.1`)
+   - `peat-ffi/Cargo.toml` — the crate version (e.g. `0.2.3` → `0.2.4`). Independent; only matters for path-dep consumers.
+
+2. **Merge the bump PR** to `main` via the normal squash-merge flow.
+
+3. **Tag the merge commit** with `peat-ffi-v<maven-version>` and push:
+
+   ```bash
+   git tag -a peat-ffi-v0.1.1 <merge-commit> -m "peat-ffi v0.1.1 (Maven AAR) ..."
+   git push origin peat-ffi-v0.1.1
+   ```
+
+4. The `publish-maven.yml` workflow fires on the tag push, parses the version off the tag, verifies it matches `build.gradle.kts:version`, builds the AAR for arm64-v8a + armeabi-v7a + x86_64, publishes to Maven Central, and creates a placeholder GitHub Release for the tag.
+
+5. **Flesh out the GitHub Release notes** (the workflow leaves a placeholder body for the maintainer to fill in).
+
+The tag is the canonical version reference. No equivalent of the `[Unreleased]` → `[<version>]` CHANGELOG dance — peat-ffi changes aren't tracked in the workspace CHANGELOG.md.
 
 ### Manual publish (fallback)
 
