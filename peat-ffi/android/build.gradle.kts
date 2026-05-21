@@ -6,7 +6,13 @@ plugins {
 }
 
 group = "com.defenseunicorns"
-version = "0.1.0"
+// 0.1.1 (was 0.1.0): first publish since the initial Maven Central
+// drop. Additive — two new JNI methods added in peat-ffi 0.2.4
+// (peat#879 / peat-mesh#138 M4): `endpointSocketAddrJni`,
+// `getDocumentJni`. No removed or renamed symbols. Pre-1.0 patch
+// bump signals additive-only; bump to 0.2.x when the next breaking
+// JNI change lands.
+version = "0.1.1"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"
