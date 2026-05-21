@@ -580,6 +580,25 @@ async fn test_mdns_zero_config_discovery() {
     // transport.connect_peer feeds to quinn → sendmsg EINVAL → no connection
     // ever forms. The original mDNS code hard-coded port 0 under the (wrong)
     // assumption that Iroh dials by endpoint_id alone.
+    //
+    // Pin peat#894: advertised IP must be non-unspecified (not 0.0.0.0 / ::)
+    // and must come from the Iroh-bound socket, not the 8.8.8.8 route
+    // heuristic. The pre-fix code published whichever interface IP would
+    // route to 8.8.8.8 regardless of the actual bind — so `--bind 127.0.0.1`
+    // advertised the LAN IP and remote peers dialed an IP the QUIC listener
+    // wasn't bound to. With the fix, the advertised IP appears in the
+    // node's own endpoint.addr().addrs (since both nodes here are on the
+    // same host, A's bound IPs are the universe of valid advertised IPs).
+    let a_bound_ips: std::collections::HashSet<std::net::IpAddr> = transport_a
+        .endpoint()
+        .addr()
+        .addrs
+        .iter()
+        .filter_map(|a| match a {
+            iroh::TransportAddr::Ip(s) => Some(s.ip()),
+            _ => None,
+        })
+        .collect();
     for peer in peers_a.iter().chain(peers_b.iter()) {
         for addr in &peer.addresses {
             let sock: std::net::SocketAddr = addr.parse().unwrap_or_else(|e| {
@@ -589,6 +608,18 @@ async fn test_mdns_zero_config_discovery() {
                 sock.port() != 0,
                 "mDNS-advertised port must be non-zero, got {addr:?} for peer {:?}",
                 peer.name
+            );
+            assert!(
+                !sock.ip().is_unspecified(),
+                "mDNS-advertised IP must not be unspecified (0.0.0.0/::), got {addr:?} for peer {:?}",
+                peer.name
+            );
+            assert!(
+                a_bound_ips.contains(&sock.ip()),
+                "mDNS-advertised IP {} is not in this host's bound set {:?} — \
+                 fix may have regressed to a route-heuristic IP that doesn't match the actual bind",
+                sock.ip(),
+                a_bound_ips
             );
         }
     }

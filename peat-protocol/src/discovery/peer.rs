@@ -182,18 +182,6 @@ impl MdnsDiscovery {
         })
     }
 
-    /// Get local IP address for mDNS advertisement
-    fn get_local_ip() -> anyhow::Result<String> {
-        use std::net::UdpSocket;
-
-        // Connect to a public DNS server to determine our local interface IP
-        // This doesn't actually send any data, just determines routing
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect("8.8.8.8:80")?;
-        let addr = socket.local_addr()?;
-        Ok(addr.ip().to_string())
-    }
-
     /// Stop mDNS discovery and unregister service
     ///
     /// This gracefully shuts down the mDNS daemon, unregistering the service
@@ -222,34 +210,49 @@ impl DiscoveryStrategy for MdnsDiscovery {
         let endpoint_id = self.endpoint.id();
         let node_id_hex = hex::encode(endpoint_id.as_bytes());
 
-        // Publish the actual bound UDP port. Consumers reconstruct a
+        // Both the advertised IP and the port are drawn from the actual
+        // Iroh-bound socket, so they always agree. Consumers reconstruct a
         // SocketAddr via `format!("{ip}:{port}", info.get_port())` and feed it
-        // to `transport.connect_peer`, which dials by IP:port — so port 0
-        // produces `<ip>:0`, and quinn's sendmsg returns EINVAL.
-        let port = self
+        // to `transport.connect_peer`, which dials by IP:port — so any
+        // mismatch between advertised tuple and listening tuple produces an
+        // un-routable dial (Issue #889 was the port=0 form of this; Issue
+        // #894 was the IP form where the 8.8.8.8 route heuristic published a
+        // LAN IP even when the QUIC listener was bound to 127.0.0.1).
+        //
+        // When the endpoint reports multiple IP transports (the
+        // `--bind 0.0.0.0` case on a multi-interface host), prefer a
+        // non-loopback address — that's the one remote peers can reach.
+        // Fall back to whatever is first if only loopback is bound, which
+        // is exactly what `--bind 127.0.0.1:PORT` looks like.
+        let ip_socks: Vec<std::net::SocketAddr> = self
             .endpoint
             .addr()
             .addrs
             .iter()
-            .find_map(|a| match a {
-                TransportAddr::Ip(sock) => Some(sock.port()),
+            .filter_map(|a| match a {
+                TransportAddr::Ip(sock) => Some(*sock),
                 _ => None,
             })
+            .collect();
+        let bound = ip_socks
+            .iter()
+            .find(|s| !s.ip().is_loopback())
+            .or_else(|| ip_socks.first())
+            .copied()
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "mDNS advertise: endpoint has no bound IP socket; cannot publish a usable record"
                 )
             })?;
+        let local_ip = bound.ip().to_string();
+        let port = bound.port();
 
         // Create TXT properties
         let mut properties = StdHashMap::new();
         properties.insert("node_id".to_string(), node_id_hex.clone());
         properties.insert("version".to_string(), "1".to_string());
 
-        // Get local IP address for mDNS advertisement
-        let local_ip = Self::get_local_ip().unwrap_or_else(|_| "127.0.0.1".to_string());
-
-        tracing::debug!("mDNS: Using local IP address: {}", local_ip);
+        tracing::debug!("mDNS: Advertising bound socket {bound}");
 
         // Create service info
         // ServiceInfo::new(service_type, instance_name, host_name, host_ipv4, port, properties)
