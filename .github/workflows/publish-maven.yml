@@ -283,10 +283,22 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "peat-ffi $VERSION (Maven AAR)"
           else
+            # Build the notes body with printf so every line stays
+            # inside the YAML `run: |` block-scalar indentation. The
+            # earlier inline `--notes "..."` had a multi-line value
+            # whose continuation line ("Maintainer: edit ...") landed
+            # at column 1 — outside the block scalar — which YAML
+            # parsed as a sibling top-level key, breaking the workflow
+            # file. GitHub Actions silently dropped tag-push events
+            # against the broken file, producing the "0 jobs ran"
+            # empty workflow_run entries observed on the original
+            # 0.1.1 attempt.
+            NOTES=$(printf '%s\n' \
+              "Published \`com.defenseunicorns:peat-ffi:$VERSION\` to Maven Central." \
+              "" \
+              "Maintainer: edit this release to add changelog entries, breaking-change notes, and consumer migration guidance.")
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "peat-ffi $VERSION (Maven AAR)" \
-              --notes "Published \`com.defenseunicorns:peat-ffi:$VERSION\` to Maven Central.
-
-Maintainer: edit this release to add changelog entries, breaking-change notes, and consumer migration guidance."
+              --notes "$NOTES"
           fi
