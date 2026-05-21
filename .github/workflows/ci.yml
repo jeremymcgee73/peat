@@ -270,6 +270,57 @@ jobs:
       - name: Run cargo-vet
         run: cargo vet
 
+  jvm-jni-tests:
+    # peat-ffi JVM-in-process JNI wrapper integration tests (peat#881).
+    #
+    # Closes the test-tier gap between in-crate Rust unit tests (which
+    # never touch the JNI bridge) and on-device Android instrumented
+    # tests (which require a real device + the self-hosted runner).
+    # This job boots a real JVM on hosted ubuntu-latest, attaches the
+    # current thread, and exercises the Java_..._PeatJni_* extern fns
+    # directly — proving the env.get_string / env.new_string /
+    # env.throw_new / argument marshalling / null handling paths work
+    # against the same JNI API a production Android consumer hits.
+    #
+    # peat-mesh#145 (M4b) + peat-ffi/android `androidTest` remain the
+    # end-to-end gates; this is the wrapper-layer-only gate that
+    # catches marshalling bugs before they ride into a release tag.
+    name: peat-ffi JVM JNI Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang libdbus-1-dev
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: jvm-jni-tests
+
+      - name: Export libjvm.so to LD_LIBRARY_PATH
+        # setup-java pins JAVA_HOME. The Temurin layout puts the
+        # JVM shared library at $JAVA_HOME/lib/server/libjvm.so;
+        # JavaVM::new() needs that on LD_LIBRARY_PATH at runtime
+        # so the dynamic loader can find it when the test binary
+        # calls into the JNI invocation API.
+        run: |
+          if [ ! -f "$JAVA_HOME/lib/server/libjvm.so" ]; then
+            echo "libjvm.so not at expected path: $JAVA_HOME/lib/server/libjvm.so" >&2
+            ls -la "$JAVA_HOME/lib/server/" 2>&1 || true
+            exit 1
+          fi
+          echo "LD_LIBRARY_PATH=$JAVA_HOME/lib/server${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+
+      - name: Run JVM-in-process JNI integration test
+        run: cargo test -p peat-ffi --features sync --test jni_wrapper_integration -- --nocapture
+
   android-test:
     # peat-ffi surface-tier instrumented tests (peat#885 / peat#888).
     # Runs on the peat-arm64-linux-gb10 self-hosted runner with a real
