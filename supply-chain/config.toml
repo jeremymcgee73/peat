@@ -61,8 +61,16 @@ criteria = "safe-to-deploy"
 version = "0.1.65"
 criteria = "safe-to-deploy"
 
+[[exemptions.java-locator]]
+version = "0.1.9"
+criteria = "safe-to-deploy"
+
 [[exemptions.jni-sys]]
 version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.libloading]]
+version = "0.7.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.peat]]

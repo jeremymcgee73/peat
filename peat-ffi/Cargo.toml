@@ -152,6 +152,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 env_logger = "0.11"
+# JVM-in-process integration tests (peat#881). The "invocation" feature
+# enables `JavaVM::new(InitArgsBuilder...)` so the test can boot a real
+# JVM and exercise the Java_..._PeatJni_* extern fns through the same
+# JNIEnv consumers see at runtime. Runtime jni dep above stays
+# feature-less; cargo unions the feature set for the test target.
+jni = { version = "0.21", features = ["invocation"] }
 
 [build-dependencies]
 uniffi = { version = "0.28", features = ["build"] }
