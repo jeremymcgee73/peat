@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use peat_protocol::discovery::peer::{DiscoveryStrategy, MdnsDiscovery};
+use peat_mesh::discovery::{DiscoveryStrategy as MeshDiscoveryStrategy, MdnsDiscovery};
 use peat_protocol::network::{EndpointId, IrohTransport, PeerInfo};
 use peat_protocol::storage::capabilities::{CrdtCapable, SyncCapable, TypedCollection};
 use peat_protocol::storage::{AutomergeBackend, AutomergeStore};
@@ -310,9 +310,17 @@ async fn main() -> Result<()> {
     }
 
     if args.mdns {
-        let mut mdns = match MdnsDiscovery::new(transport.endpoint().clone(), args.name.clone()) {
+        // mDNS via peat-mesh (canonical implementation per peat#898). The
+        // transport-coupled `peat_protocol::discovery::peer::MdnsDiscovery`
+        // used to live here; it duplicated peat-mesh's transport-agnostic
+        // discovery and violated `peat/SKILL.md`'s transport-agnosticism
+        // rule. peat-mesh's API takes the bound `SocketAddr` (or port)
+        // externally, which closes peat#889 (port=0) and peat#894
+        // (route-heuristic IP) by construction.
+        let mut mdns = match MdnsDiscovery::new() {
             Ok(m) => m,
             Err(e) => {
+                let e = anyhow::Error::from(e);
                 if let Some(msg) = explain_mdns_error(&e) {
                     eprintln!("error: {msg}");
                     std::process::exit(1);
@@ -321,13 +329,45 @@ async fn main() -> Result<()> {
             }
         };
         if let Err(e) = mdns.start().await {
+            let e = anyhow::Error::from(e);
             if let Some(msg) = explain_mdns_error(&e) {
                 eprintln!("error: {msg}");
                 std::process::exit(1);
             }
             return Err(e.context("starting mDNS discovery"));
         }
-        info!("discovery: mDNS enabled (service _peat-node._tcp.local)");
+
+        // Always use the `advertise()` / `enable_addr_auto` path. The
+        // sibling `advertise_with_addr` method exists in peat-mesh#147
+        // and publishes the record correctly, but the underlying
+        // `mdns_sd::ServiceDaemon` only multicasts announces on
+        // interfaces hosting the explicit IP — for a loopback-only IP
+        // that's `lo`, and receiving daemons on the same host don't pick
+        // it up by default. Until that's resolved at the peat-mesh
+        // layer (peat#897 follow-up), `advertise()` is the only path
+        // that round-trips end-to-end across instances.
+        //
+        // The trade-off: `enable_addr_auto` publishes the host's
+        // non-loopback interface IPs, so `--bind 127.0.0.1:PORT --mdns`
+        // still doesn't form a working mesh — peers receive the LAN IP
+        // but the QUIC listener is on `127.0.0.1`. Use `--peer
+        // NODE_ID@127.0.0.1:PORT` for same-host quickstart Scenario 1
+        // until peat#897 lands the daemon-config fix.
+        let mut props = HashMap::new();
+        props.insert("version".to_string(), "1".to_string());
+        let advertise_result = mdns.advertise(&node_id_hex, args.bind.port(), Some(props));
+        if let Err(e) = advertise_result {
+            let e = anyhow::Error::from(e);
+            if let Some(msg) = explain_mdns_error(&e) {
+                eprintln!("error: {msg}");
+                std::process::exit(1);
+            }
+            return Err(e.context("advertising via mDNS"));
+        }
+        info!(
+            "discovery: mDNS enabled (service _peat._udp.local) at {}",
+            args.bind
+        );
 
         let transport_for_mdns = Arc::clone(&transport);
         let self_id = node_id_hex.clone();
@@ -339,12 +379,23 @@ async fn main() -> Result<()> {
                     if peer.node_id == self_id {
                         continue;
                     }
-                    let short = &peer.node_id[..16];
+                    let short_len = 16.min(peer.node_id.len());
+                    let short = &peer.node_id[..short_len];
                     if discovered_logged.insert(peer.node_id.clone()) {
                         info!("discovery: mDNS found {}", short);
                     }
+                    // Convert peat-mesh's `PeerInfo` (addresses: Vec<SocketAddr>)
+                    // into peat-protocol's shape (addresses: Vec<String>) for
+                    // `transport.connect_peer`. `name` is informational only —
+                    // synthesize from the node_id prefix for log clarity.
+                    let proto_peer = PeerInfo {
+                        name: format!("mdns-{short}"),
+                        node_id: peer.node_id.clone(),
+                        addresses: peer.addresses.iter().map(|s| s.to_string()).collect(),
+                        relay_url: peer.relay_url.clone(),
+                    };
                     // Idempotent dial; connected/lost events come from scan loop.
-                    if let Err(e) = transport_for_mdns.connect_peer(&peer).await {
+                    if let Err(e) = transport_for_mdns.connect_peer(&proto_peer).await {
                         tracing::debug!("mDNS dial {} failed: {}", short, e);
                     }
                 }

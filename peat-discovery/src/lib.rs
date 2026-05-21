@@ -7,13 +7,17 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 pub mod hybrid;
-pub mod mdns;
 pub mod static_config;
 
 // Re-export main types for convenience
 pub use hybrid::HybridDiscovery;
-pub use mdns::MdnsDiscovery;
 pub use static_config::{DiscoveryConfig, StaticDiscovery, StaticPeerConfig};
+
+// `mdns` module removed under peat#898: the mDNS implementation was a
+// duplicate of `peat_mesh::discovery::MdnsDiscovery` with no in-repo
+// consumers. mDNS discovery lives in the `peat-mesh` sibling crate;
+// per `peat/SKILL.md`'s transport-agnosticism rule, IP-stack-specific
+// discovery code belongs there.
 
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
