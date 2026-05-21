@@ -9,7 +9,13 @@ name = "peat-ffi"
 # so the wire-versioned ABI surface can rev separately from the
 # workspace's CHANGELOG-tracked protocol cadence; see CHANGELOG
 # entry under [0.9.0-rc.2] for the consumer migration contract.
-version = "0.2.3"
+#
+# 0.2.4 (was 0.2.3): additive — two new `Java_..._PeatJni_*` extern
+# fns for peat-mesh#138 M4 (endpointSocketAddrJni, getDocumentJni)
+# + matching nativeInit / JNI_OnLoad table entries. Backward
+# compatible; existing JNI consumers continue to link against the
+# 0.2.3 surface unchanged. See peat#879.
+version = "0.2.4"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
