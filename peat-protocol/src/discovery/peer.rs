@@ -42,7 +42,7 @@
 //! ```
 
 use async_trait::async_trait;
-use iroh::{Endpoint, EndpointId};
+use iroh::{Endpoint, EndpointId, TransportAddr};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -222,10 +222,24 @@ impl DiscoveryStrategy for MdnsDiscovery {
         let endpoint_id = self.endpoint.id();
         let node_id_hex = hex::encode(endpoint_id.as_bytes());
 
-        // Note: Iroh uses QUIC with hole punching and relay servers, so we don't
-        // advertise a specific port. The actual connectivity is handled by Iroh's
-        // endpoint_id. We use port 0 to indicate automatic port assignment.
-        let port = 0;
+        // Publish the actual bound UDP port. Consumers reconstruct a
+        // SocketAddr via `format!("{ip}:{port}", info.get_port())` and feed it
+        // to `transport.connect_peer`, which dials by IP:port — so port 0
+        // produces `<ip>:0`, and quinn's sendmsg returns EINVAL.
+        let port = self
+            .endpoint
+            .addr()
+            .addrs
+            .iter()
+            .find_map(|a| match a {
+                TransportAddr::Ip(sock) => Some(sock.port()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mDNS advertise: endpoint has no bound IP socket; cannot publish a usable record"
+                )
+            })?;
 
         // Create TXT properties
         let mut properties = StdHashMap::new();

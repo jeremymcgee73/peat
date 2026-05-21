@@ -575,6 +575,24 @@ async fn test_mdns_zero_config_discovery() {
     // Note: For mDNS discovery, we verify that peers are discovered.
     // Connection establishment is handled separately and not tested here.
 
+    // Pin peat#889: advertised port must be non-zero. A port=0 advertisement
+    // produces `<ip>:0` in the discovered PeerInfo.addresses, which
+    // transport.connect_peer feeds to quinn → sendmsg EINVAL → no connection
+    // ever forms. The original mDNS code hard-coded port 0 under the (wrong)
+    // assumption that Iroh dials by endpoint_id alone.
+    for peer in peers_a.iter().chain(peers_b.iter()) {
+        for addr in &peer.addresses {
+            let sock: std::net::SocketAddr = addr.parse().unwrap_or_else(|e| {
+                panic!("mDNS address {addr:?} not parseable as SocketAddr: {e}")
+            });
+            assert!(
+                sock.port() != 0,
+                "mDNS-advertised port must be non-zero, got {addr:?} for peer {:?}",
+                peer.name
+            );
+        }
+    }
+
     // Cleanup
     let _ = backend_a.shutdown().await;
     let _ = backend_b.shutdown().await;
