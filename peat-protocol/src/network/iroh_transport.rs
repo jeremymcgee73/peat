@@ -800,6 +800,21 @@ impl IrohTransport {
         self.endpoint.addr()
     }
 
+    /// Convenience wrapper: return the endpoint's first IP socket
+    /// address as a parseable `"ip:port"` string, or `None` if no
+    /// such address is bound (e.g. relay-only mode).
+    ///
+    /// Useful when a consumer needs to hand the address to another
+    /// in-process iroh instance for direct loopback dialing — see
+    /// peat-mesh#138 M4's two-backend instrumented tests where
+    /// discovery isn't wired up.
+    pub fn bound_socket_addr_string(&self) -> Option<String> {
+        self.endpoint.addr().addrs.iter().find_map(|a| match a {
+            iroh::TransportAddr::Ip(sock) => Some(sock.to_string()),
+            _ => None,
+        })
+    }
+
     /// Get a reference to the underlying Iroh endpoint
     ///
     /// This is useful for advanced operations like mDNS discovery.
@@ -1708,6 +1723,30 @@ mod tests {
 
         // Endpoint addr should match endpoint ID
         assert_eq!(addr.id, transport.endpoint_id());
+
+        transport.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bound_socket_addr_string_parses_as_socket_addr() {
+        // Pins the contract that `bound_socket_addr_string` returns a
+        // string that consumers (peat-ffi's two-instance instrumented
+        // tests for peat-mesh#138 M4) can pass back into a
+        // `SocketAddr::parse()` or hand to iroh's `connect_peer` as
+        // an `addresses` entry. A bound transport must return Some,
+        // and the value must round-trip through `SocketAddr`.
+        let transport = IrohTransport::new().await.unwrap();
+        let addr_str = transport
+            .bound_socket_addr_string()
+            .expect("a bound iroh endpoint must report at least one IP address");
+
+        // String must parse as a SocketAddr — that's the consumer
+        // contract. A `"[2001:db8::1]:50000"`-style v6 address is
+        // acceptable; the v4/v6 split is iroh's call, not ours.
+        let parsed: std::net::SocketAddr = addr_str
+            .parse()
+            .expect("returned address must round-trip through SocketAddr::parse");
+        assert!(parsed.port() > 0, "port must be nonzero for a bound socket");
 
         transport.close().await.unwrap();
     }

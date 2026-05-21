@@ -658,6 +658,19 @@ impl PeatNode {
             .collect()
     }
 
+    /// Return this node's iroh-endpoint first IP listening address
+    /// as an `"ip:port"` string, or `None` if no socket has been
+    /// bound yet.
+    ///
+    /// Intended for two-instance instrumented tests where two nodes
+    /// in the same process need to dial each other on loopback —
+    /// neither has the other's address from discovery, so the test
+    /// harness fetches it here and passes it to `connectPeerJni` on
+    /// the dialing side. peat-mesh#138 M4.
+    pub fn endpoint_socket_addr(&self) -> Option<String> {
+        self.iroh_transport.bound_socket_addr_string()
+    }
+
     /// Start sync operations
     ///
     /// The authenticated accept loop (with formation handshake) is already running
@@ -995,7 +1008,23 @@ impl PeatNode {
         })
     }
 
-    /// Retrieve a document from a collection as JSON
+    /// Retrieve a document from the **raw-bytes store** as JSON.
+    ///
+    /// # Storage path
+    ///
+    /// This reads from `storage_backend.collection()` — the raw
+    /// key-value store. It will NOT see documents that were:
+    ///
+    /// - Published via `publishDocumentJni` (which goes through
+    ///   `peat_mesh::Node::publish`, the document layer)
+    /// - Received from a peer via Automerge sync (which writes into
+    ///   the document layer's CRDT, not the raw store)
+    ///
+    /// The JNI counterpart `getDocumentJni` deliberately uses
+    /// `peat_mesh::Node::get()` instead so it round-trips with
+    /// `publishDocumentJni`. If you're writing a new JNI method
+    /// that reads documents published or synced via the document
+    /// layer, follow `getDocumentJni`'s pattern, not this method's.
     pub fn get_document(
         &self,
         collection: &str,
@@ -4788,6 +4817,208 @@ mod tests {
         }
     }
 
+    /// Surface-tier tests for the two new public entry points added
+    /// for peat-mesh#138 M4 (peat#879): `PeatNode::endpoint_socket_addr`
+    /// and `PeatNode::get_document`. Both are wrapped by JNI symbols
+    /// (`endpointSocketAddrJni`, `getDocumentJni`) that the two-
+    /// instance instrumented test suite in peat-mesh/android-tests
+    /// will consume in M4b. Per the surface-tier E2E rule these need
+    /// in-crate tests independent of that downstream consumer.
+    #[cfg(feature = "sync")]
+    mod m4_endpoint_and_get_document_tests {
+        use super::*;
+
+        fn test_node_config(storage_path: &str) -> NodeConfig {
+            NodeConfig {
+                app_id: "m4-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: storage_path.to_string(),
+                transport: None,
+            }
+        }
+
+        /// `endpoint_socket_addr` on a freshly-bound node returns a
+        /// string that round-trips through `SocketAddr::parse` and
+        /// carries a non-zero port. This is the contract M4b's
+        /// instrumented test relies on when it feeds the returned
+        /// string back into `connectPeerJni` on the other instance.
+        #[test]
+        fn endpoint_socket_addr_returns_parseable_loopback_addr() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+
+            let addr_str = node
+                .endpoint_socket_addr()
+                .expect("a bound node must report at least one IP address");
+
+            let parsed: std::net::SocketAddr = addr_str.parse().unwrap_or_else(|e| {
+                panic!("endpoint_socket_addr returned '{addr_str}' which doesn't parse as SocketAddr: {e}")
+            });
+            assert!(
+                parsed.port() > 0,
+                "port must be nonzero for a bound socket, got {parsed}"
+            );
+        }
+
+        /// Publish a doc through the document layer, then read it
+        /// back through the same layer. Locks in the round-trip
+        /// contract that `publishDocumentJni` + `getDocumentJni`
+        /// expose: both go through `peat_mesh::Node`'s document API,
+        /// not the older raw-bytes Collection path used by typed
+        /// helpers like `publish_platform`.
+        ///
+        /// The in-process variant locks in the publish+get half on a
+        /// single instance; cross-node sync is exercised by M4b on
+        /// real devices in peat-mesh/android-tests.
+        #[test]
+        fn document_layer_round_trip_publish_then_get() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+
+            let collection = "markers";
+            let doc_id = "M-RT-1";
+            let body = format!(r#"{{"id":"{doc_id}","name":"alpha","severity":3}}"#);
+
+            let mesh_node = Arc::clone(&node.node);
+            let returned_id = node
+                .runtime
+                .block_on(publish_document_into_node(&mesh_node, collection, &body))
+                .expect("publish_document_into_node");
+            assert_eq!(returned_id, doc_id);
+
+            let fetched = node
+                .runtime
+                .block_on(mesh_node.get(collection, &doc_id.to_string()))
+                .expect("get must not Err")
+                .expect("doc must be present on the publishing node");
+
+            // Body content must round-trip; assert on the two fields
+            // M4b's Kotlin test pins. The published id is hoisted to
+            // Document::id; assert separately.
+            assert_eq!(
+                fetched.id.as_deref(),
+                Some(doc_id),
+                "published id must round-trip through Document::id"
+            );
+            assert_eq!(
+                fetched.fields.get("name").and_then(|v| v.as_str()),
+                Some("alpha")
+            );
+            assert_eq!(
+                fetched.fields.get("severity").and_then(|v| v.as_i64()),
+                Some(3)
+            );
+        }
+
+        /// Surface-tier coverage for `getDocumentJni`'s JSON
+        /// serialization path (peat#879 QA round 2). The struct-
+        /// level round-trip test above exercises storage; this one
+        /// exercises the extracted `serialize_document_for_get_jni`
+        /// helper that produces the exact bytes the JNI returns —
+        /// covering the id-reinsertion, field-iteration, and
+        /// `to_string()` encoding the QA reviewer flagged as
+        /// untested.
+        #[test]
+        fn jni_serializer_reinserts_id_alongside_fields() {
+            // Publish through the same path the JNI consumer takes,
+            // read back via Node::get, then run the JNI's serializer
+            // and assert on the JSON the consumer would actually see.
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+
+            let collection = "markers";
+            let doc_id = "M-RT-1";
+            let body = format!(r#"{{"id":"{doc_id}","name":"alpha","severity":3}}"#);
+
+            let mesh_node = Arc::clone(&node.node);
+            let _ = node
+                .runtime
+                .block_on(publish_document_into_node(&mesh_node, collection, &body))
+                .expect("publish");
+
+            let fetched = node
+                .runtime
+                .block_on(mesh_node.get(collection, &doc_id.to_string()))
+                .expect("get must not Err")
+                .expect("doc must be present");
+
+            // Serialize via the exact helper getDocumentJni uses.
+            let json = serialize_document_for_get_jni(&fetched);
+            let parsed: serde_json::Value =
+                serde_json::from_str(&json).expect("JNI output must parse as JSON");
+
+            // The Kotlin consumer expects: a plain object with id +
+            // every other field. Pin each field shape including the
+            // reinserted id (the QA-flagged regression surface).
+            assert!(
+                parsed.is_object(),
+                "output must be a JSON object, got {parsed:?}"
+            );
+            assert_eq!(parsed["id"], doc_id, "id must be reinserted");
+            assert_eq!(parsed["name"], "alpha");
+            assert_eq!(parsed["severity"], 3);
+            // Field count: id + name + severity — no extras.
+            assert_eq!(
+                parsed.as_object().unwrap().len(),
+                3,
+                "unexpected extra fields in JNI serialization: {parsed}"
+            );
+        }
+
+        /// Boundary: a Document with no `id` (a write path that
+        /// didn't go through publish-with-explicit-id) serializes
+        /// without an `"id"` key — never as `"id": null`. This
+        /// matches the consumer contract that `id` is present iff
+        /// the document had one assigned.
+        #[test]
+        fn jni_serializer_omits_id_when_none() {
+            let doc = peat_mesh::sync::Document {
+                id: None,
+                fields: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("k".to_string(), serde_json::Value::String("v".into()));
+                    m
+                },
+                updated_at: std::time::SystemTime::now(),
+            };
+
+            let json = serialize_document_for_get_jni(&doc);
+            let parsed: serde_json::Value = serde_json::from_str(&json).expect("parseable JSON");
+
+            assert!(
+                parsed.get("id").is_none(),
+                "expected id absent (not null) when Document::id is None, got {json}"
+            );
+            assert_eq!(parsed["k"], "v");
+        }
+
+        /// `peat_mesh::Node::get` on a never-published key returns
+        /// `Ok(None)`. The `getDocumentJni` wrapper maps this to a
+        /// null jstring — test-readable as "not yet converged"
+        /// rather than "store failed". Symmetry with
+        /// `document_layer_round_trip_publish_then_get`.
+        #[test]
+        fn document_layer_get_returns_none_for_missing_doc() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+
+            let mesh_node = Arc::clone(&node.node);
+            let result = node
+                .runtime
+                .block_on(mesh_node.get("markers", &"never-published".to_string()))
+                .expect("get must not Err");
+            assert!(
+                result.is_none(),
+                "expected None for a never-published doc, got {result:?}"
+            );
+        }
+    }
+
     /// Round-trip tests for the `PlatformInfo` JSON wire schema.
     ///
     /// Locks in the symmetry contract between `parse_platform_json`
@@ -6403,6 +6634,115 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_requestSyncJni(
     let result = node.request_sync().is_ok();
     std::mem::forget(node);
     result as jboolean
+}
+
+/// JNI: Get this node's iroh-endpoint first IP socket address as an
+/// `"ip:port"` string, or null if no socket is bound. The result is
+/// what `connectPeerJni` expects as its `address` argument when one
+/// in-process instance dials another on loopback (no discovery layer
+/// to populate it). peat-mesh#138 M4.
+///
+/// Kotlin signature: external fun endpointSocketAddrJni(handle: Long): String?
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni(
+    env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    if handle == 0 {
+        return std::ptr::null_mut();
+    }
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let addr = node.endpoint_socket_addr();
+    std::mem::forget(node);
+    match addr {
+        Some(s) => env
+            .new_string(s)
+            .map(|js| js.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Serialize a `peat_mesh::Document` back into the JSON-object shape
+/// the consumer originally posted via `publishDocumentJni`. The
+/// publish path hoists an `"id"` field to `Document::id`; this
+/// helper reinserts it so the round-trip preserves the consumer's
+/// input shape. Extracted from `getDocumentJni`'s body so the
+/// serialization can be exercised by an in-crate test independent
+/// of a JVM (peat#879 QA round 2 — surface-tier coverage for the
+/// JSON output path).
+#[cfg(feature = "sync")]
+fn serialize_document_for_get_jni(doc: &peat_mesh::sync::Document) -> String {
+    let mut obj = serde_json::Map::new();
+    for (k, v) in &doc.fields {
+        obj.insert(k.clone(), v.clone());
+    }
+    if let Some(id) = &doc.id {
+        obj.insert("id".to_string(), serde_json::Value::String(id.clone()));
+    }
+    serde_json::Value::Object(obj).to_string()
+}
+
+/// JNI: Read a document back from the local store as JSON, or null
+/// if the document doesn't exist locally. Complements
+/// `publishDocumentJni` — needed by instrumented tests that verify
+/// sync convergence by reading on the receiver side. peat-mesh#138 M4.
+///
+/// Kotlin signature: external fun getDocumentJni(handle: Long, collection: String, docId: String): String?
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    collection: JString,
+    doc_id: JString,
+) -> jstring {
+    if handle == 0 {
+        return std::ptr::null_mut();
+    }
+    let collection_str: String = match env.get_string(&collection) {
+        Ok(s) => s.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let doc_id_str: String = match env.get_string(&doc_id) {
+        Ok(s) => s.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let mesh_node = Arc::clone(&node_owner.node);
+    let runtime = Arc::clone(&node_owner.runtime);
+    std::mem::forget(node_owner);
+
+    // Read through the same `peat_mesh::Node` document layer that
+    // `publishDocumentJni` writes to. The older raw-bytes
+    // `PeatNode::get_document` reads from a different storage path
+    // (`storage_backend.collection(...)`) and won't see docs that
+    // arrived via the document layer's publish or that sync replicas
+    // applied as Automerge ops. peat-mesh#138 M4 / peat#879 QA.
+    let result = runtime.block_on(mesh_node.get(&collection_str, &doc_id_str));
+    match result {
+        Ok(Some(doc)) => {
+            let json = serialize_document_for_get_jni(&doc);
+            env.new_string(json)
+                .map(|js| js.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        }
+        Ok(None) => std::ptr::null_mut(),
+        Err(e) => {
+            // Distinguish "store read failed" from "not present"
+            // (peat#879 QA WARNING) — silent null on Err would mask
+            // hard storage errors as ongoing sync-not-converged, and
+            // the consumer would spin until timeout. Throw across the
+            // JNI boundary so the caller sees a fail-fast exception
+            // with the underlying cause.
+            let msg = format!("getDocumentJni: store read failed: {e}");
+            let _ = env.throw_new("java/lang/RuntimeException", &msg);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// JNI: Get connected peer IDs as a JSON array
@@ -8620,6 +8960,18 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
+            name: "endpointSocketAddrJni".into(),
+            sig: "(J)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "getDocumentJni".into(),
+            sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getDocumentJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
             name: "startSyncJni".into(),
             sig: "(J)Z".into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_startSyncJni as *mut c_void,
@@ -9122,6 +9474,19 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "requestSyncJni".into(),
                     sig: "(J)Z".into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_requestSyncJni as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "endpointSocketAddrJni".into(),
+                    sig: "(J)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "getDocumentJni".into(),
+                    sig: "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getDocumentJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
