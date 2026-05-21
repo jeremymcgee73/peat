@@ -134,11 +134,27 @@ peat-ffi's Maven AAR is released independently of the crates.io workspace cadenc
    git push origin peat-ffi-v0.1.1
    ```
 
-4. The `publish-maven.yml` workflow fires on the tag push, parses the version off the tag, verifies it matches `build.gradle.kts:version`, builds the AAR for arm64-v8a + armeabi-v7a + x86_64, publishes to Maven Central, and creates a placeholder GitHub Release for the tag.
+4. The `publish-maven.yml` workflow fires on the tag push and does the following in order:
+
+   1. Parses the version off the tag and asserts it matches `build.gradle.kts:version`.
+   2. Builds the AAR for arm64-v8a + armeabi-v7a + x86_64.
+   3. Runs `./gradlew createMavenCentralBundle` to produce a signed Maven Central bundle ZIP.
+   4. Verifies the bundle exists and is multi-MB (catches the "Gradle Zip task produced 0 bytes" failure mode).
+   5. Uploads the bundle to Sonatype Central via `curl`, captures the deployment ID, fails loud if the response isn't a UUID.
+   6. Polls Sonatype's deployment-status API every 30s for up to 30 min until the deployment reaches `PUBLISHED` (success) or `FAILED` (validation error). The poll is the gate that catches the failure mode peat#883 fixed: prior to that PR, the upload step trusted Sonatype's 2xx response and the workflow reported "success" even when the deployment was silently rejected.
+   7. Creates a placeholder GitHub Release for the tag.
 
 5. **Flesh out the GitHub Release notes** (the workflow leaves a placeholder body for the maintainer to fill in).
 
 The tag is the canonical version reference. No equivalent of the `[Unreleased]` → `[<version>]` CHANGELOG dance — peat-ffi changes aren't tracked in the workspace CHANGELOG.md.
+
+#### Diagnosing a `Poll Sonatype Central deployment status` failure
+
+If the deployment-status poll surfaces `FAILED`, the workflow log shows the response body but not the validation errors themselves. Log into [Sonatype Central](https://central.sonatype.com/publishing/deployments), find the deployment by ID (printed in the workflow log under "Upload to Sonatype Central"), and read the validation errors. Common failure modes:
+
+- **Missing javadoc jar** — Central requires it for non-pom artifacts. `peat-ffi/android/build.gradle.kts` currently has only `withSourcesJar()`; if Central tightens this, add `withJavadocJar()`.
+- **POM metadata missing required fields** — Central requires `name`, `description`, `url`, `licenses`, `developers`, `scm`. The kts has all of these as of peat#882.
+- **Signature problems** — the in-memory GPG key/passphrase pair from secrets must match a published key on a Sonatype-trusted keyserver.
 
 ### Manual publish (fallback)
 
