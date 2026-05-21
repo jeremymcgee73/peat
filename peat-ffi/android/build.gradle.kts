@@ -218,26 +218,13 @@ tasks.register<Zip>("createMavenCentralBundle") {
     destinationDirectory.set(layout.buildDirectory.dir("bundle"))
 }
 
-// Upload to Maven Central
-tasks.register<Exec>("publishToMavenCentral") {
-    description = "Upload bundle to Maven Central via Sonatype Central Portal"
-    group = "publishing"
-    dependsOn("createMavenCentralBundle")
-
-    val bundleFile = layout.buildDirectory.file("bundle/peat-ffi-${project.version}-bundle.zip")
-    val username = project.findProperty("sonatypeUsername") as String? ?: System.getenv("SONATYPE_USERNAME") ?: ""
-    val password = project.findProperty("sonatypePassword") as String? ?: System.getenv("SONATYPE_PASSWORD") ?: ""
-
-    doFirst {
-        if (username.isEmpty() || password.isEmpty()) {
-            throw GradleException("Sonatype credentials not configured")
-        }
-    }
-
-    commandLine("bash", "-c", """
-        curl --fail-with-body \
-            -u "$username:$password" \
-            -F "bundle=@${bundleFile.get().asFile.absolutePath}" \
-            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
-    """.trimIndent())
-}
+// Note: the publishToMavenCentral upload task that lived here is gone
+// as of peat#883. Gradle's `Exec` task swallowed curl's stdout/stderr
+// by default, which left no signal in workflow logs when the Sonatype
+// Central upload silently dropped a bundle (peat-ffi 0.1.1 incident:
+// task reported BUILD SUCCESSFUL in 1.2s, no deployment ever appeared
+// on Sonatype). The upload + status-polling logic now lives in
+// `.github/workflows/publish-maven.yml`, where stdout/stderr is
+// visible inline. This file is responsible only for producing the
+// bundle ZIP via the `createMavenCentralBundle` task above; the
+// workflow's "Upload to Sonatype Central" step takes it from there.

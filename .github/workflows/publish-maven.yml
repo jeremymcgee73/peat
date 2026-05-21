@@ -98,14 +98,172 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
 
-      - name: Publish to Maven Central
+      - name: Build Maven Central bundle
+        # Produces peat-ffi/android/build/bundle/peat-ffi-<version>-bundle.zip.
+        # The upload + status-poll step that follows handles the actual
+        # Sonatype Central interaction in workflow shell so stdout is
+        # visible (the previous setup ran curl inside a Gradle Exec
+        # task which silently swallowed both the response body and
+        # any error signal — peat-ffi 0.1.1 incident, peat#883).
         working-directory: peat-ffi/android
-        run: ./gradlew publishToMavenCentral
+        run: ./gradlew createMavenCentralBundle
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SECRET_PASSPHRASE }}
+
+      - name: Verify bundle exists and has content
+        # Catch the failure mode where the gradle Zip task produced a
+        # 0-byte or near-empty bundle (which would upload "successfully"
+        # to Sonatype without creating any deployment record). The
+        # bundle should be in the multi-MB range — three native .so
+        # builds + sources jar + signatures + POM. Anything under 100 KB
+        # is suspicious; anything under 1 KB is broken.
+        id: bundle
+        working-directory: peat-ffi/android
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BUNDLE="build/bundle/peat-ffi-${VERSION}-bundle.zip"
+          if [ ! -f "$BUNDLE" ]; then
+            echo "bundle ZIP not found at $BUNDLE" >&2
+            ls -la build/bundle/ >&2 || true
+            exit 1
+          fi
+          SIZE_BYTES=$(stat -c%s "$BUNDLE")
+          SIZE_KB=$((SIZE_BYTES / 1024))
+          echo "bundle: $BUNDLE"
+          echo "size:   ${SIZE_BYTES} bytes (${SIZE_KB} KB)"
+          echo "contents:"
+          unzip -l "$BUNDLE" | head -40
+          if [ "$SIZE_BYTES" -lt 102400 ]; then
+            echo "bundle is suspiciously small (${SIZE_BYTES} bytes < 100 KB)" >&2
+            echo "expected multi-MB: arm64-v8a + armeabi-v7a + x86_64 .so + sources + signatures" >&2
+            exit 1
+          fi
+          echo "bundle_path=$BUNDLE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Sonatype Central
+        # POST the bundle to Sonatype's Central Portal upload endpoint.
+        # The response body is captured to a file via `--output`; an
+        # EXIT trap echoes it before the step ends so the response is
+        # visible on EVERY path — success, 4xx/5xx, or signal. (peat#883
+        # QA round 1 caught the original write of this step: it had
+        # `--fail-with-body` + `set -euo pipefail`, which together
+        # aborted the script on the curl line before reaching the
+        # `cat` of the response — exactly the swallowed-curl failure
+        # mode this PR exists to fix.)
+        id: upload
+        working-directory: peat-ffi/android
         env:
           SONATYPE_USERNAME: ${{ secrets.MAVEN_CENTRAL_USER }}
           SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
-          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET_KEY }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SECRET_PASSPHRASE }}
+          BUNDLE: ${{ steps.bundle.outputs.bundle_path }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SONATYPE_USERNAME:-}" ] || [ -z "${SONATYPE_PASSWORD:-}" ]; then
+            echo "MAVEN_CENTRAL_USER / MAVEN_CENTRAL_TOKEN secrets not configured" >&2
+            exit 1
+          fi
+          # Always surface the response body before the step exits, no
+          # matter how curl returned. The trap fires for both `exit 0`
+          # and `exit nonzero`.
+          trap '
+            echo "--- sonatype upload response (always echoed) ---"
+            if [ -s /tmp/sonatype-upload-response.txt ]; then
+              cat /tmp/sonatype-upload-response.txt
+              echo
+            else
+              echo "(response file empty or missing)"
+            fi
+          ' EXIT
+
+          echo "uploading $BUNDLE to Sonatype Central (publishingType=AUTOMATIC)..."
+          # `--output` writes the response body to disk; the trap above
+          # echoes it. `--write-out` puts the HTTP status code on
+          # stdout for an explicit gate. `--show-error` keeps curl's
+          # own error messages visible without bringing back the
+          # progress-bar noise of removing --silent.
+          HTTP_CODE=$(curl \
+            --silent \
+            --show-error \
+            --user "$SONATYPE_USERNAME:$SONATYPE_PASSWORD" \
+            --form "bundle=@$BUNDLE" \
+            --output /tmp/sonatype-upload-response.txt \
+            --write-out '%{http_code}' \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC")
+          echo "HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "upload failed: HTTP $HTTP_CODE (response body printed by EXIT trap)" >&2
+            exit 1
+          fi
+          # Sonatype's response on 2xx is the deployment ID as a bare
+          # UUID string. Trim whitespace and validate the shape.
+          DEPLOYMENT_ID=$(tr -d '[:space:]' < /tmp/sonatype-upload-response.txt)
+          if ! echo "$DEPLOYMENT_ID" \
+            | grep -qE '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
+            echo "expected a UUID deployment ID from Sonatype; got '$DEPLOYMENT_ID'" >&2
+            echo "either Sonatype's API contract changed or the upload was silently dropped" >&2
+            exit 1
+          fi
+          echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Poll Sonatype Central deployment status
+        # Sonatype's AUTOMATIC publishing type validates asynchronously
+        # after upload. The previous workflow trusted that a 2xx from
+        # the upload endpoint meant the artifact would land on Central;
+        # the peat-ffi 0.1.1 incident showed it absolutely does not.
+        # This step polls until terminal state and fails the workflow
+        # if the deployment isn't PUBLISHED within the budget.
+        env:
+          SONATYPE_USERNAME: ${{ secrets.MAVEN_CENTRAL_USER }}
+          SONATYPE_PASSWORD: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          DEPLOYMENT_ID: ${{ steps.upload.outputs.deployment_id }}
+        run: |
+          set -euo pipefail
+          # Budget: 30 minutes total, polling every 30 seconds.
+          # Sonatype's typical AUTOMATIC validation completes in
+          # 5-15 minutes; 30 is a comfortable ceiling.
+          BUDGET_SECONDS=1800
+          POLL_INTERVAL=30
+          DEADLINE=$(($(date +%s) + BUDGET_SECONDS))
+          ATTEMPT=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "--- poll $ATTEMPT (deployment $DEPLOYMENT_ID) ---"
+            RESPONSE=$(curl \
+              --silent \
+              --show-error \
+              --user "$SONATYPE_USERNAME:$SONATYPE_PASSWORD" \
+              --request POST \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID")
+            echo "$RESPONSE"
+            STATE=$(echo "$RESPONSE" | grep -oE '"deploymentState"[[:space:]]*:[[:space:]]*"[^"]*"' \
+              | sed -E 's/.*"([^"]*)"$/\1/' || echo "UNKNOWN")
+            echo "state: $STATE"
+            case "$STATE" in
+              PUBLISHED)
+                echo "deployment $DEPLOYMENT_ID published successfully"
+                exit 0
+                ;;
+              FAILED)
+                echo "deployment $DEPLOYMENT_ID FAILED validation" >&2
+                echo "see Sonatype Central UI for validation errors" >&2
+                exit 1
+                ;;
+              PENDING|VALIDATING|VALIDATED|PUBLISHING)
+                # In progress — keep polling.
+                ;;
+              *)
+                echo "unexpected deployment state: '$STATE' — full response above" >&2
+                exit 1
+                ;;
+            esac
+            sleep "$POLL_INTERVAL"
+          done
+          echo "deployment $DEPLOYMENT_ID did not reach PUBLISHED within ${BUDGET_SECONDS}s" >&2
+          exit 1
 
       - name: Create GitHub Release
         env:
