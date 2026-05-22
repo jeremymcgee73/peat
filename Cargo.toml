@@ -93,7 +93,18 @@ repository = "https://github.com/defenseunicorns/peat"
 # fix is internal to peat-mesh — but pinning the floor at rc.14
 # would mean the workspace could build against a peat-mesh that
 # silently regresses loopback discovery.
-peat-mesh = { version = ">=0.9.0-rc.15, <0.9.1", default-features = false }
+#
+# Floor advanced to rc.16 on 2026-05-22
+# (peat-mesh#151 / defenseunicorns/peat#891 / defenseunicorns/peat#907) —
+# rc.16 ships the origin-tagged change broadcast (`DocChange`,
+# `ChangeOrigin`, `subscribe_to_changes_with_origin`,
+# `put_with_origin`) consumed by the propagation task in
+# `peat-protocol/src/storage/automerge_backend.rs` to enable
+# transitive gossip on hub-and-spoke topologies (the QUICKSTART
+# Scenario 2 / 4 promise). Pinning the floor below rc.16 would let
+# the workspace build against a peat-mesh missing
+# `subscribe_to_changes_with_origin` — the load-bearing call.
+peat-mesh = { version = ">=0.9.0-rc.16, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
@@ -130,3 +141,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Testing
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+
