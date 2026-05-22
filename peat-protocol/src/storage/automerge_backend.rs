@@ -1289,7 +1289,7 @@ impl SyncCapable for AutomergeBackend {
         //
         // Workaround: Periodically disconnect and reconnect peers to clear accumulated
         // state. The reconnection manager handles automatic reconnection.
-        let recycle_interval = crate::network::iroh_transport::CONNECTION_RECYCLE_INTERVAL_SECS;
+        let recycle_interval = crate::network::iroh_transport::connection_recycle_interval_secs();
         if recycle_interval > 0 {
             let transport_for_recycle = self.iroh_transport.clone().unwrap();
             let sync_active_recycle = Arc::clone(&self.sync_active);

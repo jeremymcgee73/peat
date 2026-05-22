@@ -256,10 +256,10 @@ The binary is ~29 MB and dynamically links to `libc`/`libgcc_s` only — no addi
 
 ### 4.4 Start alpha on the laptop
 
-Same as Scenario 1, but bind to `0.0.0.0` so the Pis can reach you:
+Same as Scenario 1, but bind to `0.0.0.0` so the Pis can reach you. Set `PEAT_CONNECTION_RECYCLE_SECS=0` to disable the iroh memory-leak workaround that otherwise recycles every QUIC connection at the 60-second mark — for the quickstart's 1-document-per-peer workload that workaround is unnecessary and turns continuous sync into a 4–6 s outage every minute (see [#892](https://github.com/defenseunicorns/peat/issues/892)):
 
 ```bash
-./target/release/peat-quickstart --name alpha --bind 0.0.0.0:39001
+PEAT_CONNECTION_RECYCLE_SECS=0 ./target/release/peat-quickstart --name alpha --bind 0.0.0.0:39001
 ```
 
 Copy alpha's NodeId from the log.
@@ -267,20 +267,20 @@ Copy alpha's NodeId from the log.
 ### 4.5 Start bravo and charlie on the Pis
 
 ```bash
-ssh pi-a '/tmp/peat-quickstart --name bravo \
+ssh pi-a 'PEAT_CONNECTION_RECYCLE_SECS=0 /tmp/peat-quickstart --name bravo \
     --bind 0.0.0.0:39001 \
     --peer <ALPHA_NODE_ID>@192.168.1.10:39001'
 ```
 
 ```bash
-ssh pi-b '/tmp/peat-quickstart --name charlie \
+ssh pi-b 'PEAT_CONNECTION_RECYCLE_SECS=0 /tmp/peat-quickstart --name charlie \
     --bind 0.0.0.0:39001 \
     --peer <ALPHA_NODE_ID>@192.168.1.10:39001'
 ```
 
 (If your firewall blocks UDP on `39001`, open it on each host.)
 
-Within a few seconds all three terminals show the full 3-node view.
+Within a few seconds all three terminals show the full 3-node view, and sync stays continuous instead of cycling every minute.
 
 ### 4.6 Try mDNS across the Pis
 
@@ -318,7 +318,8 @@ You now have a working mesh and a runnable starting point — copy `examples/qui
 |---------|--------------|------------|
 | `Address already in use` | Another process owns that port (often a previous quickstart that didn't shut down). | `lsof -i :39001` and kill it, or pick a different port. |
 | Logs show `[peers=0]` indefinitely | Static peer's `node_id` or address is wrong; or a firewall is blocking UDP. | Re-copy the `node_id` from the peer's startup log; verify the address; check UDP is open. |
-| `connection: peer X lost — will retry` followed by `connection: peer X reconnected` | Iroh's QUIC idle timeout (5s, tactical default) dropped the connection; the reconnect loop restored it. | Normal under low-traffic conditions — values still converge. |
+| `connection: peer X lost — will retry` followed by `connection: peer X reconnected` repeating on a ~60–70 s cadence | The Issue [#435](https://github.com/defenseunicorns/peat/issues/435) connection-recycling workaround disconnects every peer once it's been up for 60 s, to bound an iroh memory-growth pattern observed in early 2025. Set `PEAT_CONNECTION_RECYCLE_SECS=0` to disable for low-traffic workloads (like this quickstart), or a larger value (e.g. `600`) for ~10 min sessions. | The default is `60` s. For demos and any deployment where the workload doesn't churn enough documents to provoke the leak, `0` is safe and gives continuous sync. |
+| Single `WARN noq_udp: sendmsg error: ... destination: <stale ip>` shortly after a peer attaches | An advertised candidate address — e.g. a stale DHCP lease, a docker bridge, a tailscale IP — isn't reachable from your host. iroh races multiple candidates and the working one still wins, so connection completes. See [#890](https://github.com/defenseunicorns/peat/issues/890). | Cosmetic. Sync still converges. Bind to a specific LAN IP (e.g. `--bind 192.168.228.236:39001`) instead of `0.0.0.0` to suppress entirely. |
 | `mDNS enabled` but never `discovered + connected` | LAN is blocking multicast (enterprise Wi-Fi, some VPNs). | Use `--peer` instead. |
 | `connection: peer ... connected` fires but no `sync:` event for several seconds | Sync messages take 1–2 round trips after the QUIC handshake completes. | Normal up to ~5 seconds. If `sync: ... (new)` still hasn't fired after that, run with `RUST_LOG=info,peat_mesh::storage::automerge_sync=debug` to watch batches arrive. |
 | `error: linker 'mold' not found` during build | You set the fast-linker env vars but don't have `mold` installed. | Either `apt install mold clang`, or unset `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` / `_RUSTFLAGS` to fall back to the default linker. |

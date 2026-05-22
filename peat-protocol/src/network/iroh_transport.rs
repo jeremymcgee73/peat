@@ -178,8 +178,35 @@ fn create_tactical_transport_config() -> iroh::endpoint::QuicTransportConfig {
 ///
 /// Connections older than this are eligible for recycling to mitigate upstream
 /// iroh memory leak (iroh#3565). Set to 0 to disable recycling.
+///
+/// Overridable at runtime via the `PEAT_CONNECTION_RECYCLE_SECS` environment
+/// variable — see [`connection_recycle_interval_secs`].
 #[cfg(feature = "automerge-backend")]
 pub const CONNECTION_RECYCLE_INTERVAL_SECS: u64 = 60;
+
+/// Environment variable that overrides [`CONNECTION_RECYCLE_INTERVAL_SECS`].
+///
+/// Operators set this to `0` to disable the workaround entirely (recommended
+/// for low-churn deployments like the quickstart binary's Scenario 4, where
+/// the visible 4–6 s blackout every minute hurts the demo more than the leak
+/// hurts a short-running process). A positive integer overrides the default
+/// 60 s. Non-numeric or empty values fall back to the default. Read once when
+/// `AutomergeBackend::start_sync` arms the recycler task.
+#[cfg(feature = "automerge-backend")]
+pub const CONNECTION_RECYCLE_ENV: &str = "PEAT_CONNECTION_RECYCLE_SECS";
+
+/// Resolve the connection-recycle interval, honoring [`CONNECTION_RECYCLE_ENV`].
+///
+/// Returns the parsed env-var value if it's a valid `u64`, otherwise
+/// [`CONNECTION_RECYCLE_INTERVAL_SECS`]. A returned value of `0` means
+/// the recycler task is not spawned at all (see `AutomergeBackend::start_sync`).
+#[cfg(feature = "automerge-backend")]
+pub fn connection_recycle_interval_secs() -> u64 {
+    std::env::var(CONNECTION_RECYCLE_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(CONNECTION_RECYCLE_INTERVAL_SECS)
+}
 
 /// Construct a fresh iroh `Endpoint` builder respecting the relay policy (Issue #833).
 ///
@@ -2044,6 +2071,65 @@ mod tests {
 
         // If we get here, the config was created successfully
         // The timeout values are: max_idle_timeout=5s, keep_alive_interval=1s
+    }
+
+    /// `connection_recycle_interval_secs` returns the compile-time default when
+    /// `PEAT_CONNECTION_RECYCLE_SECS` is unset (peat#892).
+    #[test]
+    #[serial]
+    fn recycle_interval_unset_returns_default() {
+        // SAFETY: serialized via #[serial] — no other test mutates this env var concurrently.
+        unsafe {
+            std::env::remove_var(CONNECTION_RECYCLE_ENV);
+        }
+        assert_eq!(
+            connection_recycle_interval_secs(),
+            CONNECTION_RECYCLE_INTERVAL_SECS
+        );
+    }
+
+    /// A numeric override (including `0` to disable) is honored (peat#892).
+    #[test]
+    #[serial]
+    fn recycle_interval_env_override() {
+        unsafe {
+            std::env::set_var(CONNECTION_RECYCLE_ENV, "0");
+        }
+        assert_eq!(connection_recycle_interval_secs(), 0);
+
+        unsafe {
+            std::env::set_var(CONNECTION_RECYCLE_ENV, "600");
+        }
+        assert_eq!(connection_recycle_interval_secs(), 600);
+
+        unsafe {
+            std::env::remove_var(CONNECTION_RECYCLE_ENV);
+        }
+    }
+
+    /// Garbage values fall back to the default rather than panicking (peat#892).
+    #[test]
+    #[serial]
+    fn recycle_interval_garbage_falls_back() {
+        unsafe {
+            std::env::set_var(CONNECTION_RECYCLE_ENV, "not-a-number");
+        }
+        assert_eq!(
+            connection_recycle_interval_secs(),
+            CONNECTION_RECYCLE_INTERVAL_SECS
+        );
+
+        unsafe {
+            std::env::set_var(CONNECTION_RECYCLE_ENV, "");
+        }
+        assert_eq!(
+            connection_recycle_interval_secs(),
+            CONNECTION_RECYCLE_INTERVAL_SECS
+        );
+
+        unsafe {
+            std::env::remove_var(CONNECTION_RECYCLE_ENV);
+        }
     }
 
     /// Test that disconnect is detected within the expected timeout (Issue #315)
