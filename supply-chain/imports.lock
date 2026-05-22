@@ -1460,6 +1460,13 @@ when = "2025-12-11"
 user-id = 429
 user-login = "diwic"
 
+[[publisher.libloading]]
+version = "0.7.4"
+when = "2022-11-06"
+user-id = 726
+user-login = "nagisa"
+user-name = "Simonas Kazlauskas"
+
 [[publisher.libm]]
 version = "0.2.16"
 when = "2026-01-24"
@@ -1895,6 +1902,13 @@ user-name = "Kit Plummer"
 [[publisher.peat-lite]]
 version = "0.2.5"
 when = "2026-05-08"
+user-id = 184815
+user-login = "kitplummer"
+user-name = "Kit Plummer"
+
+[[publisher.peat-mesh]]
+version = "0.9.0-rc.14"
+when = "2026-05-21"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"

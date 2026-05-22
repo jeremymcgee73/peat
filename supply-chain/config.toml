@@ -19,9 +19,6 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [policy.peat]
 audit-as-crates-io = true
 
-[policy.peat-mesh]
-audit-as-crates-io = true
-
 [policy.peat-protocol]
 audit-as-crates-io = true
 
@@ -72,16 +69,8 @@ criteria = "safe-to-deploy"
 version = "0.3.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.libloading]]
-version = "0.7.4"
-criteria = "safe-to-deploy"
-
 [[exemptions.peat]]
 version = "0.9.0-rc.12"
-criteria = "safe-to-deploy"
-
-[[exemptions.peat-mesh]]
-version = "0.9.0-rc.13@git:f89daf5a37b65e392a5e7dc8c315b2890f631458"
 criteria = "safe-to-deploy"
 
 [[exemptions.peat-protocol]]
