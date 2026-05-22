@@ -104,7 +104,18 @@ repository = "https://github.com/defenseunicorns/peat"
 # Scenario 2 / 4 promise). Pinning the floor below rc.16 would let
 # the workspace build against a peat-mesh missing
 # `subscribe_to_changes_with_origin` — the load-bearing call.
-peat-mesh = { version = ">=0.9.0-rc.16, <0.9.1", default-features = false }
+#
+# Floor advanced to rc.17 on 2026-05-22 (peat-mesh#152 + peat-mesh#154
+# / defenseunicorns/peat#890) — rc.17 ships
+# `peat_mesh::storage::interface_filter::select_advertise_interfaces`
+# + the `BoundAddr` / `InterfaceSelection` types that
+# `peat-protocol/src/network/iroh_transport.rs::from_seed_at_addr`
+# now consumes to filter the iroh `Endpoint`'s advertised set when
+# the caller passes an unspecified bind addr (`0.0.0.0` / `[::]`).
+# Pinning below rc.17 would let the workspace build against a
+# peat-mesh missing those exports — the load-bearing call site
+# would fail to compile.
+peat-mesh = { version = ">=0.9.0-rc.17, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

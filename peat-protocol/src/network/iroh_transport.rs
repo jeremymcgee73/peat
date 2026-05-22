@@ -633,11 +633,49 @@ impl IrohTransport {
             "Created IrohTransport with deterministic key (NO mDNS discovery - fast startup)"
         );
 
-        let endpoint = relay_policy_builder()
+        // peat#890: when the caller passed an unspecified address
+        // (`0.0.0.0` or `[::]`), iroh defaults to binding to every local
+        // interface and publishing them all as candidate dial targets —
+        // including docker bridges, tailscale CGNAT, and stale leases.
+        // Delegate to peat-mesh's `interface_filter` (the transport-layer
+        // home for this concern per peat/SKILL.md's transport-agnosticism
+        // rule) to pick only the interfaces worth advertising.
+        let mut builder = relay_policy_builder()
             .alpns(vec![CAP_AUTOMERGE_ALPN.to_vec()])
-            .secret_key(secret_key)
-            .bind_addr(bind_addr)
-            .context("Invalid bind address")?
+            .secret_key(secret_key);
+        if bind_addr.ip().is_unspecified() {
+            let want_v6 = bind_addr.is_ipv6();
+            let sel = peat_mesh::storage::interface_filter::select_advertise_interfaces(
+                bind_addr.port(),
+                want_v6,
+            );
+            if sel.bind_addrs.is_empty() {
+                tracing::warn!(
+                    "interface filter produced no bindable interfaces; falling back to unspecified bind {bind_addr}"
+                );
+                builder = builder
+                    .bind_addr(bind_addr)
+                    .context("Invalid bind address")?;
+            } else {
+                peat_mesh::storage::interface_filter::log_selection(&sel);
+                builder = builder.clear_ip_transports();
+                for b in &sel.bind_addrs {
+                    builder = builder
+                        .bind_addr_with_opts(
+                            b.addr,
+                            iroh::endpoint::BindOpts::default().set_prefix_len(b.prefix_len),
+                        )
+                        .with_context(|| {
+                            format!("Invalid filtered bind address {}/{}", b.addr, b.prefix_len)
+                        })?;
+                }
+            }
+        } else {
+            builder = builder
+                .bind_addr(bind_addr)
+                .context("Invalid bind address")?;
+        }
+        let endpoint = builder
             .transport_config(create_tactical_transport_config())
             .bind()
             .await
