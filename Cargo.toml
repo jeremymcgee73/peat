@@ -78,8 +78,13 @@ repository = "https://github.com/defenseunicorns/peat"
 # `reexport_encryption_keypair_dh_exchange` requires the
 # `ecdh::SharedSecret::raw_secret_bytes()` accessor that rc.12
 # introduced — pinning the floor below rc.12 would let the test fail
-# to compile on a downgrade resolve.
-peat-mesh = { version = ">=0.9.0-rc.12, <0.9.1", default-features = false }
+# to compile on a downgrade resolve. Floor advanced again to rc.14 on
+# 2026-05-21 (peat#900 / peat-mesh#147/#148) — rc.14 introduces
+# `MdnsDiscovery::advertise_with_addr` and the DNS-label / handle_removed
+# fixes that the consolidated `examples/quickstart` requires. Pinning
+# the floor below rc.14 would let the workspace build against a
+# peat-mesh missing those APIs.
+peat-mesh = { version = ">=0.9.0-rc.14, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
@@ -116,21 +121,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Testing
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
-
-# TEMPORARY (peat#898 phase 1 — mDNS consolidation):
-# peat-mesh#147 has merged to `main` as commit `f89daf5a`, but the
-# corresponding release (`0.9.0-rc.14` or later) is not yet published
-# to crates.io. Pin peat-mesh to the merge commit on `main` (not the
-# now-deleted PR branch ref) so the workspace builds against the same
-# code that merged. `rev` rather than `branch` keeps the build fully
-# reproducible.
-#
-# This override **must be removed** once `0.9.0-rc.14` (or later)
-# publishes to crates.io — at that point the workspace pin at
-# `peat-mesh = ">=0.9.0-rc.12, <0.9.1"` (line 82) gets bumped to a
-# floor that includes `MdnsDiscovery::advertise_with_addr`
-# (`>=0.9.0-rc.14, <0.9.1`) and this `[patch.crates-io]` entry, plus
-# the companion `[policy.peat-mesh]` + git-rev exemption in
-# `supply-chain/config.toml`, all delete together.
-[patch.crates-io]
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "f89daf5a37b65e392a5e7dc8c315b2890f631458" }

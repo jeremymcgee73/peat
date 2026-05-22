@@ -17,12 +17,14 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 ### Changed
 
 - **mDNS service type changed: `_peat-node._tcp.local.` → `_peat._udp.local.`** ([#898](https://github.com/defenseunicorns/peat/issues/898), [#900](https://github.com/defenseunicorns/peat/pull/900)). Phase 1 of the mDNS-discovery consolidation retires three divergent `MdnsDiscovery` implementations (one in `peat-protocol`, one in the `peat-discovery` workspace subcrate, one in the `peat-mesh` sibling) down to peat-mesh's canonical, transport-agnostic version. The peat-mesh implementation has always used `_peat._udp.local.`; quickstart and any other in-tree consumers now align on that string. **Wire-visible**: a node running the post-PR quickstart binary will not discover — and will not be discovered by — any node still running a pre-PR binary. Operators of mixed-version fleets should use static `--peer NODE_ID@ADDR` until all nodes are upgraded.
+- **Workspace `peat-mesh` floor bumped to `0.9.0-rc.14`** (was `>=0.9.0-rc.12, <0.9.1` → `>=0.9.0-rc.14, <0.9.1`). rc.14 ships `MdnsDiscovery::advertise_with_addr` and the DNS-label / `handle_removed` fixes that the consolidated `examples/quickstart` requires; pinning below rc.14 would let the workspace build against a peat-mesh missing those APIs.
 
 ### Removed
 
 - **`peat_protocol::discovery::peer::MdnsDiscovery`** and **`peat_protocol::discovery::peer::RelayDiscovery`** (the latter was vestigial — its `start()` body was a `// TODO` and no in-repo caller existed). `DiscoveryStrategy`, `StaticDiscovery`, `DiscoveryManager`, and the `PeerInfo` re-export stay in place — only the IP-stack-specific strategy implementations moved.
 - **`peat_discovery::mdns` module** (workspace subcrate). The crate had no in-repo consumers of its `MdnsDiscovery`; the module + `mdns-sd` dep are removed. `HybridDiscovery` and `StaticDiscovery` are unaffected.
 - **`mdns-sd` dependency** dropped from `peat-protocol/Cargo.toml` (no remaining call sites) and from `peat-discovery/Cargo.toml`.
+- **Temporary `[patch.crates-io]` override for peat-mesh, `[policy.peat-mesh]`, and `[[exemptions.peat-mesh]] 0.9.0-rc.13@git:...`** — all removed once peat-mesh `0.9.0-rc.14` published to crates.io. peat-mesh now resolves from crates.io directly. The supply-chain bookkeeping is back to the pre-#900 shape.
 
 ## [0.9.0-rc.12] - 2026-05-19
 
