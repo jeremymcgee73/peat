@@ -767,6 +767,31 @@ impl SyncEngine {
 }
 ```
 
+#### 6.4.1 Transitive gossip and topology envelope
+
+From peat-mesh `0.9.0-rc.16` (with the peat consumer half on `peat-protocol` main) onward, the Automerge propagation task **re-pushes a document to every connected peer except the source** whenever it receives a remote change. This is what makes hub-and-spoke topologies converge — the QUICKSTART Scenario 2 and Scenario 4 promise (`bravo` and `charlie` wired only to `alpha` still see each other's state via gossip) is delivered by this behavior.
+
+The fan-out fires in **all** topologies, not just hub-and-spoke. On bandwidth-constrained links and dense meshes the sync-state handshake overhead can be material. `ADR-061` (`docs/adr/061-gossip-fan-out-topology-bounds.md`) records the full derivation; the operator-facing envelope is:
+
+| Topology                                | Within 20% bandwidth baseline if…                                                              |
+|-----------------------------------------|------------------------------------------------------------------------------------------------|
+| Singleton / two-node                    | Always.                                                                                        |
+| Hub-and-spoke (any N)                   | Always. Gossip is the intent; the relay is load-bearing.                                       |
+| Fully-connected, LAN (link ≥ 256 kbps)  | `N ≤ 4` at write rate ≤ 2 Hz, or `N ≤ 7` (the default `max_connections` cap) at ≤ 0.5 Hz.       |
+| Fully-connected, **BLE-class** (30 kbps)| `N = 3` only, write rate ≤ 0.5 Hz (≈ 65 % of the 750 B/s 20 % budget). `N ≥ 4` is **out of envelope** before any application data flows. |
+| Fully-connected, BLE-class (≥ 60 kbps)  | `N = 3` at write rate ≤ 1 Hz.                                                                  |
+| Partial mesh (non-BLE), diameter ≤ 3    | Within envelope.                                                                               |
+| Partial mesh (non-BLE), diameter > 3    | Out of envelope. Multi-hop gossip compounds amplification at each hop.                         |
+| Partial mesh, BLE-class, any diameter   | Case-by-case; multi-hop on narrowband is almost always out of envelope. Prefer the existing peat-btle `mesh-translator` path over Automerge transitive gossip. |
+
+**Out-of-envelope deployments today have three options:**
+
+1. Reduce `max_connections` (default 7) so the actual mesh stays inside the envelope.
+2. Reduce the application's write rate (batch telemetry rather than per-sample upserts).
+3. Choose a partial topology — e.g., make one node a designated hub and remove direct edges between leaves.
+
+A future minor release will likely add runtime topology detection (ADR-061 §"Mitigation options", Option B) so dense-mesh deployments suppress the redundant relay automatically. Until then this envelope is the contract.
+
 ### 6.5 Storage API
 
 ```rust

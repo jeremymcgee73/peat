@@ -6,6 +6,7 @@
 **Authors**: Codex, Kit Plummer
 **Supersedes**: ADR-005 (Data Sync Abstraction Layer)
 **Replaces**: ADR-002 (Beacon Storage Architecture - Ditto-based)
+**Related (operational constraint)**: [ADR-061](061-gossip-fan-out-topology-bounds.md) (2026-05-22) — Records operational bounds on the Automerge sync engine's relay-on-remote-apply behavior (peat-mesh rc.16 / peat#909). ADR-061 does NOT amend a specific section of this ADR — the backend-evaluation framework here predates relay gossip and the propagation behavior itself lives in `peat-protocol/src/storage/automerge_backend.rs` Phase 6.5. ADR-061's topology envelope applies to any deployment running the Automerge backend selected by this ADR.
 
 ## Executive Summary
 

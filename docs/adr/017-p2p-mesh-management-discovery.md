@@ -4,7 +4,8 @@
 **Date**: 2025-11-14  
 **Authors**: Kit Plummer, Codex  
 **Supersedes**: None  
-**Relates To**: ADR-001 (Peat Protocol POC), ADR-002 (Beacon Storage), ADR-011 (Automerge + Iroh), ADR-013 (Distributed Software & AI Ops)
+**Relates To**: ADR-001 (Peat Protocol POC), ADR-002 (Beacon Storage), ADR-011 (Automerge + Iroh), ADR-013 (Distributed Software & AI Ops)  
+**Amended by**: [ADR-061](061-gossip-fan-out-topology-bounds.md) (2026-05-22) — §Layer 2 "Mesh Topology Management" extended to cover the four topology classes (hub-and-spoke, fully-connected, partial-mesh, singleton) and their bandwidth envelopes under relay-on-remote-apply gossip (peat-mesh rc.16 / peat#909). The rest of this ADR (Layer 1 Discovery Strategies, Layer 3 Data Flow Control, Architecture, Implementation Design) remains in force.
 
 ---
 
