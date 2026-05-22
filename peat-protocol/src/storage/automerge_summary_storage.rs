@@ -12,6 +12,7 @@ use crate::hierarchy::SquadFieldUpdate;
 #[cfg(feature = "automerge-backend")]
 use crate::storage::automerge_conversion::{
     automerge_to_message, automerge_to_message_if_complete, message_to_automerge,
+    message_to_automerge_into,
 };
 #[cfg(feature = "automerge-backend")]
 use crate::storage::automerge_store::AutomergeStore;
@@ -199,7 +200,12 @@ impl SummaryStorage for AutomergeSummaryStorage {
         let delta_bytes = apply_squad_delta(&mut summary, delta);
 
         // Convert back to Automerge and store
-        let updated_doc = message_to_automerge(&summary).map_err(|e| {
+        // peat#903 / peat#896: pass the existing `doc` so the new write
+        // forks from it (preserving CRDT history). Without `Some(&doc)`
+        // the receiver sees a fresh actor lineage per update → snapshot
+        // bytes stay constant → the CRDT merge resolves to a stale
+        // value deterministically.
+        let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
             crate::Error::storage_error(
                 format!("Failed to convert updated SquadSummary to Automerge: {}", e),
                 "update_squad_summary",
@@ -327,7 +333,8 @@ impl SummaryStorage for AutomergeSummaryStorage {
 
         let delta_bytes = apply_platoon_delta(&mut summary, delta);
 
-        let updated_doc = message_to_automerge(&summary).map_err(|e| {
+        // peat#903 / peat#896: preserve CRDT history via existing-doc fork.
+        let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
             crate::Error::storage_error(
                 format!(
                     "Failed to convert updated PlatoonSummary to Automerge: {}",
@@ -459,7 +466,8 @@ impl SummaryStorage for AutomergeSummaryStorage {
 
         let delta_bytes = apply_company_delta(&mut summary, delta);
 
-        let updated_doc = message_to_automerge(&summary).map_err(|e| {
+        // peat#903 / peat#896: preserve CRDT history via existing-doc fork.
+        let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
             crate::Error::storage_error(
                 format!(
                     "Failed to convert updated CompanySummary to Automerge: {}",
@@ -891,6 +899,183 @@ mod tests {
         // Second create should fail (create-once enforcement)
         let result = storage.create_squad_summary("squad-1", &summary).await;
         assert!(result.is_err());
+    }
+
+    /// Regression test for peat#903 (sibling of peat#896).
+    ///
+    /// `update_squad_summary` previously called
+    /// `message_to_automerge(&summary)`, which returned a fresh
+    /// `Automerge::new()` doc with a brand-new actor lineage on every
+    /// call. The post-`save()` byte sequence stayed constant across
+    /// sequential writes, and receivers' CRDT merge resolved to a
+    /// deterministic but **stale** actor's value.
+    ///
+    /// Post-fix uses `message_to_automerge_into(&summary, Some(&doc))`
+    /// so the new write forks from the prior doc and history grows.
+    /// This test pins both invariants: saved bytes must strictly grow
+    /// (with at least one distinct snapshot length) and the final
+    /// read-back must equal the most recent write.
+    #[tokio::test]
+    async fn test_update_squad_summary_preserves_history_peat903() {
+        let (storage, _temp) = create_test_storage();
+        let store = storage.store().clone();
+        let key = AutomergeSummaryStorage::squad_key("squad-1");
+
+        let initial = SquadSummary {
+            squad_id: "squad-1".to_string(),
+            avg_fuel_minutes: 100.0,
+            ..Default::default()
+        };
+        storage
+            .create_squad_summary("squad-1", &initial)
+            .await
+            .expect("create should succeed");
+
+        let mut saved_lens = vec![];
+        for counter in (90u32..=100).rev() {
+            let delta = SquadDelta {
+                squad_id: "squad-1".to_string(),
+                timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
+                sequence: (100 - counter) as u64 + 1,
+                updates: vec![SquadFieldUpdate::SetOperationalCount(counter)],
+            };
+            storage
+                .update_squad_summary("squad-1", delta)
+                .await
+                .unwrap();
+
+            let doc = store.get(&key).unwrap().expect("doc must exist");
+            saved_lens.push(doc.save().len());
+        }
+
+        let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "all {} sequential summary updates produced byte-identical \
+             snapshots ({:?}); peat#903 says history is being dropped",
+            saved_lens.len(),
+            saved_lens.first()
+        );
+        for w in saved_lens.windows(2) {
+            assert!(
+                w[1] >= w[0],
+                "saved bytes shrunk across sequential summary writes: {w:?}"
+            );
+        }
+
+        let final_state = storage.get_squad_summary("squad-1").await.unwrap().unwrap();
+        assert_eq!(
+            final_state.operational_count, 90,
+            "expected most recent write (90), got {}",
+            final_state.operational_count
+        );
+    }
+
+    /// peat#903 regression for `update_platoon_summary` — same shape as
+    /// the squad test above.
+    #[tokio::test]
+    async fn test_update_platoon_summary_preserves_history_peat903() {
+        let (storage, _temp) = create_test_storage();
+        let store = storage.store().clone();
+        let key = AutomergeSummaryStorage::platoon_key("platoon-1");
+
+        let initial = PlatoonSummary {
+            platoon_id: "platoon-1".to_string(),
+            avg_fuel_minutes: 100.0,
+            ..Default::default()
+        };
+        storage
+            .create_platoon_summary("platoon-1", &initial)
+            .await
+            .expect("create should succeed");
+
+        let mut saved_lens = vec![];
+        for counter in (90u32..=100).rev() {
+            let delta = PlatoonDelta {
+                platoon_id: "platoon-1".to_string(),
+                timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
+                sequence: (100 - counter) as u64 + 1,
+                updates: vec![PlatoonFieldUpdate::SetOperationalCount(counter)],
+            };
+            storage
+                .update_platoon_summary("platoon-1", delta)
+                .await
+                .unwrap();
+
+            let doc = store.get(&key).unwrap().expect("doc must exist");
+            saved_lens.push(doc.save().len());
+        }
+
+        let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "platoon summary upserts produced byte-identical snapshots \
+             ({:?}); peat#903 history-dropping regression",
+            saved_lens.first()
+        );
+        for w in saved_lens.windows(2) {
+            assert!(w[1] >= w[0], "platoon snapshot bytes shrunk: {w:?}");
+        }
+
+        let final_state = storage
+            .get_platoon_summary("platoon-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_state.operational_count, 90);
+    }
+
+    /// peat#903 regression for `update_company_summary` — same shape.
+    #[tokio::test]
+    async fn test_update_company_summary_preserves_history_peat903() {
+        let (storage, _temp) = create_test_storage();
+        let store = storage.store().clone();
+        let key = AutomergeSummaryStorage::company_key("company-1");
+
+        let initial = CompanySummary {
+            company_id: "company-1".to_string(),
+            avg_fuel_minutes: 100.0,
+            ..Default::default()
+        };
+        storage
+            .create_company_summary("company-1", &initial)
+            .await
+            .expect("create should succeed");
+
+        let mut saved_lens = vec![];
+        for counter in (90u32..=100).rev() {
+            let delta = CompanyDelta {
+                company_id: "company-1".to_string(),
+                timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
+                sequence: (100 - counter) as u64 + 1,
+                updates: vec![CompanyFieldUpdate::SetOperationalCount(counter)],
+            };
+            storage
+                .update_company_summary("company-1", delta)
+                .await
+                .unwrap();
+
+            let doc = store.get(&key).unwrap().expect("doc must exist");
+            saved_lens.push(doc.save().len());
+        }
+
+        let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "company summary upserts produced byte-identical snapshots \
+             ({:?}); peat#903 history-dropping regression",
+            saved_lens.first()
+        );
+        for w in saved_lens.windows(2) {
+            assert!(w[1] >= w[0], "company snapshot bytes shrunk: {w:?}");
+        }
+
+        let final_state = storage
+            .get_company_summary("company-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_state.operational_count, 90);
     }
 
     #[tokio::test]

@@ -6,7 +6,9 @@
 #[cfg(feature = "automerge-backend")]
 use crate::command::{CommandStorage, ObserverHandle};
 #[cfg(feature = "automerge-backend")]
-use crate::storage::automerge_conversion::{automerge_to_message, message_to_automerge};
+use crate::storage::automerge_conversion::{
+    automerge_to_message, message_to_automerge, message_to_automerge_into,
+};
 #[cfg(feature = "automerge-backend")]
 use crate::storage::automerge_store::AutomergeStore;
 #[cfg(feature = "automerge-backend")]
@@ -282,8 +284,20 @@ impl CommandStorage for AutomergeCommandStorage {
             updated_at_us: Self::now_us(),
         };
 
-        // Convert to Automerge document and store (upsert semantics)
-        let doc = message_to_automerge(&wrapper).map_err(|e| {
+        // peat#903 / peat#896: re-status of an existing command_id is an
+        // upsert. If we always build a fresh `Automerge::new()` doc here,
+        // every status update assigns a brand-new actor lineage and the
+        // saved snapshot stays constant-sized — receivers' CRDT merge
+        // resolves to a stale state deterministically. Fetch the prior
+        // doc (if any) and fork from it so history is preserved.
+        let existing = self.store.get(&key).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to read existing status doc: {}", e),
+                "update_command_status",
+                Some(key.clone()),
+            )
+        })?;
+        let doc = message_to_automerge_into(&wrapper, existing.as_ref()).map_err(|e| {
             crate::Error::storage_error(
                 format!("Failed to convert status to Automerge: {}", e),
                 "update_command_status",
@@ -633,6 +647,72 @@ mod tests {
         let node_ids: Vec<&str> = acks.iter().map(|a| a.node_id.as_str()).collect();
         assert!(node_ids.contains(&"node-1"));
         assert!(node_ids.contains(&"node-2"));
+    }
+
+    /// Regression test for peat#903 (sibling of peat#896).
+    ///
+    /// `update_command_status` previously called
+    /// `message_to_automerge(&wrapper)`, which returned a fresh
+    /// `Automerge::new()` doc with a new actor lineage on every
+    /// status transition for the same `command_id`. The saved byte
+    /// sequence stayed constant across sequential transitions, and
+    /// receivers' CRDT merge resolved to a deterministic but stale
+    /// state.
+    ///
+    /// Post-fix the code reads the existing doc and forks via
+    /// `message_to_automerge_into(&wrapper, Some(&prior))`, so the
+    /// snapshot bytes grow monotonically and the most recent state
+    /// wins under merge.
+    #[tokio::test]
+    async fn test_update_command_status_preserves_history_peat903() {
+        let (storage, _temp) = create_test_storage();
+        let store = storage.store.clone();
+        let key = AutomergeCommandStorage::status_key("cmd-status-903");
+
+        let mut saved_lens = vec![];
+        // Cycle through states 1..=11 — each is a sequential upsert on
+        // the same key. Pre-fix every iteration would produce the same
+        // byte length; post-fix lengths grow.
+        for state in 1i32..=11 {
+            let status = create_test_status("cmd-status-903", state);
+            storage.update_command_status(&status).await.unwrap();
+
+            let doc = store.get(&key).unwrap().expect("doc must exist");
+            saved_lens.push(doc.save().len());
+        }
+
+        // The diagnostic invariant for the peat#903 fix is "snapshots are
+        // not byte-identical across writes". The bug produced a constant
+        // byte length because every write started from `Automerge::new()`
+        // with a fresh actor lineage; the post-fix path forks the prior
+        // doc, so the change graph (and the saved bytes) varies per
+        // write. We deliberately do NOT assert strict monotonic growth
+        // here: `StatusWrapper` carries an `updated_at_us` field that is
+        // overwritten on every call, and Automerge's binary `save()`
+        // format can legitimately compact subsequent snapshots smaller
+        // than earlier ones when later writes supersede the same key.
+        // The squad/platoon/company summary tests retain the stricter
+        // monotonic check because their `Set*` updates touch distinct
+        // delta sequences and don't compact.
+        let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "all {} sequential status updates produced byte-identical \
+             snapshots ({:?}); peat#903 says history is being dropped",
+            saved_lens.len(),
+            saved_lens.first()
+        );
+
+        let final_state = storage
+            .get_command_status("cmd-status-903")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            final_state.state, 11,
+            "expected most recent status (state=11), got {}",
+            final_state.state
+        );
     }
 
     #[tokio::test]
