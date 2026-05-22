@@ -835,44 +835,118 @@ impl SyncCapable for AutomergeBackend {
 
         *self.incoming_handler_task.write().unwrap() = Some(task);
 
-        // Phase 6.5: Spawn local change propagation task
+        // Phase 6.5: Spawn change propagation + transitive-gossip task
         //
-        // Subscribe to AutomergeStore change notifications and push changed
-        // documents to all connected peers. This ensures documents created after
-        // the initial connection handshake (e.g., platoon summaries created by
-        // aggregation loops) propagate to peers automatically.
+        // Subscribes to the origin-tagged change broadcast (peat-mesh#151 /
+        // peat#891) so the pusher fires on BOTH local writes AND sync-
+        // received remote applies — the latter is what makes transitive
+        // gossip work for hub-and-spoke topologies. The origin attribution
+        // carried on each event drives the per-peer filter:
+        //
+        // - ChangeOrigin::Local: push to every connected peer.
+        // - ChangeOrigin::Remote(src): push to every connected peer EXCEPT
+        //   `src` (the source peer already has the doc; pushing back forms
+        //   the same #115 ping-pong that the original suppression closed,
+        //   except now we close it at the consumer's edge with full
+        //   attribution rather than suppressing the broadcast).
         {
             let store_for_changes = Arc::clone(&self.store);
             let coordinator_for_changes: Arc<peat_mesh::storage::AutomergeSyncCoordinator> =
                 Arc::clone(self.sync_coordinator.as_ref().unwrap());
+            let transport_for_changes = self.transport.clone().unwrap();
             let sync_active_for_changes = Arc::clone(&self.sync_active);
             tokio::spawn(async move {
-                let mut change_rx = store_for_changes.subscribe_to_changes();
-                // Debounce: track last push time per doc to avoid sync loops
-                let mut last_push: std::collections::HashMap<String, std::time::Instant> =
-                    std::collections::HashMap::new();
+                use peat_mesh::storage::ChangeOrigin;
+                let mut change_rx = store_for_changes.subscribe_to_changes_with_origin();
+                // Debounce is keyed by (doc_key, peer_id) — different peers
+                // are independent destinations. A doc that was just pushed
+                // to bravo should still be pushable to charlie without
+                // waiting the debounce window. Pre-gossip the key was just
+                // doc_key, which was fine for single-direction local writes
+                // but would over-suppress under gossip.
+                //
+                // Bounded LRU with lazy TTL sweep (peat#909 QA): every
+                // unique (doc, peer) pair that passes through the
+                // propagation task leaves a `last_push` entry, so on a
+                // long-running hub node with document or peer churn the
+                // map would otherwise grow without bound. Cap by entry
+                // count and sweep entries older than the retention
+                // window on each insert. Sized for ~32 documents × ~32
+                // peers steady-state with headroom; well above any
+                // realistic working set, low enough that map ops stay
+                // O(small).
+                const LAST_PUSH_CAP: usize = 4096;
                 let debounce = std::time::Duration::from_secs(2);
+                let retain_for = debounce * 5; // any entry older than this
+                                               // can't influence debounce
+                let mut last_push: std::collections::HashMap<(String, String), std::time::Instant> =
+                    std::collections::HashMap::with_capacity(64);
                 while sync_active_for_changes.load(Ordering::Relaxed) {
                     match change_rx.recv().await {
-                        Ok(doc_key) => {
-                            // Skip if we pushed this doc recently (prevents sync echo loops)
+                        Ok(evt) => {
+                            let doc_key = evt.key;
+                            let exclude: Option<String> = match evt.origin {
+                                ChangeOrigin::Local => None,
+                                ChangeOrigin::Remote(src) => Some(src),
+                            };
+
+                            let peer_ids = transport_for_changes.connected_peers();
                             let now = std::time::Instant::now();
-                            if let Some(last) = last_push.get(&doc_key) {
-                                if now.duration_since(*last) < debounce {
-                                    continue;
+
+                            // Lazy TTL sweep — drop entries older than the
+                            // retention window so the map stays bounded under
+                            // long-running document/peer churn.
+                            last_push.retain(|_, last| now.duration_since(*last) < retain_for);
+                            // Hard cap as a backstop: if the sweep didn't free
+                            // enough (e.g. all entries are fresh because of a
+                            // burst), evict ~25% of the oldest to keep ops
+                            // O(small) and avoid an unbounded steady-state.
+                            if last_push.len() >= LAST_PUSH_CAP {
+                                let target_drop = last_push.len() / 4;
+                                let mut entries: Vec<_> = last_push.iter().collect();
+                                entries.sort_by_key(|(_, t)| **t);
+                                let drop_keys: Vec<_> = entries
+                                    .into_iter()
+                                    .take(target_drop)
+                                    .map(|(k, _)| k.clone())
+                                    .collect();
+                                for k in drop_keys {
+                                    last_push.remove(&k);
                                 }
                             }
-                            last_push.insert(doc_key.clone(), now);
 
-                            if let Err(e) = coordinator_for_changes
-                                .sync_document_with_all_peers(&doc_key)
-                                .await
-                            {
-                                tracing::trace!(
-                                    "Change propagation failed for '{}': {}",
-                                    doc_key,
-                                    e
-                                );
+                            for peer_id in peer_ids {
+                                let peer_str = peer_id.to_string();
+                                // Gossip filter: don't echo back to the source
+                                // peer. This is the peat#891 fix — without it,
+                                // alpha would push bravo's just-received doc
+                                // back to bravo (wasted bandwidth at best,
+                                // bucket-saturation at worst per peat-mesh#115).
+                                if exclude.as_ref() == Some(&peer_str) {
+                                    continue;
+                                }
+                                // Per-(doc, peer) debounce to suppress
+                                // intra-window resends without blocking
+                                // cross-peer fan-out.
+                                let entry_key = (doc_key.clone(), peer_str);
+                                if let Some(last) = last_push.get(&entry_key) {
+                                    if now.duration_since(*last) < debounce {
+                                        continue;
+                                    }
+                                }
+                                last_push.insert(entry_key, now);
+
+                                if let Err(e) = coordinator_for_changes
+                                    .sync_document_with_peer(&doc_key, peer_id)
+                                    .await
+                                {
+                                    tracing::trace!(
+                                        "Change propagation failed for '{}' → {:?}: {}",
+                                        doc_key,
+                                        peer_id,
+                                        e
+                                    );
+                                }
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -881,7 +955,7 @@ impl SyncCapable for AutomergeBackend {
                         Err(_) => break,
                     }
                 }
-                tracing::debug!("Local change propagation task stopped");
+                tracing::debug!("Change propagation / gossip task stopped");
             });
         }
 
