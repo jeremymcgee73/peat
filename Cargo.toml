@@ -83,8 +83,17 @@ repository = "https://github.com/defenseunicorns/peat"
 # `MdnsDiscovery::advertise_with_addr` and the DNS-label / handle_removed
 # fixes that the consolidated `examples/quickstart` requires. Pinning
 # the floor below rc.14 would let the workspace build against a
-# peat-mesh missing those APIs.
-peat-mesh = { version = ">=0.9.0-rc.14, <0.9.1", default-features = false }
+# peat-mesh missing those APIs. Floor advanced once more to rc.15 on
+# 2026-05-21 (peat-mesh#149/#150) — rc.15 closes the receive-side half
+# of defenseunicorns/peat#897: `MdnsDiscovery::start` now joins the
+# loopback multicast interface (`IfKind::LoopbackV4`/`LoopbackV6`,
+# new in `mdns_sd 0.19`), so the literal QUICKSTART Scenario 3 form
+# (`--bind 127.0.0.1:PORT --mdns` × N nodes) finally produces a
+# working mesh. No peat-side code change required to consume — the
+# fix is internal to peat-mesh — but pinning the floor at rc.14
+# would mean the workspace could build against a peat-mesh that
+# silently regresses loopback discovery.
+peat-mesh = { version = ">=0.9.0-rc.15, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
