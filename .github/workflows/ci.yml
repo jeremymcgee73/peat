@@ -420,8 +420,18 @@ jobs:
       - name: Capture logcat
         if: always()
         run: |
+          # Best-effort: a physical Android device attached to the
+          # self-hosted runner can doze between the test step finishing
+          # and this step starting — adb then disconnects and any
+          # logcat command exits non-zero. `KEYCODE_WAKEUP` is the
+          # cheapest in-box recovery (no-op if the device is already
+          # awake), and the `|| true` guards keep a post-test capture
+          # flake from failing a job whose actual tests already
+          # decided their own outcome. Missing logcat is a
+          # post-mortem inconvenience, not a release blocker.
           mkdir -p peat-ffi/android/build/logcat
-          adb logcat -d > peat-ffi/android/build/logcat/full.txt
+          adb shell input keyevent KEYCODE_WAKEUP || true
+          adb logcat -d > peat-ffi/android/build/logcat/full.txt || true
           adb logcat -d \
             *:E \
             PeatRust:V \
@@ -430,7 +440,7 @@ jobs:
             TestRunner:V \
             > peat-ffi/android/build/logcat/peat-and-crash.txt || true
           echo "--- error-level + peat-tagged logcat (tail 200) ---"
-          tail -n 200 peat-ffi/android/build/logcat/peat-and-crash.txt
+          tail -n 200 peat-ffi/android/build/logcat/peat-and-crash.txt 2>/dev/null || echo "(logcat capture unavailable — adb disconnected, see step rationale)"
 
       - name: Upload logcat + test reports
         if: always()
