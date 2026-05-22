@@ -62,7 +62,7 @@
 #[cfg(feature = "automerge-backend")]
 use super::automerge_command_storage::AutomergeCommandStorage;
 #[cfg(feature = "automerge-backend")]
-use super::automerge_conversion::{automerge_to_message, message_to_automerge};
+use super::automerge_conversion::{automerge_to_message, message_to_automerge_into};
 #[cfg(feature = "automerge-backend")]
 use super::automerge_store::AutomergeStore;
 #[cfg(feature = "automerge-backend")]
@@ -536,9 +536,16 @@ where
     M: ProstMessage + Serialize + DeserializeOwned + Default + Clone,
 {
     fn upsert(&self, doc_id: &str, message: &M) -> Result<()> {
-        // Convert message to Automerge document with CRDT semantics
-        let doc = message_to_automerge(message)?;
-        self.store.put(&self.prefixed_key(doc_id), &doc)
+        // Read existing doc (if any) so the new write forks from it,
+        // preserving CRDT history. Closes peat#896: prior code passed
+        // a brand-new `Automerge::new()` through every upsert, so each
+        // write had a fresh actor with no causal link to earlier
+        // writes — sync peers received byte-identical snapshots and
+        // the CRDT merge picked stale values deterministically.
+        let key = self.prefixed_key(doc_id);
+        let existing = self.store.get(&key)?;
+        let doc = message_to_automerge_into(message, existing.as_ref())?;
+        self.store.put(&key, &doc)
     }
 
     fn get(&self, doc_id: &str) -> Result<Option<M>> {
@@ -1426,6 +1433,72 @@ mod tests {
         assert_eq!(retrieved.fuel_minutes, 60);
         assert_eq!(retrieved.cell_id, Some("cell-1".to_string()));
         assert!(retrieved.position.is_some());
+    }
+
+    /// Reproducer for peat#896 — sequential upserts to the same key must
+    /// accumulate Automerge history. The sync layer at
+    /// `peat_mesh::storage::automerge_sync::initiate_sync_inner` reads
+    /// the stored doc via `store.get(key)?.save()` and sends those bytes
+    /// to peers. If history is dropped, every write produces a
+    /// byte-identical (or near-identical) snapshot and the receiver's
+    /// CRDT merge picks one actor's value deterministically — which can
+    /// be the wrong/stale one (see peat#896 trace logs showing
+    /// `initiate_sync_inner: got doc, len=164` constant across writes
+    /// while alpha's view of bravo's counter stays frozen for 15-20 s
+    /// at a time).
+    ///
+    /// Expected post-fix behavior: the saved byte count is **strictly
+    /// increasing** across sequential writes (history accumulates) and
+    /// the most recent write's value is the one a fresh `get` returns.
+    #[test]
+    fn test_typed_collection_upsert_preserves_history_peat896() {
+        use crate::storage::capabilities::CrdtCapable;
+
+        let (backend, _temp) = create_test_backend();
+        let nodes: Arc<dyn TypedCollection<NodeState>> = backend.typed_collection("nodes");
+        let store = backend.automerge_store();
+
+        let mut saved_lens = vec![];
+        for counter in (90u32..=100).rev() {
+            let node = NodeState {
+                fuel_minutes: counter,
+                cell_id: Some("alpha".to_string()),
+                ..Default::default()
+            };
+            nodes.upsert("alpha", &node).unwrap();
+
+            // Probe the same byte sequence the sync layer would send.
+            let doc = store.get("nodes:alpha").unwrap().expect("doc must exist");
+            saved_lens.push(doc.save().len());
+        }
+
+        // 11 sequential writes must produce 11 distinct snapshots, with
+        // monotonically non-decreasing length (history grows). The bug
+        // (peat#896) produced byte-identical snapshots — that's the
+        // failure mode this assertion catches.
+        let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "all {} sequential upserts produced byte-identical snapshots ({:?}); \
+             peat#896 says history is being dropped",
+            saved_lens.len(),
+            saved_lens.first()
+        );
+        for w in saved_lens.windows(2) {
+            assert!(
+                w[1] >= w[0],
+                "saved bytes shrunk across sequential writes: {w:?}"
+            );
+        }
+
+        // Final read-back must return the LAST value we wrote, not an
+        // earlier one resolved via CRDT tiebreaker.
+        let final_state = nodes.get("alpha").unwrap().expect("must read back");
+        assert_eq!(
+            final_state.fuel_minutes, 90,
+            "expected most recent write (90), got {}",
+            final_state.fuel_minutes
+        );
     }
 
     #[test]

@@ -117,14 +117,50 @@ pub fn automerge_to_node_state(doc: &Automerge) -> Result<NodeState> {
 
 /// Generic: Convert any serializable message to Automerge document
 ///
-/// This is the generic version used by `TypedCollection<M>`.
-/// Works with any type that implements Serialize.
+/// Builds a brand-new Automerge document with no prior history.
+/// Right for cases that genuinely want a fresh actor lineage —
+/// initial-state writes, immutable command records, etc.
+///
+/// **Wrong for repeated upserts to the same key.** A sequence of fresh
+/// docs has no causal relationship, so on the receive side the
+/// CRDT merge sees N concurrent edits from N different actors and
+/// resolves to one of them deterministically — which can be the
+/// wrong/stale one. Use [`message_to_automerge_into`] when the
+/// caller has a previously-stored doc for this key.
 #[cfg(feature = "automerge-backend")]
 pub fn message_to_automerge<M: Serialize>(message: &M) -> Result<Automerge> {
+    message_to_automerge_into(message, None)
+}
+
+/// Like [`message_to_automerge`], but forks `existing` (preserving
+/// CRDT history) before applying the new message's fields.
+///
+/// Closes peat#896: `AutomergeTypedCollection::upsert` previously
+/// produced byte-identical snapshots across sequential writes because
+/// every write went through `message_to_automerge` and created a
+/// fresh `Automerge::new()`. Sync peers received the same snapshot
+/// repeatedly and the CRDT merge picked a stale actor's value.
+///
+/// When `existing` is `Some`, this calls `existing.fork()` (clone +
+/// new actor id) and then writes the message's JSON fields under that
+/// new actor, causally after the prior writes. The doc's history
+/// grows monotonically, the latest write is causally newest, and the
+/// receive-side merge resolves to the latest value.
+///
+/// When `existing` is `None`, the behavior is identical to
+/// [`message_to_automerge`] (fresh doc).
+#[cfg(feature = "automerge-backend")]
+pub fn message_to_automerge_into<M: Serialize>(
+    message: &M,
+    existing: Option<&Automerge>,
+) -> Result<Automerge> {
     let json = serde_json::to_value(message)
         .map_err(|e| anyhow::anyhow!("Failed to serialize message to JSON: {}", e))?;
 
-    let mut doc = Automerge::new();
+    let mut doc = match existing {
+        Some(prev) => prev.fork(),
+        None => Automerge::new(),
+    };
 
     match doc.transact(|tx| {
         populate_from_json(tx, ROOT, &json)?;
