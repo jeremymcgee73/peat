@@ -14,6 +14,17 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 
 ## [Unreleased]
 
+## [0.9.0-rc.13] - 2026-05-22
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.12` → `0.9.0-rc.13`. `peat-ffi` unchanged (no JNI ABI surface change). No wire-format change. Closes [#890](https://github.com/defenseunicorns/peat/issues/890) and [#892](https://github.com/defenseunicorns/peat/issues/892) — the two remaining QUICKSTART Scenario 4 regressions on the field-report path (laptop + 2 Pis cross-LAN). All four documented quickstart scenarios converge cleanly on this release.
+
+Validated end-to-end on rpi-ci + rpi-ci2 + laptop (192.168.228.0/24) against the released `peat-mesh 0.9.0-rc.17`:
+
+- **S1** (2-node static, `127.0.0.1`): 13/13 sync events per node, 0 lost. Specific bind takes the unchanged single-`bind_addr` path; interface filter does not fire.
+- **S2** (3-node hub-and-spoke, `127.0.0.1`): 54 alpha sync events; transitive gossip 18 + 14 across the two spokes (bravo↔charlie via alpha), 0 lost.
+- **S3** (3-node mDNS, `127.0.0.1 --mdns`): mDNS found both peers; 19 sync events per direct edge, transitive gossip 19, 0 lost.
+- **S4** (Pi + Pi + laptop, `0.0.0.0`): 126/124/124 sync events per node over a 3+ min run, **0 `noq_udp: sendmsg` warnings**, 0 lost events, 0 connection-recycle disruptions. Laptop alpha kept exactly `eno1=192.168.228.236/24` + `wlp11s0=192.168.1.81/24` after the interface filter applied (`kept_count=2 dropped_count=27`).
+
 ### Added
 
 - **iroh interface-advertisement filter — `peat-protocol::network::iroh_transport::from_seed_at_addr` now delegates to `peat_mesh::storage::interface_filter::select_advertise_interfaces` when the caller passes an unspecified bind addr (`0.0.0.0` / `[::]`)** ([#890](https://github.com/defenseunicorns/peat/issues/890), via [peat-mesh#152](https://github.com/defenseunicorns/peat-mesh/pull/152) + [peat-mesh#154](https://github.com/defenseunicorns/peat-mesh/pull/154) on the transport-layer side). The default behavior on `--bind 0.0.0.0:39001` previously enumerated every local interface (docker bridges, tailscale CGNAT, link-local, stale leases) and published the full set to peers as candidate dial targets — peers raced the candidates and dialed the unreachable ones, producing `noq_udp: sendmsg EIO/EINVAL` warnings (cosmetic, but loud) and burning path-probe budget. The filter drops loopback, link-local, tailscale CGNAT (`100.64.0.0/10`), and docker / podman / CNI bridges by interface-name pattern (docker user-defined bridges specifically match `br-<12-hex>`, not arbitrary `br-*`, so legitimate Linux bridges named `br-corp` / `br-lan` / `br-vlan10` aren't false-positives). The CIDR prefix from each interface is threaded through to `BindOpts::set_prefix_len` so iroh routes outgoing flows by longest-prefix match. Specific bind addresses (`--bind 127.0.0.1:39001` / `--bind <LAN_IP>:39001`) take the existing single-`bind_addr` path unchanged — QUICKSTART Scenarios 1–3 are unaffected. Two env-var overrides expose the filter to operators: `PEAT_ADVERTISE_ALL_INTERFACES=1` bypasses defaults (loopback still always dropped); `PEAT_ADVERTISE_INTERFACES=eno1,eth0` restricts to an explicit allowlist.
@@ -31,6 +42,10 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-disco
 - **`peat_discovery::mdns` module** (workspace subcrate). The crate had no in-repo consumers of its `MdnsDiscovery`; the module + `mdns-sd` dep are removed. `HybridDiscovery` and `StaticDiscovery` are unaffected.
 - **`mdns-sd` dependency** dropped from `peat-protocol/Cargo.toml` (no remaining call sites) and from `peat-discovery/Cargo.toml`.
 - **Temporary `[patch.crates-io]` override for peat-mesh, `[policy.peat-mesh]`, and `[[exemptions.peat-mesh]] 0.9.0-rc.13@git:...`** — all removed once peat-mesh `0.9.0-rc.14` published to crates.io. peat-mesh now resolves from crates.io directly. The supply-chain bookkeeping is back to the pre-#900 shape.
+
+### Documentation
+
+- **`docs/guides/QUICKSTART.md` Scenario 4 preflight + troubleshooting** — surfaces the SSH/`nohup` stale-process trap that bit the pre-release validation pass (a `pkill -f peat-quickstart` from the local shell does not reach Pi processes launched via `ssh ... &`; the next launch then silently exits with `error: cannot bind ...: port N is already in use.` and alpha connects to the *stale* Pi instead, producing a "stuck at fuel_minutes=0" run). §4.5 now opens with a `ssh pi-a 'pgrep -af peat-quickstart || echo CLEAN'` preflight; the troubleshooting table pairs the binary's friendly bind-error message with the new `kill -9 <PID>` recovery, and adds a dedicated row for the "alpha sees `fuel_minutes=0` immediately at startup" symptom. No code change — the friendly error in `examples/quickstart/src/main.rs::explain_bind_error` was already in place for the local-host case; this fills the multi-host doc gap.
 
 ## [0.9.0-rc.12] - 2026-05-19
 

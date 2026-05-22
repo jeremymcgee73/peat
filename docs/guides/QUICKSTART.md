@@ -266,6 +266,15 @@ Copy alpha's NodeId from the log.
 
 ### 4.5 Start bravo and charlie on the Pis
 
+**Preflight — kill any leftover quickstart processes on each Pi.** When peers are launched over SSH with `nohup ... &`, they survive the SSH disconnect and don't shut down when you Ctrl-C the local shell. If you've run Scenario 4 before, a `pkill -f peat-quickstart` against your *local* shell does not reach them. Verify before relaunching:
+
+```bash
+ssh pi-a 'pgrep -af peat-quickstart || echo CLEAN'
+ssh pi-b 'pgrep -af peat-quickstart || echo CLEAN'
+```
+
+If you see processes listed, kill them on the Pi: `ssh pi-a 'pkill -9 -f peat-quickstart'`. Confirm `pgrep` returns nothing. **Skipping this step produces a confusing failure mode**: the new SSH launch silently exits with `error: cannot bind 0.0.0.0:39001: port 39001 is already in use.`, alpha connects to the stale peer instead, and sync shows `fuel_minutes=0` from the first heartbeat (no countdown). Symptom and remedy are also in the troubleshooting table at the bottom of this page.
+
 ```bash
 ssh pi-a 'PEAT_CONNECTION_RECYCLE_SECS=0 /tmp/peat-quickstart --name bravo \
     --bind 0.0.0.0:39001 \
@@ -316,7 +325,8 @@ You now have a working mesh and a runnable starting point — copy `examples/qui
 
 | Symptom | Likely cause | What to do |
 |---------|--------------|------------|
-| `Address already in use` | Another process owns that port (often a previous quickstart that didn't shut down). | `lsof -i :39001` and kill it, or pick a different port. |
+| `error: cannot bind <addr>: port N is already in use.` (the binary's own friendly message) | Another process owns that port — most often a previous quickstart that didn't shut down cleanly. Especially common on **Scenario 4** Pis where peers were launched over SSH (`nohup ... &`) and a `pkill -f peat-quickstart` from the local shell didn't reach them, or where the SSH session that launched them was torn down without first stopping the remote process. | The error message itself lists the recovery commands: `lsof -i :39001` (or `ss -ltnup \| grep :39001`) to find the holder, then kill it. If `pkill -f peat-quickstart` doesn't take effect, find the explicit PID via `pgrep -af peat-quickstart` and `kill -9 <PID>`. Or pass `--bind ADDR:PORT` with a free port. **Sanity-check both Pis** with `ssh pi-a 'pgrep -af peat-quickstart'` / `ssh pi-b 'pgrep -af peat-quickstart'` *before* launching a new Scenario 4 run — see §4.5 below. |
+| Scenario 4 starts but alpha sees `sync: bravo (new) fuel_minutes=0` (already at zero, no progression) | A **stale `peat-quickstart` process** on bravo / charlie from an earlier run is still alive and its counter ran out hours ago. Alpha connected to that stale peer instead of the fresh one your new SSH launch tried to start — the new launch silently failed with port-in-use. The symptom is sync that looks "stuck" rather than the natural 100 → 0 countdown. | On each Pi: `ssh pi-a 'pkill -9 -f peat-quickstart'` then `ssh pi-a 'pgrep -af peat-quickstart \|\| echo CLEAN'` to confirm. Then relaunch. The §4.5 preflight covers this. |
 | Logs show `[peers=0]` indefinitely | Static peer's `node_id` or address is wrong; or a firewall is blocking UDP. | Re-copy the `node_id` from the peer's startup log; verify the address; check UDP is open. |
 | `connection: peer X lost — will retry` followed by `connection: peer X reconnected` repeating on a ~60–70 s cadence | The Issue [#435](https://github.com/defenseunicorns/peat/issues/435) connection-recycling workaround disconnects every peer once it's been up for 60 s, to bound an iroh memory-growth pattern observed in early 2025. Set `PEAT_CONNECTION_RECYCLE_SECS=0` to disable for low-traffic workloads (like this quickstart), or a larger value (e.g. `600`) for ~10 min sessions. | The default is `60` s. For demos and any deployment where the workload doesn't churn enough documents to provoke the leak, `0` is safe and gives continuous sync. |
 | Single `WARN noq_udp: sendmsg error: ... destination: <stale ip>` shortly after a peer attaches | An advertised candidate address — e.g. a stale DHCP lease — isn't reachable from your host. Loopback, docker bridges, podman/CNI bridges, tailscale CGNAT, and link-local interfaces are filtered automatically (see the `interface filter applied (peat#890)` INFO line at startup); a stray warning here means an interface slipped past the default heuristics. Closed in [#890](https://github.com/defenseunicorns/peat/issues/890). | Cosmetic. Sync still converges. To restrict further, set `PEAT_ADVERTISE_INTERFACES=eno1` (or whatever your LAN-facing iface is) to allowlist exactly the interfaces you want published. To bypass filtering entirely (diagnostics only), set `PEAT_ADVERTISE_ALL_INTERFACES=1`. |
