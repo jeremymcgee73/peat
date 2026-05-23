@@ -185,10 +185,15 @@ Drop `--prerelease` for a stable cut.
 ## After publish
 
 - [ ] Confirm both crates render correctly on crates.io (titles, descriptions, READMEs)
-- [ ] For any crate being published for the **first time**, add two entries to `supply-chain/config.toml`:
-  - `[policy.<name>]` with `audit-as-crates-io = true` — declares the crate overlap (must come **after** first publish; declaring before publish causes `Cannot fetch crate information`)
-  - `[[exemptions.<name>]]` with the published `version` and `criteria = "safe-to-deploy"` — records that we (as the publisher) are the trust root for this version. Alternative: run `cargo vet certify` to record a proper audit instead of an exemption.
-  Both entries together are required; the policy alone leaves cargo-vet asking for audits (see peat#794 for context).
+- [ ] For any crate being published for the **first time**, add two entries:
+  - In `supply-chain/config.toml`: `[policy.<name>]` with `audit-as-crates-io = true` — declares the crate overlap (must come **after** first publish; declaring before publish causes `Cannot fetch crate information`).
+  - In `supply-chain/audits.toml`: `[[trusted.<name>]]` with `user-id = 184815` (`kitplummer`), `criteria = "safe-to-deploy"`, `start` anchored to the crate's first crates.io publish date, and `end` matching the existing sibling-crate expiry (currently `"2027-03-26"`).
+
+  This is the publisher-trust pattern peat-btle / peat-lite / peat-mesh and the workspace-published peat / peat-protocol / peat-schema crates all use. It auto-vets any kitplummer-published version inside the trust window — **no per-release exemption bump required**. Then `cargo vet` once locally; commit the resulting `supply-chain/imports.lock` refresh in the same change so the publisher evidence is recorded.
+
+  > **Legacy pattern (do not use for new crates).** Prior to the 2026-05-23 trust conversion the workspace-published crates used `[[exemptions.<name>]] version = "..."` for this. Exemptions are per-version and required a bump at every release; the trust pattern retires that chore. Existing exemption entries for *third-party* crates stay as-is — this guidance is only for first-party workspace + sibling crates.
+
+  Both the `[policy.X]` and `[[trusted.X]]` entries together are required; the policy alone leaves cargo-vet asking for audits (see peat#794 for context).
 - [ ] Open bump PRs in downstream repos (`peat-sim`, `peat-atak-plugin`, any future SDK consumer) to pin the new `peat-protocol` version
 - [ ] Watch for any missing field / metadata issues reported by docs.rs — fix in a follow-up patch release if needed
 
