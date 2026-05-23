@@ -11,7 +11,7 @@ Only two crates from this workspace go to crates.io:
 | `peat-schema` | Wire format (Protobuf) definitions |
 | `peat-protocol` | Public facade — re-exports `peat-schema` and `peat-mesh`; downstream consumers depend on this crate alone |
 
-All other workspace members (`peat-transport`, `peat-persistence`, `peat-discovery`, `peat-ffi`, `examples/*`) share the workspace version but stay internal. They are not published.
+All other workspace members (`peat-transport`, `peat-persistence`, `peat-ffi`, `examples/*`) share the workspace version but stay internal. They are not published.
 
 `peat-ffi` publishes to **Maven Central** on its own cadence via `.github/workflows/publish-maven.yml`; it is decoupled from the crates.io release flow. The workflow fires on push of a `peat-ffi-v*` tag (see "[Cutting a peat-ffi release](#cutting-a-peat-ffi-release)" below).
 

@@ -27,7 +27,6 @@ Thank you for your interest in contributing to Peat. This document covers develo
 | `peat-protocol` | Core protocol: cells, hierarchy, sync, security, CRDT backends |
 | `peat-transport` | HTTP/REST API (Axum) |
 | `peat-persistence` | Storage abstraction (Redb, SQLite) |
-| `peat-discovery` | Peer discovery (mDNS, static, hybrid) |
 | `peat-ffi` | Mobile bindings (Kotlin/Swift via UniFFI + JNI) |
 | `examples/peat-tak-bridge` | TAK/ATAK CoT interoperability bridge |
 | `examples/peat-ble-test` | BLE integration test harness |

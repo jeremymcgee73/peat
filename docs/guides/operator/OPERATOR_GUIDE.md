@@ -60,9 +60,8 @@ Peat (Hierarchical Intelligence for Versatile Entities) is a protocol for scalab
 | Component | Description | Crate |
 |-----------|-------------|-------|
 | **Protocol Core** | Three-phase protocol, capabilities, composition | `peat-protocol` |
-| **Mesh Layer** | P2P mesh topology and beacon management | `peat-mesh` |
+| **Mesh Layer** | P2P mesh topology, beacons, discovery (mDNS / static / hybrid / k8s) | `peat-mesh` |
 | **Transport** | HTTP/REST API for external integration | `peat-transport` |
-| **Discovery** | Peer discovery (mDNS, static, hybrid) | `peat-discovery` |
 | **Persistence** | Storage abstraction for state | `peat-persistence` |
 | **Simulator** | Network simulation and testing | `peat-sim` |
 | **FFI** | Mobile bindings (Kotlin/Swift) | `peat-ffi` |

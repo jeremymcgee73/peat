@@ -6,7 +6,13 @@ members = [
     "peat-protocol",
     "peat-transport",
     "peat-persistence",
-    "peat-discovery",
+    # `peat-discovery` retired under peat#919 (mDNS-consolidation Phase 3
+    # follow-up to peat#898). After Phase 1 deleted its `mdns` module, the
+    # remaining `StaticDiscovery` + `HybridDiscovery` had zero in-repo
+    # consumers and the crate was never published to crates.io. Retired
+    # rather than left in place because the canonical home for discovery
+    # strategies is `peat_mesh::discovery` per `peat/SKILL.md`'s
+    # transport-agnosticism rule.
     "peat-ffi",
     "examples/peat-tak-bridge",
     "examples/quickstart",

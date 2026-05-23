@@ -248,7 +248,6 @@ Generated: $(date +%Y-%m-%d)
 | peat-ble-test | 0.1.0 | MIT |
 | peat-btle | 0.1.0-rc.30 | Apache-2.0 |
 | peat-commander | 0.1.0 | null |
-| peat-discovery | 0.1.0 | MIT |
 | peat-ffi | 0.1.0 | Apache-2.0 |
 | peat-inference | 0.1.0 | MIT |
 | peat-mesh | 0.1.0 | MIT |

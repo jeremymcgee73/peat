@@ -10,9 +10,17 @@ This changelog covers the crates published to crates.io from this workspace:
 - `peat-protocol` — public facade; depends on `peat-schema` and `peat-mesh`
 - `peat-schema` — wire format (Protobuf) definitions
 
-Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-discovery`, `peat-ffi`, `examples/*`) share the workspace version but are not published and are not documented here.
+Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`, `examples/*`) share the workspace version but are not published and are not documented here.
 
 ## [Unreleased]
+
+### Removed
+
+- **`peat-discovery` workspace subcrate retired entirely** ([#919](https://github.com/defenseunicorns/peat/issues/919), Phase 3 of the [#898](https://github.com/defenseunicorns/peat/issues/898) mDNS-consolidation epic). After Phase 1's `peat_discovery::mdns` deletion, the remaining `StaticDiscovery` / `HybridDiscovery` / `DiscoveryStrategy` trait had **zero in-repo consumers** (verified across `peat`, `peat-mesh`, `peat-btle`, `peat-atak-plugin`) and the crate was never published to crates.io. The canonical home for discovery strategies is `peat_mesh::discovery::{StaticDiscovery, HybridDiscovery, KubernetesDiscovery, MdnsDiscovery}` per `peat/SKILL.md`'s transport-agnosticism rule. No release impact: the subcrate was internal-only (workspace member, not on crates.io), so this change has no downstream-consumer surface.
+
+### Documentation
+
+- **Subcrate inventory pruned** across `README.md`, `CONTRIBUTING.md`, `DEVELOPMENT.md`, `DEPENDENCY-LICENSES.md`, `SKILL.md`, `docs/RELEASING.md`, `docs/ARCHITECTURE.md`, `docs/guides/developer/DEVELOPER_GUIDE.md`, and `peat/src/lib.rs`. Historical `[0.9.0-rc.*]` CHANGELOG entries that name `peat-discovery` are left intact — those record the state at release time and shouldn't be retroactively edited.
 
 ## [0.9.0-rc.13] - 2026-05-22
 

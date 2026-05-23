@@ -43,10 +43,11 @@ Peat is organized into five distinct layers, each with clear responsibilities:
 │  └─────────────────────────────────────────────────────────────────────────┘│
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                         TRANSPORT LAYER                                      │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐  ┌────────────┐ │
-│  │   peat-mesh     │  │  peat-discovery │  │peat-transport│  │ peat-lite  │ │
-│  │ (Peer topology) │  │  (mDNS/Static)  │  │(HTTP/Axum)   │  │ (ESP32 UDP)│ │
-│  └─────────────────┘  └─────────────────┘  └──────────────┘  └────────────┘ │
+│  ┌──────────────────────────────────┐  ┌──────────────┐  ┌────────────┐     │
+│  │            peat-mesh             │  │peat-transport│  │ peat-lite  │     │
+│  │ (Peer topology + discovery:      │  │(HTTP/Axum)   │  │ (ESP32 UDP)│     │
+│  │  mDNS/static/hybrid/k8s)         │  │              │  │            │     │
+│  └──────────────────────────────────┘  └──────────────┘  └────────────┘     │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                      peat-btle (external)                                ││
 │  │            (BLE mesh for Android/iOS/Windows/ESP32)                      ││
@@ -143,8 +144,7 @@ Peat is organized into five distinct layers, each with clear responsibilities:
 
 | Crate | Purpose | Platforms |
 |-------|---------|-----------|
-| `peat-mesh` | Peer topology management, routing | All |
-| `peat-discovery` | mDNS/static peer discovery | Desktop, Mobile |
+| `peat-mesh` | Peer topology, routing, discovery (mDNS / static / hybrid / k8s) | All |
 | `peat-transport` | HTTP/REST API for external systems | Servers |
 | `peat-lite` | UDP-based protocol for constrained devices | ESP32, no_std |
 | `peat-btle` (external) | BLE mesh for mobile/embedded | Android, iOS, Windows, ESP32 |
@@ -213,15 +213,16 @@ pub trait Transport: Send + Sync {
                     └─────────────────────────────┘
                               │
                               ▼
-      ┌───────────────────────┼───────────────────────┐
-      │                       │                       │
-      ▼                       ▼                       ▼
-┌──────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ peat-mesh    │    │ peat-discovery  │    │ peat-transport  │
-│              │────│                 │    │                 │
-└──────────────┘    └─────────────────┘    └─────────────────┘
-      │                       │                       │
-      └───────────────────────┼───────────────────────┘
+      ┌───────────────────────────────────────────────┐
+      │                                               │
+      ▼                                               ▼
+┌──────────────────────────────────┐    ┌─────────────────┐
+│            peat-mesh             │    │ peat-transport  │
+│  (topology + discovery:          │    │                 │
+│   mDNS/static/hybrid/k8s)        │    │                 │
+└──────────────────────────────────┘    └─────────────────┘
+      │                                               │
+      └───────────────────────┬───────────────────────┘
                               │
                               ▼
                     ┌─────────────────────────────┐

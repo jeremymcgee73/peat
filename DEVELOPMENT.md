@@ -26,7 +26,6 @@ peat/
 │       └── transport/        # Mesh transport
 ├── peat-transport/            # HTTP/REST API layer
 ├── peat-persistence/          # Storage backends
-├── peat-discovery/            # Peer discovery (mDNS, static)
 ├── peat-ffi/                  # Mobile bindings (UniFFI)
 │
 ├── examples/                  # Example applications & demos
