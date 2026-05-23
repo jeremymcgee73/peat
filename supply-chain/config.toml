@@ -69,18 +69,6 @@ criteria = "safe-to-deploy"
 version = "0.3.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.peat]]
-version = "0.9.0-rc.13"
-criteria = "safe-to-deploy"
-
-[[exemptions.peat-protocol]]
-version = "0.9.0-rc.13"
-criteria = "safe-to-deploy"
-
-[[exemptions.peat-schema]]
-version = "0.9.0-rc.13"
-criteria = "safe-to-deploy"
-
 [[exemptions.pin-project]]
 version = "1.1.11"
 criteria = "safe-to-deploy"

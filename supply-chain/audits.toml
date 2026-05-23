@@ -2035,6 +2035,12 @@ user-id = 3618 # David Tolnay (dtolnay)
 start = "2019-03-19"
 end = "2027-03-26"
 
+[[trusted.peat]]
+criteria = "safe-to-deploy"
+user-id = 184815 # Kit Plummer (kitplummer)
+start = "2026-05-11"
+end = "2027-03-26"
+
 [[trusted.peat-btle]]
 criteria = "safe-to-deploy"
 user-id = 184815 # Kit Plummer (kitplummer)
@@ -2051,6 +2057,18 @@ end = "2027-03-26"
 criteria = "safe-to-deploy"
 user-id = 184815 # Kit Plummer (kitplummer)
 start = "2026-02-27"
+end = "2027-03-26"
+
+[[trusted.peat-protocol]]
+criteria = "safe-to-deploy"
+user-id = 184815 # Kit Plummer (kitplummer)
+start = "2026-04-23"
+end = "2027-03-26"
+
+[[trusted.peat-schema]]
+criteria = "safe-to-deploy"
+user-id = 184815 # Kit Plummer (kitplummer)
+start = "2026-04-23"
 end = "2027-03-26"
 
 [[trusted.pem]]
