@@ -2641,6 +2641,11 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let topology_rx = self.topology_event_rx.clone();
             let transport = Arc::clone(&self.transport);
             let formation_key_topology = formation_key.clone();
+            // peat#875: clone the availability check so the
+            // topology-driven connect path can consult peat-mesh's
+            // circuit breaker before allocating fresh QUIC handshake
+            // state — same pattern as the mDNS spawn above.
+            let availability_check_topology = self.peer_availability_check.clone();
 
             tokio::spawn(async move {
                 use crate::network::formation_handshake::perform_initiator_handshake;
@@ -2666,6 +2671,56 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                     peer_id = %peer_id,
                                     "Topology event: connecting to peer"
                                 );
+
+                                // peat#875: parse the EndpointId from the hex
+                                // string up front so the availability check
+                                // can run on a typed key, and so we can
+                                // reuse the parsed value for the
+                                // emit_peer_connected call after the
+                                // handshake completes. Dropping the event
+                                // on parse failure is the right call —
+                                // the topology layer handed us garbage
+                                // that we cannot dial anyway.
+                                let endpoint_id = match hex::decode(&peer_id)
+                                    .ok()
+                                    .filter(|b| b.len() == 32)
+                                    .map(|b| {
+                                        let mut a = [0u8; 32];
+                                        a.copy_from_slice(&b);
+                                        a
+                                    })
+                                    .and_then(|a| iroh::EndpointId::from_bytes(&a).ok())
+                                {
+                                    Some(id) => id,
+                                    None => {
+                                        tracing::warn!(
+                                            peer_id = %peer_id,
+                                            "Topology event with un-parseable EndpointId — dropping"
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                // peat#875: gate on the circuit breaker
+                                // (parallels the mDNS gate added under
+                                // peat#873/#874). A topology manager that
+                                // keeps emitting ConnectPeer events for an
+                                // iroh-unreachable peer would otherwise
+                                // accumulate fresh QUIC handshake state on
+                                // every iteration — the same OOM chain
+                                // field-reported on Android. The 60 s
+                                // connection recycler only partially
+                                // bounds this; the gate stops the
+                                // allocations at the source.
+                                if let Some(check) = availability_check_topology.as_ref() {
+                                    if !check(&endpoint_id) {
+                                        tracing::debug!(
+                                            peer_id = %peer_id,
+                                            "Skipping topology-driven connect — circuit breaker open (peat#875)"
+                                        );
+                                        continue;
+                                    }
+                                }
 
                                 let network_peer_info = NetworkPeerInfo {
                                     name: peer_id.clone(),
@@ -2697,23 +2752,18 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                         .await
                                         {
                                             Ok(()) => {
-                                                // Convert peer_id hex string to EndpointId
-                                                if let Ok(bytes) = hex::decode(&peer_id) {
-                                                    if bytes.len() == 32 {
-                                                        let mut array = [0u8; 32];
-                                                        array.copy_from_slice(&bytes);
-                                                        if let Ok(endpoint_id) =
-                                                            iroh::EndpointId::from_bytes(&array)
-                                                        {
-                                                            transport
-                                                                .emit_peer_connected(endpoint_id);
-                                                            tracing::info!(
-                                                                "Topology: connected and authenticated with peer: {}",
-                                                                peer_id
-                                                            );
-                                                        }
-                                                    }
-                                                }
+                                                // peat#875: reuse the
+                                                // EndpointId already parsed
+                                                // upfront for the gate
+                                                // check; the prior nested
+                                                // hex::decode → from_bytes
+                                                // block was redundant once
+                                                // the parse moved earlier.
+                                                transport.emit_peer_connected(endpoint_id);
+                                                tracing::info!(
+                                                    "Topology: connected and authenticated with peer: {}",
+                                                    peer_id
+                                                );
                                             }
                                             Err(e) => {
                                                 tracing::warn!(
@@ -2773,6 +2823,13 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let transport = Arc::clone(&self.transport);
             let formation_key_connect = formation_key;
             let max_connections = self.max_connections;
+            // peat#875: clone the availability check for the
+            // periodic-discovery loop. Less common than the mDNS path
+            // (only runs when no topology manager is configured) but
+            // structurally susceptible to the same per-iteration
+            // allocation pattern when an unreachable peer keeps
+            // surfacing from discovery.
+            let availability_check_periodic = self.peer_availability_check.clone();
 
             tokio::spawn(async move {
                 use crate::network::formation_handshake::perform_initiator_handshake;
@@ -2864,6 +2921,25 @@ impl PeerDiscovery for IrohPeerDiscovery {
                         // - Some(conn): New connection, we need to do initiator handshake
                         // - None: Already connected via accept path, no action needed
                         if let Ok(endpoint_id) = peer.endpoint_id() {
+                            // peat#875: gate on the circuit breaker before
+                            // calling connect_peer. Parallels the mDNS gate
+                            // added under peat#873/#874. Without this, a
+                            // discovery source that keeps re-emitting an
+                            // iroh-unreachable peer would accumulate
+                            // QUIC handshake state on every iteration —
+                            // 1 s adaptive interval at the fast end, 5 s
+                            // at the slow end, both well below the 60 s
+                            // recycler.
+                            if let Some(check) = availability_check_periodic.as_ref() {
+                                if !check(&endpoint_id) {
+                                    tracing::debug!(
+                                        peer_id = %peer.node_id,
+                                        "Skipping periodic-discovery connect — circuit breaker open (peat#875)"
+                                    );
+                                    continue;
+                                }
+                            }
+
                             match transport.connect_peer(&network_peer_info).await {
                                 Ok(Some(conn)) => {
                                     // Issue #346: Give the accept loop a moment to process any
@@ -4205,6 +4281,122 @@ mod tests {
              locator strings need updating to match a renamed/relocated production \
              site. Verify the production code still consults the availability check \
              before connect_by_id before adjusting the locators."
+        );
+    }
+
+    /// peat#875 — structural pin for the topology-driven breaker gate.
+    ///
+    /// The `IrohPeerDiscovery::start()` topology-event handler MUST consult
+    /// `availability_check_topology` before calling
+    /// `transport.connect_peer(&network_peer_info)`. The hazard is the
+    /// same as peat#873's mDNS path: a topology manager that keeps
+    /// re-emitting `ConnectPeer` events for an iroh-unreachable peer
+    /// would otherwise allocate fresh QUIC handshake state on every
+    /// iteration, and the 60 s `iroh_transport.rs:182` recycler only
+    /// partially mitigates the resulting heap growth.
+    ///
+    /// Mirror of `mdns_discovery_handler_gates_connect_on_availability_check`.
+    #[test]
+    fn topology_handler_gates_connect_on_availability_check() {
+        let source = include_str!("automerge.rs");
+
+        // Anchor on the topology-handler log line. Built at runtime
+        // from two pieces so the test's own source doesn't contain
+        // the contiguous literal — otherwise the source-grep would
+        // self-match.
+        let needle: String = ["Topology event:", " connecting to peer"].concat();
+        let def_count = source.matches(needle.as_str()).count();
+        assert_eq!(
+            def_count, 1,
+            "expected exactly one production-site occurrence of the topology \
+             event log line; found {def_count} — refine the locator before \
+             trusting the windowed slice"
+        );
+        let branch_idx = source.find(needle.as_str()).unwrap();
+        // Window is generously sized: the gate sits right under the
+        // log line but the connect call is further down (~50 lines)
+        // because the parse + post-connect handshake sit between
+        // them. 8 KiB covers it comfortably.
+        let branch = &source[branch_idx..branch_idx.saturating_add(8000)];
+
+        let check_idx = branch.find("availability_check_topology.as_ref()").expect(
+            "Topology ConnectPeer branch must consult the availability check — \
+                 peat#875 gate missing, every event will trigger a fresh \
+                 iroh endpoint.connect() and allocate QUIC handshake state",
+        );
+        let connect_idx = branch
+            .find("transport.connect_peer(&network_peer_info)")
+            .expect(
+            "Topology ConnectPeer branch must call transport.connect_peer(&network_peer_info) — \
+                 if this call moved, the structural pin needs an updated locator",
+        );
+
+        assert!(
+            check_idx < connect_idx,
+            "peat#875 gate must precede the iroh connect call — availability_check_topology \
+             at offset {check_idx} vs connect_peer at offset {connect_idx}. Re-ordering \
+             these breaks the leak fix: the connect will fire before the breaker is \
+             consulted.\n\n\
+             IF YOU REFACTOR THIS, THE TEST IS A STRUCTURAL PIN, NOT A STYLE CHECK. \
+             A failing assertion here means either the gate was removed OR the test's \
+             locator strings need updating to match a renamed/relocated production \
+             site."
+        );
+    }
+
+    /// peat#875 — structural pin for the periodic-discovery-loop breaker gate.
+    ///
+    /// The `!has_topology_events` branch of `IrohPeerDiscovery::start()`
+    /// loops over discovered peers and calls
+    /// `transport.connect_peer(&network_peer_info)` per peer per
+    /// iteration (adaptive 1 s → 5 s interval). It MUST consult
+    /// `availability_check_periodic` first. Less common than the mDNS
+    /// path in practice — requires `topology_event_rx = None` plus a
+    /// sustained unreachable discovered peer — but structurally
+    /// identical to peat#873's hazard.
+    ///
+    /// Mirror of `mdns_discovery_handler_gates_connect_on_availability_check`.
+    #[test]
+    fn periodic_discovery_loop_gates_connect_on_availability_check() {
+        let source = include_str!("automerge.rs");
+
+        // Anchor on the periodic-discovery info log line. Built at
+        // runtime from two pieces so the test source doesn't self-match.
+        let needle: String = [
+            "Discovery-based connection management enabled",
+            " (max {} connections)",
+        ]
+        .concat();
+        let def_count = source.matches(needle.as_str()).count();
+        assert_eq!(
+            def_count, 1,
+            "expected exactly one production-site occurrence of the \
+             discovery-based-connection-management log line; found {def_count}"
+        );
+        let branch_idx = source.find(needle.as_str()).unwrap();
+        // Window is generously sized: the gate sits inside the
+        // per-peer loop body which starts several screens of helper
+        // setup below the info log line that anchors the slice.
+        let branch = &source[branch_idx..branch_idx.saturating_add(8000)];
+
+        let check_idx = branch.find("availability_check_periodic.as_ref()").expect(
+            "Periodic-discovery loop must consult the availability check — \
+                 peat#875 gate missing, every iteration will trigger a fresh \
+                 iroh endpoint.connect() against the same peer",
+        );
+        let connect_idx = branch
+            .find("transport.connect_peer(&network_peer_info)")
+            .expect(
+                "Periodic-discovery loop must call transport.connect_peer(&network_peer_info) — \
+                 if this call moved, the structural pin needs an updated locator",
+            );
+
+        assert!(
+            check_idx < connect_idx,
+            "peat#875 gate must precede the iroh connect call — availability_check_periodic \
+             at offset {check_idx} vs connect_peer at offset {connect_idx}. Re-ordering \
+             these breaks the leak fix.\n\n\
+             IF YOU REFACTOR THIS, THE TEST IS A STRUCTURAL PIN, NOT A STYLE CHECK."
         );
     }
 
