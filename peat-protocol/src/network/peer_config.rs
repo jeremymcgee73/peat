@@ -30,13 +30,19 @@ use crate::security::FormationKey;
 #[cfg(feature = "automerge-backend")]
 use anyhow::{Context, Result};
 #[cfg(feature = "automerge-backend")]
-use iroh::EndpointId;
-#[cfg(feature = "automerge-backend")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "automerge-backend")]
 use std::net::SocketAddr;
 #[cfg(feature = "automerge-backend")]
 use std::path::Path;
+
+// ADR-062 Phase 2 / peat#918: `PeerInfo` moved to peat-mesh's
+// `network::peer_info` module. Re-exporting here keeps every call site
+// that imports `peer_config::PeerInfo` working unchanged across the
+// rc.13 → rc.14 boundary; type identity is unified (no two distinct
+// `PeerInfo` types in the workspace).
+#[cfg(feature = "automerge-backend")]
+pub use peat_mesh::network::peer_info::PeerInfo;
 
 /// Static peer mesh configuration
 #[cfg(feature = "automerge-backend")]
@@ -77,19 +83,9 @@ pub struct LocalConfig {
     pub node_id: Option<String>,
 }
 
-/// Static peer information
-#[cfg(feature = "automerge-backend")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerInfo {
-    /// Human-readable peer name
-    pub name: String,
-    /// Iroh PublicKey (EndpointId) in hex format
-    pub node_id: String,
-    /// Direct addresses to try connecting to
-    pub addresses: Vec<String>,
-    /// Optional relay URL (Phase 7)
-    pub relay_url: Option<String>,
-}
+// Static peer information — PeerInfo moved to peat-mesh's network::peer_info
+// (ADR-062 Phase 2 / peat#918). Re-exported above so call sites that import
+// `peer_config::PeerInfo` transparently pick up the moved type.
 
 #[cfg(feature = "automerge-backend")]
 fn default_bind_address() -> String {
@@ -173,40 +169,11 @@ impl PeerConfig {
     }
 }
 
-#[cfg(feature = "automerge-backend")]
-impl PeerInfo {
-    /// Parse node_id as EndpointId
-    pub fn endpoint_id(&self) -> Result<EndpointId> {
-        // Decode hex string to bytes
-        let bytes = hex::decode(&self.node_id).context("Failed to decode node_id hex")?;
-
-        // EndpointId is a 32-byte PublicKey
-        if bytes.len() != 32 {
-            anyhow::bail!(
-                "Invalid node_id length: expected 32 bytes, got {}",
-                bytes.len()
-            );
-        }
-
-        // Convert Vec<u8> to [u8; 32]
-        let mut array = [0u8; 32];
-        array.copy_from_slice(&bytes);
-
-        // Convert bytes to EndpointId
-        EndpointId::from_bytes(&array).context("Failed to construct EndpointId from bytes")
-    }
-
-    /// Parse addresses as SocketAddr list
-    pub fn socket_addrs(&self) -> Result<Vec<SocketAddr>> {
-        self.addresses
-            .iter()
-            .map(|addr| {
-                addr.parse()
-                    .with_context(|| format!("Invalid address: {}", addr))
-            })
-            .collect()
-    }
-}
+// PeerInfo::endpoint_id() and PeerInfo::socket_addrs() are inherent methods
+// on the re-exported peat-mesh type — see peat-mesh::network::peer_info
+// (ADR-062 Phase 2 / peat#918). The three error-path unit tests for those
+// helpers live in peat-mesh as well; this file keeps the higher-level
+// PeerConfig loader tests below.
 
 #[cfg(all(test, feature = "automerge-backend"))]
 mod tests {

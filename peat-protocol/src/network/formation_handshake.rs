@@ -265,7 +265,29 @@ pub async fn perform_responder_handshake(
     }
 }
 
-#[cfg(all(test, feature = "automerge-backend"))]
+// Relay-isolation guarantee for the formation_handshake test surface
+// (peat#922 QA Review of 0b5068a, Warning 2). Before peat-mesh rc.18
+// these tests used `pub(crate) IrohTransport::new_local()`, which
+// unconditionally routed through `Endpoint::empty_builder()` regardless
+// of feature flags. After the ADR-062 move, `new_local` is not
+// cross-crate visible, so the tests would have to call
+// `IrohTransport::new()` — which routes through `relay_policy_builder()`
+// and only hits `Endpoint::empty_builder()` when `relay-n0-hosted` is
+// OFF. If the test runner ever picked up that feature (workspace
+// `--all-features` CI sweep, ad-hoc `--features` invocations, future
+// feature unification), the formation handshake tests would dial n0's
+// hosted relay pool — non-deterministic network behavior masquerading
+// as a unit test.
+//
+// We resolve this by gating the entire test module on
+// `not(feature = "relay-n0-hosted")`. Under the default build the three
+// formation handshake tests run with the relay-free guarantee they
+// always had. Under any build that activates `relay-n0-hosted` the
+// module compiles to nothing — no fake "ok" runs, no n0 transit, no
+// CI breakage. Future cleanup: if peat-mesh exposes a `pub`
+// relay-isolated constructor (analogous to the removed `new_local()`),
+// drop this gate and switch the tests to call it.
+#[cfg(all(test, feature = "automerge-backend", not(feature = "relay-n0-hosted")))]
 mod tests {
     use super::*;
     use crate::network::iroh_transport::IrohTransport;
@@ -278,8 +300,8 @@ mod tests {
         key1: FormationKey,
         key2: FormationKey,
     ) -> (Result<()>, Result<()>) {
-        let transport1 = Arc::new(IrohTransport::new_local().await.unwrap());
-        let transport2 = Arc::new(IrohTransport::new_local().await.unwrap());
+        let transport1 = Arc::new(IrohTransport::new().await.unwrap());
+        let transport2 = Arc::new(IrohTransport::new().await.unwrap());
 
         // With deterministic tie-breaking, only the lower ID initiates connections.
         // Determine which transport should be initiator vs responder.
