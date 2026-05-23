@@ -43,7 +43,6 @@ The ecosystem comprises **one Rust workspace repo** (`peat`) plus several siblin
 | `peat-protocol` | Protocol logic (`Translator`, `ChangeEvent`, etc.). |
 | `peat-transport` | Transport abstractions used by the workspace. |
 | `peat-persistence` | Persistence layer. |
-| `peat-discovery` | Peer discovery used by the workspace. |
 | `peat-ffi` | FFI bindings for Kotlin/Swift (UniFFI 0.28, proc-macro mode) + direct `jni 0.21` for Android. The only routinely-unsafe Rust in the ecosystem. |
 
 **Status unknown — confirm with Kit before authoring skills.** The following were listed in earlier drafts but aren't currently visible from this checkout: `peat-registry`, `peat-node`, `peat-gateway`, `peat-rmw`, `peat-mavlink`. They may be planned, renamed, deprecated, or in private repos. Per the active-repos record, only `peat` and `peat-mesh` are currently top-tier active.
@@ -168,7 +167,6 @@ Subcrates inherit the workspace `Cargo.toml`'s pinned deps (Tokio, serde, thiser
 - `peat-protocol` — protocol logic (`Translator`, `ChangeEvent`, etc.).
 - `peat-transport` — transport abstractions used by the workspace.
 - `peat-persistence` — persistence layer.
-- `peat-discovery` — peer discovery used by the workspace.
 - `peat-ffi` — FFI bindings (see "FFI conventions" below).
 - `examples/peat-tak-bridge`, `examples/peat-ble-test` — workspace examples.
 - `examples/m5stack-core2-peat` is **excluded** from the workspace (separate toolchain — embedded ESP32 / xtensa-esp-none-elf).

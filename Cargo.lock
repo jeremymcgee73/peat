@@ -3880,21 +3880,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peat-discovery"
-version = "0.9.0-rc.13"
-dependencies = [
- "anyhow",
- "async-trait",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "peat-ffi"
 version = "0.2.5"
 dependencies = [

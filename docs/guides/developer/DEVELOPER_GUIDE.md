@@ -188,9 +188,8 @@ peat/
 │   ├── proto/                # .proto files
 │   └── src/                  # Generated Rust code
 │
-├── peat-mesh/                 # Mesh topology management
+├── peat-mesh/                 # Mesh topology + discovery (mDNS/static/hybrid/k8s)
 ├── peat-transport/            # HTTP/REST API layer
-├── peat-discovery/            # Peer discovery strategies
 ├── peat-persistence/          # Storage backends
 ├── peat-ffi/                  # Mobile bindings (Kotlin/Swift)
 ├── peat-inference/            # Edge AI/ML pipeline
@@ -610,21 +609,7 @@ peat-transport = { path = "../peat-transport" }
 - `GET /api/v1/cell` - Cell information
 - `POST /api/v1/command` - Send command
 
-### 5.5 peat-discovery
-
-Peer discovery implementations.
-
-```toml
-[dependencies]
-peat-discovery = { path = "../peat-discovery" }
-```
-
-**Strategies**:
-- `MdnsDiscovery`: mDNS-based discovery
-- `StaticDiscovery`: Pre-configured peers
-- `HybridDiscovery`: Combined strategy
-
-### 5.6 peat-persistence
+### 5.5 peat-persistence
 
 Storage backend abstraction.
 
@@ -637,7 +622,7 @@ peat-persistence = { path = "../peat-persistence" }
 - `RedbBackend`: Embedded key-value store
 - `SqliteBackend`: SQLite database
 
-### 5.7 peat-ffi
+### 5.6 peat-ffi
 
 Foreign function interface for mobile.
 
@@ -650,7 +635,7 @@ peat-ffi = { path = "../peat-ffi", features = ["automerge-backend"] }
 - UniFFI for Kotlin/Swift
 - JNI for direct Android
 
-### 5.8 peat-inference
+### 5.7 peat-inference
 
 Edge AI/ML inference pipeline.
 
