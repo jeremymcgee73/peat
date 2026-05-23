@@ -121,7 +121,20 @@ repository = "https://github.com/defenseunicorns/peat"
 # Pinning below rc.17 would let the workspace build against a
 # peat-mesh missing those exports — the load-bearing call site
 # would fail to compile.
-peat-mesh = { version = ">=0.9.0-rc.17, <0.9.1", default-features = false }
+#
+# Floor advanced to rc.18 on 2026-05-23 (peat-mesh#156 + peat-mesh#157
+# / defenseunicorns/peat#918, ADR-062 Phase 1) — rc.18 hosts the
+# canonical `IrohTransport` (moved from peat-protocol), the
+# `peat_mesh::network::iroh_transport` module that
+# `peat-protocol/src/network/iroh_transport.rs` re-exports from, and
+# the `peat_mesh::network::peer_info::PeerInfo` struct that
+# `peat-protocol/src/network/peer_config.rs` re-exports from.
+# **Wire-breaking**: rc.18 derives deterministic-seed `IrohTransport`
+# keys via HKDF-SHA-256 with v2 salt/info; rc.13 NodeIds are not
+# reproducible under rc.18. Pinning below rc.18 would let the
+# workspace build against a peat-mesh that lacks the moved transport
+# — the re-export shims in this PR would fail to resolve.
+peat-mesh = { version = ">=0.9.0-rc.18, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
