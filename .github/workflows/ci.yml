@@ -231,14 +231,19 @@ jobs:
         # ignore` with the same RUSTSEC id and reason** — drop from both files
         # in the same PR when a fix becomes reachable.
         run: |
-          cargo audit \
-            --ignore RUSTSEC-2026-0118 \
-            --ignore RUSTSEC-2026-0119 \
-            2>&1 || true
-          cargo audit \
-            --ignore RUSTSEC-2026-0118 \
-            --ignore RUSTSEC-2026-0119 \
-            --json 2>/dev/null | jq -e '.vulnerabilities.count == 0'
+          # First invocation: advisory output to the CI log. `|| true` because
+          # this run is informational only; the JSON-gated invocation below
+          # is what actually gates CI on vulnerabilities-count.
+          # peat#924 QA WARNING follow-up: the previous --ignore set for
+          # RUSTSEC-2026-0118/0119/0120 was dropped here when iroh 1.0.0-rc.0
+          # brought hickory-proto + hickory-net to 0.26.1 (the fixed
+          # versions). Any future regression that re-pins to a vulnerable
+          # hickory now fails the gate loudly instead of being silently
+          # suppressed.
+          cargo audit 2>&1 || true
+          # Gating invocation: exits non-zero (failing the job) if any
+          # non-ignored vulnerability is reported.
+          cargo audit --json 2>/dev/null | jq -e '.vulnerabilities.count == 0'
 
   supply-chain:
     name: Supply Chain

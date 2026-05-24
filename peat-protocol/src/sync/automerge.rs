@@ -2504,7 +2504,7 @@ impl PeerDiscovery for IrohPeerDiscovery {
         #[cfg(feature = "automerge-backend")]
         if let Some(mdns) = self.transport.mdns_discovery() {
             use futures_lite::StreamExt;
-            use iroh::address_lookup::mdns::DiscoveryEvent;
+            use iroh_mdns_address_lookup::DiscoveryEvent;
 
             let mdns = mdns.clone();
             let transport = Arc::clone(&self.transport);
@@ -2621,6 +2621,16 @@ impl PeerDiscovery for IrohPeerDiscovery {
                             );
                             // Note: We don't disconnect immediately since the peer might still
                             // be reachable. The connection will fail naturally if unreachable.
+                        }
+                        // iroh 0.98 marks `DiscoveryEvent` as `#[non_exhaustive]`. Any
+                        // future variant (e.g. richer state-change events) is logged at
+                        // debug and ignored — discovery is best-effort and the connection
+                        // attempts in Discovered already drive forward progress (peat#923).
+                        _ => {
+                            tracing::debug!(
+                                ?event,
+                                "received unknown DiscoveryEvent variant — ignoring"
+                            );
                         }
                     }
                 }
@@ -4422,8 +4432,7 @@ mod tests {
         );
 
         let check = build_peer_availability_check(backend);
-        let mut rng = rand::rng();
-        let peer_id = iroh::SecretKey::generate(&mut rng).public();
+        let peer_id = iroh::SecretKey::generate().public();
 
         assert!(
             check(&peer_id),
@@ -4446,8 +4455,7 @@ mod tests {
         );
 
         let check = build_peer_availability_check(Arc::clone(&backend));
-        let mut rng = rand::rng();
-        let peer_id = iroh::SecretKey::generate(&mut rng).public();
+        let peer_id = iroh::SecretKey::generate().public();
 
         assert!(
             check(&peer_id),
@@ -4469,8 +4477,7 @@ mod tests {
             .sync_coordinator()
             .expect("with_transport must initialize a sync coordinator");
 
-        let mut rng = rand::rng();
-        let peer_id = iroh::SecretKey::generate(&mut rng).public();
+        let peer_id = iroh::SecretKey::generate().public();
 
         // Trip the breaker. Default `CircuitBreakerConfig::failure_threshold`
         // is 5; record 8 failures to be robust against env-overridden
@@ -4494,7 +4501,7 @@ mod tests {
         );
 
         // Sanity: a different peer (breaker closed) is still allowed.
-        let other_peer = iroh::SecretKey::generate(&mut rng).public();
+        let other_peer = iroh::SecretKey::generate().public();
         assert!(
             check(&other_peer),
             "closure must allow other peers when their breaker is closed — \

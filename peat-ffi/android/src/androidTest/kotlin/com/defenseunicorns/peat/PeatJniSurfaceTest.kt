@@ -10,8 +10,10 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 
 /**
  * Surface-tier instrumented tests for the peat-ffi JNI surface
@@ -34,6 +36,13 @@ import org.junit.runner.RunWith
  * peat#888 — surface-tier coverage gate.
  */
 @RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+// NAME_ASCENDING ordering is load-bearing for the `a_*` /
+// `z_*` test pair below — `setAndroidContextJni`'s
+// happy-path round-trip must run before any `createNodeJni`
+// call sets the process-wide `IROH_STARTED` flag (peat#924
+// QA WARNING-2 runtime guard); the rejection-path test runs
+// after, so the `z_` prefix sorts it last.
 class PeatJniSurfaceTest {
 
     companion object {
@@ -101,6 +110,131 @@ class PeatJniSurfaceTest {
     fun loadLibrarySucceeds_andNoConsumerPeerEventManagerRequired() {
         val version = PeatJni.peatVersion()
         assertTrue("peatVersion must return non-empty string", version.isNotEmpty())
+    }
+
+    /**
+     * peat#925 QA BLOCKER: instrumented surface-tier coverage for
+     * the `setAndroidContextJni` plumbing introduced in this PR.
+     *
+     * `JNI_OnLoad` initializes `ndk-context` with a `null` Context
+     * placeholder (no Application exists yet at `System.loadLibrary`
+     * time). Consumers that exercise iroh DNS-based discovery (relay,
+     * pkarr, non-mDNS peer lookups) — which transitively touch
+     * `hickory-resolver`'s Android ConnectivityManager probe — must
+     * promote the real Application Context into the global cell via
+     * `setAndroidContextJni` from `Application.onCreate`. Without
+     * the wiring, those code paths panic with "android context was
+     * not initialized" and SIGABRT the process.
+     *
+     * This test exercises the full Kotlin → JNI → Rust →
+     * `ndk_context` round-trip:
+     *
+     *  1. `verifyAndroidContextJni()` returns false (JNI_OnLoad
+     *     installed the null placeholder).
+     *  2. `setAndroidContextJni(targetContext)` promotes the
+     *     instrumentation's Context jobject via `NewGlobalRef`,
+     *     stores it in `ANDROID_CONTEXT_GLOBAL_REF`, and re-inits
+     *     `ndk_context` with that GlobalRef's jobject handle.
+     *  3. `verifyAndroidContextJni()` now returns true.
+     *
+     * Returning true is end-to-end evidence that the Kotlin Any
+     * argument marshalled correctly across JNI, the GlobalRef
+     * promotion succeeded, the raw-pointer hand-off to
+     * `ndk_context::initialize_android_context` is intact, and the
+     * `ndk_context::android_context().context()` accessor returns
+     * the non-null pointer downstream Android-aware crates need.
+     *
+     * A regression in any link of that chain — broken `new_global_ref`
+     * call, wrong JNI sig in the NativeMethod table, lost GlobalRef
+     * reaching the global cell — surfaces as
+     * `verifyAndroidContextJni()` returning false here, not as a
+     * mysterious downstream SIGABRT in production deployments.
+     */
+    /**
+     * peat#925 QA BLOCKER + peat#924 QA WARNING-2: the happy path
+     * for the `setAndroidContextJni` plumbing. This test exercises
+     * the full Kotlin → JNI → Rust → `ndk_context` round-trip:
+     * Kotlin `Any` → JNI jobject local ref → `NewGlobalRef` →
+     * `release_android_context()` + `initialize_android_context(vm,
+     * ctx)` → `ndk_context::android_context().context()` returns
+     * the GlobalRef'd jobject (non-null).
+     *
+     * **Method name prefix `a_` is load-bearing.** `NAME_ASCENDING`
+     * ordering on the class puts this test first, before any
+     * `createNodeJni` call sets the process-wide `IROH_STARTED`
+     * atomic flag. After that flag is set, `setAndroidContextJni`
+     * returns early (logged as "ignoring — iroh already started"
+     * in logcat) — the rejection path is exercised by the `z_`
+     * test below.
+     */
+    @Test
+    fun a_setAndroidContextJni_wiresContextThroughToNdkContext() {
+        val targetContext = InstrumentationRegistry.getInstrumentation().targetContext
+        assertNotNull("instrumentation must provide a target Context", targetContext)
+
+        PeatJni.setAndroidContextJni(targetContext)
+
+        assertTrue(
+            "after setAndroidContextJni, ndk_context().context() must be non-null — confirms " +
+                "Kotlin Any → JNI jobject → NewGlobalRef → ndk_context::initialize_android_context " +
+                "round-trip is intact",
+            PeatJni.verifyAndroidContextJni(),
+        )
+    }
+
+    /**
+     * peat#924 QA WARNING-2 round 2: the `IROH_STARTED` runtime
+     * guard rejects `setAndroidContextJni` calls after the first
+     * successful `createNodeJni`. By the time this test runs
+     * (NAME_ASCENDING orders it last, after `forceStoreError*` and
+     * `loadLibrarySucceeds*` and the `a_*` happy-path test),
+     * `IROH_STARTED` is true. Calling `setAndroidContextJni` again
+     * must be a no-op: the call returns without panicking, no
+     * `ndk_context::release_android_context() → initialize_android_context()`
+     * window opens, and `verifyAndroidContextJni()` continues to
+     * report whatever the `a_*` test installed — neither cleared
+     * nor replaced.
+     *
+     * The point of this test is the *non-abort* invariant: a
+     * consumer that ignores the Kotlin KDoc and calls
+     * `setAndroidContextJni` from a post-`createNodeJni` callback
+     * gets a logged no-op, not a SIGABRT.
+     *
+     * Prefix `z_` is load-bearing for ordering (see class-level
+     * `@FixMethodOrder` comment).
+     */
+    @Test
+    fun z_setAndroidContextJni_isNoOpAfterIrohStart() {
+        // Pre-condition: some prior test in this class has called
+        // createNode (forceStoreErrorForTesting_throwsOnce_thenClears
+        // and forceStoreErrorForTesting_invalidHandle_doesNotArm
+        // both do, and they sort before this one under
+        // NAME_ASCENDING). That set IROH_STARTED. We don't assert
+        // that pre-condition directly — there's no JNI verb for
+        // reading IROH_STARTED — but the assertion below holds iff
+        // the guard fires.
+        val targetContext = InstrumentationRegistry.getInstrumentation().targetContext
+        assertNotNull("instrumentation must provide a target Context", targetContext)
+
+        // The `a_*` test above installed a non-null Context. Snapshot
+        // the state so we can verify the no-op doesn't disturb it.
+        val priorState = PeatJni.verifyAndroidContextJni()
+        assertTrue(
+            "precondition for this test: a_setAndroidContextJni_* must have run first " +
+                "and installed the Context — if this fails, NAME_ASCENDING ordering broke",
+            priorState,
+        )
+
+        // The actual rejection invocation. Must not throw, must not
+        // SIGABRT, must not clear the prior Context.
+        PeatJni.setAndroidContextJni(targetContext)
+
+        assertTrue(
+            "after setAndroidContextJni was called post-iroh-start, the prior Context must " +
+                "still be installed — confirming the AtomicBool guard short-circuited the " +
+                "release+reinit window rather than opening it (peat#924 QA WARNING-2 guard)",
+            PeatJni.verifyAndroidContextJni(),
+        )
     }
 
     /**

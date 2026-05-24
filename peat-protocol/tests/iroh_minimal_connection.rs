@@ -20,7 +20,8 @@ async fn test_minimal_iroh_connection() {
 
     println!("  Creating endpoints...");
 
-    let ep1 = iroh::Endpoint::empty_builder()
+    let ep1 = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
+        .crypto_provider(peat_mesh::security::tls_provider::iroh_quic_provider())
         .alpns(vec![ALPN.to_vec()])
         .bind_addr(addr1)
         .unwrap()
@@ -28,7 +29,8 @@ async fn test_minimal_iroh_connection() {
         .await
         .unwrap();
 
-    let ep2 = iroh::Endpoint::empty_builder()
+    let ep2 = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
+        .crypto_provider(peat_mesh::security::tls_provider::iroh_quic_provider())
         .alpns(vec![ALPN.to_vec()])
         .bind_addr(addr2)
         .unwrap()

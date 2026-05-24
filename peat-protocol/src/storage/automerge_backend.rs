@@ -1767,12 +1767,15 @@ mod tests {
         fn peer(seed: u8) -> EndpointId {
             // EndpointId is iroh's Ed25519 public key — `from_bytes`
             // requires a valid Edwards curve point, not arbitrary
-            // 32-byte patterns. Derive a deterministic test key by
-            // generating from a seeded RNG; the seed varies per
-            // test peer so we get distinct, valid IDs.
-            use rand::{rngs::StdRng, SeedableRng};
-            let mut rng = StdRng::seed_from_u64(seed as u64);
-            iroh::SecretKey::generate(&mut rng).public()
+            // 32-byte patterns. iroh 0.98 dropped the caller-side `&mut R`
+            // argument on `SecretKey::generate()`, which used to consume the
+            // seeded `StdRng` here. Tests that need a deterministic NodeId
+            // per `seed` now go through `IrohTransport::endpoint_id_from_seed`
+            // (HKDF-SHA-256 KDF). The `seed: u64` is stringified so the
+            // helper signature stays compatible.
+            peat_mesh::network::iroh_transport::IrohTransport::endpoint_id_from_seed(&format!(
+                "test-peer-{seed}"
+            ))
         }
 
         #[test]

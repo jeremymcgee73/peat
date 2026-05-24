@@ -46,12 +46,14 @@
 //! ### Relay policy (`relay-n0-hosted`)
 //!
 //! By default, `peat-protocol`'s [`IrohTransport`](crate::network::iroh_transport::IrohTransport)
-//! constructors build endpoints with [`iroh::Endpoint::empty_builder`] — **no
-//! third-party relay servers, no DNS pkarr discovery via n0-hosted
+//! constructors build endpoints with `iroh::Endpoint::builder(presets::Empty)`
+//! plus an explicit `.crypto_provider(rustls::crypto::aws_lc_rs::default_provider())`
+//! — **no third-party relay servers, no DNS pkarr discovery via n0-hosted
 //! infrastructure**. NAT traversal relies on direct addresses or LAN
 //! discovery (mDNS via `address_lookup`). This is the correct posture for
 //! tactical, edge, and air-gapped deployments where peer traffic must not
-//! transit a third-party CDN.
+//! transit a third-party CDN. Iroh 0.98 retired the older `empty_builder()`
+//! convenience; the `presets::Empty` shape is the equivalent (n0-computer/iroh#3978).
 //!
 //! Enabling the `relay-n0-hosted` feature flips every `IrohTransport`
 //! constructor (and any code that calls them) to
