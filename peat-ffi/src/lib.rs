@@ -6378,6 +6378,217 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_peatVersion(
         .into_raw()
 }
 
+/// Pinned `GlobalRef` to the Android Context jobject that
+/// `setAndroidContextJni` last received. The raw pointer we hand to
+/// `ndk_context::initialize_android_context` is the jobject handle
+/// inside this GlobalRef; the JVM guarantees the handle remains
+/// valid (and pointing at the same Java object even if the GC moves
+/// the underlying heap object) until the GlobalRef is dropped.
+///
+/// Storing the GlobalRef in a `Mutex<Option<GlobalRef>>` (rather
+/// than a `OnceLock`) supports the documented call pattern: the
+/// surface admits multiple `setAndroidContextJni` invocations, but
+/// **only before `createNodeJni` starts iroh** (see that fn's
+/// docstring). The mutex serializes concurrent
+/// `setAndroidContextJni` callers; it does NOT block readers of
+/// `ndk_context::android_context()`. Between the
+/// `release_android_context()` and `initialize_android_context()`
+/// calls inside `setAndroidContextJni` there is a brief window where
+/// the global cell is empty — any iroh worker thread that hits
+/// `android_context()` during that window panics. The pre-iroh-start
+/// constraint makes the window structurally unreachable in
+/// practice (no iroh worker exists yet) but a re-init after
+/// `createNodeJni` is unsafe.
+#[cfg(target_os = "android")]
+static ANDROID_CONTEXT_GLOBAL_REF: std::sync::Mutex<Option<jni::objects::GlobalRef>> =
+    std::sync::Mutex::new(None);
+
+/// Set to `true` by `createNodeJni` (and `createNodeWithConfigJni`)
+/// on first successful node construction; checked by
+/// `setAndroidContextJni` to reject post-iroh-start invocations.
+///
+/// Why this exists: `setAndroidContextJni` must release and
+/// reinitialize `ndk-context`'s global cell, and there is a brief
+/// window between the two calls where any iroh worker thread
+/// reaching `ndk_context::android_context()` panics. The
+/// `Application.onCreate`-before-`createNodeJni` call pattern keeps
+/// the window structurally unreachable (no iroh worker exists yet),
+/// but the Kotlin/Rust doc could be ignored by a consumer that
+/// re-acquires the Application Context in `onActivityResult` or
+/// similar. This flag turns that misuse into a logged-and-ignored
+/// no-op rather than a SIGABRT.
+///
+/// One-way: once set, never cleared. Re-init is unsafe by design;
+/// there is no recovery path. Set via `Release` to publish all
+/// prior writes (iroh handle install, tokio runtime startup) to any
+/// `Acquire` reader; checked via `Acquire` to see them. peat#924 QA
+/// WARNING-2 round 2.
+#[cfg(target_os = "android")]
+static IROH_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// JNI: Plumb the Android `Context` jobject into `ndk-context`'s
+/// global cell.
+///
+/// Kotlin signature: `external fun setAndroidContextJni(context: Any)`
+///
+/// Why this exists: `JNI_OnLoad` initializes `ndk-context` with the
+/// `JavaVM*` it receives as an argument, but passes `null` for the
+/// Android `Context` because no `Context` exists yet — `JNI_OnLoad`
+/// runs before any `Application` has been instantiated by the
+/// framework. That's enough for the iroh discovery subtree
+/// (swarm-discovery / mDNS) which only needs the JVM for thread
+/// attachment. It is NOT enough for code that needs the
+/// `Context` itself — `hickory-resolver`'s Android `ConnectivityManager`
+/// probe (transitively reachable via iroh-dns), NDK asset-manager
+/// access, app-private file path resolution, etc. Those paths panic
+/// with `android context was not initialized` on first call.
+///
+/// Consumers using iroh DNS-based discovery (relay, pkarr,
+/// non-mDNS peer lookups) MUST call this from
+/// `Application.onCreate()` passing the application Context BEFORE
+/// the first `createNodeJni`. Consumers using only mDNS local-link
+/// discovery (peat-ffi's own surface tests, the QUICKSTART
+/// scenarios 1–3) can skip it.
+///
+/// Multiple calls are allowed, but **only before `createNodeJni`**
+/// is invoked. Calling this after iroh has started creates a brief
+/// window between `release_android_context()` and
+/// `initialize_android_context()` where any concurrent
+/// `ndk_context::android_context()` reader — iroh-dns
+/// `hickory-resolver`'s ConnectivityManager probe, the mDNS
+/// multicast worker, etc. — sees the cell empty and panics with
+/// "android context was not initialized". The mutex protecting
+/// `ANDROID_CONTEXT_GLOBAL_REF` serializes concurrent
+/// `setAndroidContextJni` writers but does NOT block readers
+/// reaching into `ndk-context`'s own global cell. The
+/// Application.onCreate-before-createNodeJni call pattern makes
+/// the window structurally unreachable (no iroh worker exists
+/// yet); a re-init after iroh starts is unsafe.
+///
+/// The JVM pointer remains the same one JNI_OnLoad stored on every
+/// call; only the Context changes. peat#925 QA WARNING follow-up.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni(
+    env: JNIEnv,
+    _class: JClass,
+    context: jni::objects::JObject,
+) {
+    // Reject post-iroh-start invocations. The release+reinit pair
+    // below has a brief window where `ndk_context::android_context()`
+    // returns the empty cell — once any iroh worker is alive (i.e.
+    // `createNodeJni` has returned successfully), one of them
+    // resolving the cell during that window panics. The documented
+    // call pattern (Application.onCreate before any createNodeJni)
+    // makes the window unreachable; this `Acquire` load is the
+    // runtime guardrail for misuse that ignores the doc. peat#924 QA
+    // WARNING-2 round 2.
+    use std::sync::atomic::Ordering;
+    if IROH_STARTED.load(Ordering::Acquire) {
+        android_log(
+            "setAndroidContextJni: ignoring — iroh already started; \
+             call this from Application.onCreate BEFORE createNodeJni. \
+             See PeatJni.kt KDoc.",
+        );
+        return;
+    }
+
+    // JNI delivers `context` as a **local reference** — valid only
+    // for the duration of this native method call. After we return,
+    // the JVM is free to recycle the local-ref table slot, and a
+    // raw pointer to it would alias the wrong (or no) object on the
+    // next `ndk_context::android_context().context()` lookup.
+    // Promote to a process-lifetime global reference first, then
+    // hand `ndk_context` the jobject handle from inside the
+    // GlobalRef. peat#925 QA WARNING-2.
+    let global_ref = match env.new_global_ref(&context) {
+        Ok(gref) => gref,
+        Err(e) => {
+            android_log(&format!(
+                "setAndroidContextJni: env.new_global_ref(context) failed: {}",
+                e
+            ));
+            return;
+        }
+    };
+    let vm_ptr = match env.get_java_vm() {
+        Ok(vm) => vm.get_java_vm_pointer() as *mut c_void,
+        Err(_) => {
+            android_log("setAndroidContextJni: env.get_java_vm() failed");
+            return;
+        }
+    };
+
+    // SAFETY: `JNI_OnLoad` cached the JavaVM and called
+    // `ndk_context::initialize_android_context(vm, null)` exactly
+    // once at library-load time. `ndk-context 0.1.1` is one-shot —
+    // calling `initialize_android_context` a second time asserts on
+    // `previous.is_none()` and SIGABRT's the process (peat#925 QA
+    // d2d01b23 surface-test surfaced this). The documented re-init
+    // pattern is `release_android_context()` followed by a fresh
+    // `initialize_android_context(...)`. We do exactly that here,
+    // holding the `ANDROID_CONTEXT_GLOBAL_REF` mutex across the pair
+    // so concurrent `setAndroidContextJni` callers serialize and
+    // neither sees the cell in a released-but-not-yet-reinitialized
+    // state. The JavaVM pointer remains the same one JNI_OnLoad
+    // stored; only the Context changes (from `null` to the
+    // GlobalRef'd jobject handle on first call; from the previous
+    // GlobalRef to the new one on subsequent calls).
+    //
+    // The jobject handle is pulled from `global_ref.as_raw()` — the
+    // JVM guarantees this remains valid until the GlobalRef is
+    // dropped, which we prevent by stashing the GlobalRef in
+    // `ANDROID_CONTEXT_GLOBAL_REF` below before releasing the lock.
+    let ctx_ptr = global_ref.as_raw() as *mut c_void;
+    let mut slot = ANDROID_CONTEXT_GLOBAL_REF.lock().unwrap();
+    unsafe {
+        // `release_android_context()` asserts `previous.is_some()`
+        // — safe because JNI_OnLoad installed the `(vm, null)` entry
+        // exactly once and this critical section is the only place
+        // in peat-ffi that releases. If we ever surface a
+        // `clear_android_context_jni`, it would also need the same
+        // mutex.
+        ndk_context::release_android_context();
+        ndk_context::initialize_android_context(vm_ptr, ctx_ptr);
+    }
+    // Replace the cell *after* the ndk_context swap. The drop of
+    // the previous GlobalRef happens here (out of the Option). The
+    // new GlobalRef is now the one keeping `ctx_ptr` live.
+    *slot = Some(global_ref);
+    drop(slot);
+
+    android_log(
+        "setAndroidContextJni: ndk_context re-initialized with non-null Context (GlobalRef pinned)",
+    );
+}
+
+/// JNI: Returns whether `ndk-context`'s stored Context is non-null
+/// — i.e., whether a prior `setAndroidContextJni` call has wired a
+/// real Application Context into the global cell.
+///
+/// Kotlin signature: `external fun verifyAndroidContextJni(): Boolean`
+///
+/// Surface-tier test hook (peat#925 QA BLOCKER). Lets an
+/// instrumented Android test assert end-to-end that
+/// Kotlin → JNI → Rust → `ndk_context` actually wired the Context
+/// through, without having to drive a downstream consumer (e.g.,
+/// hickory-resolver's Android system-DNS probe) just to verify
+/// the plumbing. Production code should not call this — the
+/// information is internal to the wiring contract.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_verifyAndroidContextJni(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jboolean {
+    let stored = ndk_context::android_context().context();
+    if stored.is_null() {
+        jni::sys::JNI_FALSE
+    } else {
+        jni::sys::JNI_TRUE
+    }
+}
+
 /// JNI: Test that JNI bindings work
 ///
 /// Kotlin signature: external fun testJni(): String
@@ -6435,6 +6646,19 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
         Ok(node) => {
             #[cfg(target_os = "android")]
             android_log("createNodeJni: Node created successfully");
+            // Publish "iroh has started" to any future
+            // `setAndroidContextJni` reader BEFORE handing the
+            // handle back to Kotlin. `Release` here pairs with
+            // `Acquire` in setAndroidContextJni — guarantees all
+            // writes leading up to this point (iroh handle install,
+            // tokio runtime startup, iroh worker spawn) are visible
+            // to a setAndroidContextJni call that observes the flag
+            // set. One-way: never cleared, even on `freeNodeJni` —
+            // re-issuing setAndroidContextJni after a node lifecycle
+            // is still unsafe because iroh tokio workers may
+            // outlive the node handle.
+            #[cfg(target_os = "android")]
+            IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
             // Return the Arc pointer as a handle
             let handle = Arc::into_raw(node) as i64;
             // Store globally so it survives APK replacement
@@ -6541,6 +6765,11 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
         Ok(node) => {
             #[cfg(target_os = "android")]
             android_log("createNodeWithConfigJni: Node created successfully");
+            // Publish iroh-started — same Release/Acquire pairing
+            // with setAndroidContextJni as in createNodeJni above.
+            // peat#924 QA WARNING-2.
+            #[cfg(target_os = "android")]
+            IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
             let handle = Arc::into_raw(node) as i64;
             if let Ok(mut global) = GLOBAL_NODE_HANDLE.lock() {
                 *global = handle;
@@ -8977,6 +9206,19 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
             sig: "()Ljava/lang/String;".into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_testJni as *mut c_void,
         },
+        #[cfg(target_os = "android")]
+        NativeMethod {
+            name: "setAndroidContextJni".into(),
+            // (Ljava/lang/Object;)V — Kotlin `Any` lowers to java.lang.Object.
+            sig: "(Ljava/lang/Object;)V".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni as *mut c_void,
+        },
+        #[cfg(target_os = "android")]
+        NativeMethod {
+            name: "verifyAndroidContextJni".into(),
+            sig: "()Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_verifyAndroidContextJni as *mut c_void,
+        },
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "createNodeJni".into(),
@@ -9119,37 +9361,44 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
                 .into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *mut c_void,
         },
-        #[cfg(feature = "sync")]
-        NativeMethod {
-            name: "subscribeDocumentChangesJni".into(),
-            // (long handle, DocumentChangeListener listener) -> boolean
-            sig: "(JLcom/defenseunicorns/peat/DocumentChangeListener;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni
-                as *mut c_void,
-        },
-        #[cfg(feature = "sync")]
-        NativeMethod {
-            name: "unsubscribeDocumentChangesJni".into(),
-            sig: "()V".into(),
-            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni
-                as *mut c_void,
-        },
-        // ADR-059 Slice 1.b: outbound BLE-frame fan-out callback.
-        #[cfg(all(feature = "sync", feature = "bluetooth"))]
-        NativeMethod {
-            name: "subscribeOutboundFramesJni".into(),
-            // (long handle, OutboundFrameListener listener) -> boolean
-            sig: "(JLcom/defenseunicorns/peat/OutboundFrameListener;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni as *mut c_void,
-        },
-        #[cfg(all(feature = "sync", feature = "bluetooth"))]
-        NativeMethod {
-            name: "unsubscribeOutboundFramesJni".into(),
-            // (long handle) -> void
-            sig: "(J)V".into(),
-            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
-                as *mut c_void,
-        },
+        // peat#925: the four subscription methods
+        // (subscribe/unsubscribeDocumentChangesJni,
+        // subscribe/unsubscribeOutboundFramesJni) are intentionally NOT
+        // registered via nativeInit because their signatures reference
+        // consumer-supplied listener interfaces
+        // (`com/defenseunicorns/peat/DocumentChangeListener`,
+        // `com/defenseunicorns/peat/OutboundFrameListener`) that don't
+        // exist in peat-ffi's own `PeatJni.kt` — see the comment block at
+        // peat-ffi/android/src/main/kotlin/.../PeatJni.kt:27-34 which
+        // documents the "consumers declare these externs locally" pattern.
+        //
+        // The Rust extern fns `Java_com_defenseunicorns_peat_PeatJni_*`
+        // are still exported and reachable via JNI's auto-lookup-by-name
+        // convention: any consumer (peat-atak-plugin, downstream apps)
+        // that declares `external fun subscribeDocumentChangesJni(...)`
+        // alongside its `DocumentChangeListener` interface gets the
+        // function resolved via dlsym at first call.
+        //
+        // Why these were here: ADR-059 Slice 1.b's outbound-frame
+        // wiring was developed against a peat-atak-plugin build that
+        // DID declare the listener interfaces; the `NativeMethod`
+        // entries were copy-pasted from that build's lockstep
+        // registration table without re-checking peat-ffi's own
+        // PeatJni.kt surface.
+        //
+        // What went wrong: `JNI_OnLoad → nativeInit → RegisterNatives`
+        // tries to bind every entry to a corresponding member on
+        // `com.defenseunicorns.peat.PeatJni`. The DocumentChangeListener
+        // / OutboundFrameListener signatures reference Kotlin classes
+        // that don't exist. CheckJNI (active on debug-instrumented
+        // builds, which is the AndroidJUnit harness configuration on
+        // the Galaxy Tab A9+ CI runner) aborts the process on
+        // registration mismatch — `Fatal signal 6 (SIGABRT), code -1
+        // (SI_QUEUE)` in tid == JUnit-runner-tid, ~12ms after
+        // `System.loadLibrary("peat_ffi")` returns. The post-
+        // IrohTransport timing of the abort in earlier logcats was
+        // misleading — the actual fault is during `System.loadLibrary`
+        // which the test harness only logs after the abort propagates.
         // Blob transfer (ADR-060)
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -9392,6 +9641,47 @@ fn init_android_tracing() {
     });
 }
 
+/// Install a `std::panic::set_hook` that writes the panic payload +
+/// file:line + (best-effort) backtrace to logcat under the `PeatFFI`
+/// tag before chaining to the default handler. Idempotent via
+/// `OnceLock`.
+///
+/// Why this exists: on Android, the default panic handler writes to
+/// stderr which logcat never captures, so an `unwrap()` in a worker
+/// thread aborts the process with only a bionic SIGABRT trace whose
+/// frames are stripped Rust symbols. With this hook installed, the
+/// panic message + source location lands in the existing PeatFFI
+/// logcat stream that AndroidJUnit and `adb logcat` already
+/// surface.
+#[cfg(target_os = "android")]
+fn install_android_panic_hook() {
+    use std::sync::OnceLock;
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let payload = info
+                .payload()
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown location>".to_string());
+            let thread = std::thread::current();
+            let thread_name = thread.name().unwrap_or("<unnamed>");
+            android_log(&format!(
+                "PANIC in thread '{}' at {}: {}",
+                thread_name, location, payload
+            ));
+            default_hook(info);
+        }));
+        android_log("install_android_panic_hook: panic hook installed");
+    });
+}
+
 /// JNI_OnLoad - Called when library is loaded via System.loadLibrary()
 ///
 /// This is our chance to register native methods while we have access to
@@ -9413,6 +9703,55 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
     // was already set.
     #[cfg(target_os = "android")]
     init_android_tracing();
+
+    // Forward Rust panics to logcat before the default hook aborts
+    // the process. Without this, an `unwrap()` deep in a worker
+    // thread aborts with no diagnostic — Android's default panic
+    // path writes to stderr which logcat never captures, and the
+    // process exits via SIGABRT with only a bionic backtrace whose
+    // frames are stripped Rust symbols. peat#925 follow-on: makes
+    // future panics in the iroh/rustls/aws-lc-rs/redb code paths
+    // self-diagnose in the existing PeatFFI logcat tag.
+    #[cfg(target_os = "android")]
+    install_android_panic_hook();
+
+    // Initialize `ndk-context`'s global JavaVM cell. The crate is
+    // pulled in transitively by the iroh 1.0.0-rc.0 cascade
+    // (swarm-discovery / iroh-mdns-address-lookup / iroh-dns →
+    // hickory-resolver) and panics with "android context was not
+    // initialized" the first time any Android-aware code in that
+    // subtree resolves the global context. Without this call,
+    // every `createNodeJni` SIGABRT's mid-bind. Surfaced by the
+    // panic hook above:
+    //   PANIC in thread '<unnamed>' at ndk-context-0.1.1/src/lib.rs:72:
+    //     android context was not initialized
+    //
+    // **Safety boundary of the null-context init below.** We pass
+    // our `JavaVM*` (definitely available — it's the argument to
+    // JNI_OnLoad) and `null` for the Android `Context` jobject (NOT
+    // available from JNI_OnLoad — JNI_OnLoad runs before any
+    // Application/Activity has been instantiated by the framework).
+    // Code paths that consult only the JVM (mDNS multicast worker,
+    // swarm-discovery sender, iroh thread attachment) get served by
+    // this init alone. Code paths that genuinely need the
+    // *Context* itself — hickory-resolver's Android system-DNS
+    // probe via ConnectivityManager, NDK asset-manager access,
+    // app-private file paths — will hit `ndk_context::android_context().context()`
+    // and panic on the null. Consumers exercising those paths
+    // (any iroh deployment using DNS-based discovery — relay, pkarr,
+    // non-mDNS peer lookups) MUST call `setAndroidContextJni` from
+    // their `Application.onCreate` before `createNodeJni`. peat-ffi's
+    // own surface tests don't reach those paths, but a downstream
+    // consumer hitting them without `setAndroidContextJni` would
+    // get a `PANIC in thread '<unnamed>' at ndk-context-0.1.1/...:
+    // android context was not initialized` line via the panic hook
+    // above and a SIGABRT — same diagnostic the null-context
+    // discovery in this very PR surfaced. peat#925 QA WARNING-1.
+    #[cfg(target_os = "android")]
+    unsafe {
+        ndk_context::initialize_android_context(vm as *mut c_void, std::ptr::null_mut());
+        android_log("JNI_OnLoad: ndk_context::initialize_android_context(vm, null) done");
+    }
 
     // Store JavaVM globally for callbacks from any thread
     let java_vm = unsafe {
@@ -9508,6 +9847,20 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "testJni".into(),
                     sig: "()Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_testJni as *mut c_void,
+                },
+                #[cfg(target_os = "android")]
+                NativeMethod {
+                    name: "setAndroidContextJni".into(),
+                    sig: "(Ljava/lang/Object;)V".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni
+                        as *mut c_void,
+                },
+                #[cfg(target_os = "android")]
+                NativeMethod {
+                    name: "verifyAndroidContextJni".into(),
+                    sig: "()Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_verifyAndroidContextJni
+                        as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {

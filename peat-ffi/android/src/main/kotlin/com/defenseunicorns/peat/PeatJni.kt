@@ -50,6 +50,64 @@ object PeatJni {
 
     @JvmStatic external fun testJni(): String
 
+    /**
+     * Plumb the Android [context] (typically the Application Context)
+     * into peat-ffi's `ndk-context` global cell.
+     *
+     * `JNI_OnLoad` initializes `ndk-context` with the `JavaVM*` it
+     * receives but passes `null` for the Context — no Context exists
+     * yet at `System.loadLibrary` time. That's enough for the iroh
+     * discovery subtree (swarm-discovery / mDNS) which only needs the
+     * JVM for thread attachment. It is NOT enough for code that
+     * touches the Context itself: `hickory-resolver`'s Android
+     * `ConnectivityManager` probe reachable via iroh-dns, NDK asset
+     * manager access, etc. Those paths panic with "android context
+     * was not initialized" on first call.
+     *
+     * Consumers using iroh DNS-based discovery (relay, pkarr, non-mDNS
+     * peer lookups) **must** call this from `Application.onCreate()`
+     * before the first `createNodeJni`. Consumers using only mDNS
+     * local-link discovery (QUICKSTART scenarios 1–3, peat-ffi's own
+     * surface tests) can skip it.
+     *
+     * Pass a process-stable reference (the Application instance is the
+     * canonical choice — `applicationContext` from any activity).
+     * Activity references will be invalidated on configuration change.
+     *
+     * **Call from `Application.onCreate()`, before any `createNodeJni`.**
+     * Multiple calls are tolerated but only safe pre-iroh-start: the
+     * Rust implementation releases and reinitializes `ndk-context`
+     * under a Mutex, but a concurrent iroh worker reaching
+     * `ndk_context::android_context()` during that brief window sees
+     * the cell empty and panics.
+     *
+     * As of peat#924 the Rust side enforces this with an
+     * `AtomicBool` flag set on the first successful `createNodeJni`
+     * /`createNodeWithConfigJni`: a call here AFTER that point is
+     * dropped silently with an `I PeatFFI : setAndroidContextJni:
+     * ignoring — iroh already started ...` line in logcat, not a
+     * SIGABRT. No exception is thrown — the Kotlin signature
+     * returns `Unit` and a misordered call appears as a no-op.
+     * Tail logcat with `adb logcat *:I | grep setAndroidContextJni`
+     * during development if you suspect the wiring isn't happening.
+     * peat#925 QA WARNING follow-up.
+     */
+    @JvmStatic external fun setAndroidContextJni(context: Any)
+
+    /**
+     * Returns true iff `ndk-context`'s stored Android Context is
+     * non-null — i.e., a prior [setAndroidContextJni] call has wired
+     * a real Application Context through. False before that call
+     * (the `null` placeholder JNI_OnLoad installs is the safe default
+     * for mDNS-only paths).
+     *
+     * Surface-tier test hook only (peat#925 QA BLOCKER follow-up).
+     * Production code should not consult this — the
+     * `setAndroidContextJni`-required-or-not decision is a deployment
+     * concern documented on that method, not a runtime check.
+     */
+    @JvmStatic external fun verifyAndroidContextJni(): Boolean
+
     @JvmStatic external fun createNodeJni(
         appId: String,
         sharedKey: String,

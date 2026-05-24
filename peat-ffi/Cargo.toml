@@ -149,6 +149,15 @@ peat-btle = { workspace = true, features = ["android"], optional = true }
 # Android-only tracing bridge (see comment above the peat-btle target tables).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# peat#925 follow-on: `ndk-context` is pulled in transitively by the
+# iroh 1.0.0-rc.0 cascade (swarm-discovery / iroh-mdns-address-lookup
+# / iroh-dns) and panics with "android context was not initialized"
+# the first time any Android-aware code in that subtree resolves the
+# global context (mDNS multicast detection, NDK socket-option
+# checks, etc.). Without an explicit `ndk_context::initialize_android_context`
+# call in JNI_OnLoad, every `createNodeJni` call SIGABRT's mid-bind.
+# We depend on it directly so we control the initialization order.
+ndk-context = "0.1"
 
 [dev-dependencies]
 env_logger = "0.11"

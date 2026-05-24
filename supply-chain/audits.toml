@@ -267,7 +267,7 @@ end = "2027-03-26"
 
 [[trusted.base32]]
 criteria = "safe-to-deploy"
-user-id = 92 # Andreas Ots (andreasots)
+user-id = 92
 start = "2024-05-16"
 end = "2027-03-26"
 
@@ -783,7 +783,7 @@ end = "2027-03-26"
 
 [[trusted.document-features]]
 criteria = "safe-to-deploy"
-user-id = 24285 # Olivier Goffart (ogoffart)
+user-id = 24285
 start = "2022-02-01"
 end = "2027-03-26"
 
@@ -1371,7 +1371,7 @@ end = "2027-12-31"
 
 [[trusted.iroh]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2024-08-20"
 end = "2027-03-26"
 
@@ -1383,7 +1383,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-base]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2024-08-20"
 end = "2027-03-26"
 
@@ -1395,7 +1395,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-blobs]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2024-08-20"
 end = "2027-03-26"
 
@@ -1413,13 +1413,13 @@ end = "2027-12-31"
 
 [[trusted.iroh-metrics]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2024-08-20"
 end = "2027-03-26"
 
 [[trusted.iroh-metrics-derive]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-04-30"
 end = "2027-03-26"
 
@@ -1449,7 +1449,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-relay]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-01-14"
 end = "2027-03-26"
 
@@ -1461,7 +1461,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-tickets]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-11-05"
 end = "2027-03-26"
 
@@ -1473,7 +1473,7 @@ end = "2027-12-31"
 
 [[trusted.irpc]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-06-26"
 end = "2027-03-26"
 
@@ -1485,7 +1485,7 @@ end = "2027-12-31"
 
 [[trusted.irpc-derive]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-07-30"
 end = "2027-03-26"
 
@@ -1581,7 +1581,7 @@ end = "2027-03-26"
 
 [[trusted.litrs]]
 criteria = "safe-to-deploy"
-user-id = 915 # Lukas Kalbertodt (LukasKalbertodt)
+user-id = 915
 start = "2021-05-24"
 end = "2027-03-26"
 
@@ -1737,7 +1737,7 @@ end = "2027-03-26"
 
 [[trusted.n0-snafu]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-05-29"
 end = "2027-03-26"
 
@@ -1821,7 +1821,7 @@ end = "2027-12-31"
 
 [[trusted.netwatch]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-01-14"
 end = "2027-03-26"
 
@@ -1857,7 +1857,7 @@ end = "2027-03-30"
 
 [[trusted.ntimestamp]]
 criteria = "safe-to-deploy"
-user-id = 182669 # Nuh (Nuhvi)
+user-id = 182669
 start = "2025-02-21"
 end = "2027-03-26"
 
@@ -2097,7 +2097,7 @@ end = "2027-03-26"
 
 [[trusted.pkarr]]
 criteria = "safe-to-deploy"
-user-id = 248415 # Severin Alexander Bühler (SeverinAlexB)
+user-id = 248415
 start = "2025-09-29"
 end = "2027-03-26"
 
@@ -2163,7 +2163,7 @@ end = "2027-12-31"
 
 [[trusted.portmapper]]
 criteria = "safe-to-deploy"
-user-id = 192066 # ramfox (ramfox)
+user-id = 192066
 start = "2025-01-14"
 end = "2027-03-26"
 
@@ -3225,7 +3225,7 @@ end = "2027-03-26"
 
 [[trusted.wasm-streams]]
 criteria = "safe-to-deploy"
-user-id = 64142 # Mattias Buelens (MattiasBuelens)
+user-id = 64142
 start = "2020-06-14"
 end = "2027-03-26"
 
@@ -3495,7 +3495,7 @@ end = "2027-03-26"
 
 [[trusted.z32]]
 criteria = "safe-to-deploy"
-user-id = 182669 # Nuh (Nuhvi)
+user-id = 182669
 start = "2023-10-25"
 end = "2027-03-26"
 

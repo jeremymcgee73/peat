@@ -2,8 +2,8 @@
 # cargo-vet imports lock
 
 [[publisher.acto]]
-version = "0.8.0"
-when = "2025-06-26"
+version = "0.8.2"
+when = "2026-05-19"
 user-id = 86681
 user-login = "rkuhn"
 user-name = "Roland Kuhn"
@@ -272,12 +272,12 @@ user-id = 267
 user-login = "tarcieri"
 user-name = "Tony Arcieri"
 
-[[publisher.base32]]
-version = "0.5.1"
-when = "2024-07-18"
-user-id = 92
-user-login = "andreasots"
-user-name = "Andreas Ots"
+[[publisher.base16ct]]
+version = "1.0.0"
+when = "2026-01-03"
+user-id = 267
+user-login = "tarcieri"
+user-name = "Tony Arcieri"
 
 [[publisher.base64ct]]
 version = "1.8.3"
@@ -331,13 +331,6 @@ user-name = "Jack O'Connor"
 [[publisher.block-buffer]]
 version = "0.10.4"
 when = "2023-03-09"
-user-id = 5059
-user-login = "newpavlov"
-user-name = "Artyom Pavlov"
-
-[[publisher.block-buffer]]
-version = "0.11.0"
-when = "2025-11-07"
 user-id = 5059
 user-login = "newpavlov"
 user-name = "Artyom Pavlov"
@@ -627,8 +620,8 @@ user-login = "rozbb"
 user-name = "Michael Rosenberg"
 
 [[publisher.curve25519-dalek]]
-version = "5.0.0-pre.1"
-when = "2025-09-04"
+version = "5.0.0-pre.6"
+when = "2026-02-04"
 user-id = 6979
 user-login = "rozbb"
 user-name = "Michael Rosenberg"
@@ -674,8 +667,8 @@ user-login = "TedDriggs"
 user-name = "Ted Driggs"
 
 [[publisher.data-encoding]]
-version = "2.10.0"
-when = "2026-01-10"
+version = "2.11.0"
+when = "2026-04-24"
 user-id = 3036
 user-login = "ia0"
 user-name = "Julien Cretin"
@@ -754,13 +747,6 @@ user-id = 267
 user-login = "tarcieri"
 user-name = "Tony Arcieri"
 
-[[publisher.digest]]
-version = "0.11.0-rc.10"
-when = "2026-02-01"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
-
 [[publisher.dispatch2]]
 version = "0.3.1"
 when = "2026-02-26"
@@ -769,18 +755,11 @@ user-login = "madsmtm"
 user-name = "Mads Marquart"
 
 [[publisher.dlopen2]]
-version = "0.5.0"
-when = "2023-06-07"
+version = "0.8.2"
+when = "2025-12-06"
 user-id = 87154
 user-login = "OpenByteDev"
 user-name = "OpenByte"
-
-[[publisher.document-features]]
-version = "0.2.12"
-when = "2025-10-24"
-user-id = 24285
-user-login = "ogoffart"
-user-name = "Olivier Goffart"
 
 [[publisher.dotenvy]]
 version = "0.15.7"
@@ -810,13 +789,6 @@ user-id = 267
 user-login = "tarcieri"
 user-name = "Tony Arcieri"
 
-[[publisher.ed25519]]
-version = "3.0.0-rc.4"
-when = "2026-02-02"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
-
 [[publisher.ed25519-dalek]]
 version = "2.2.0"
 when = "2025-07-09"
@@ -825,8 +797,8 @@ user-login = "rozbb"
 user-name = "Michael Rosenberg"
 
 [[publisher.ed25519-dalek]]
-version = "3.0.0-pre.1"
-when = "2025-09-04"
+version = "3.0.0-pre.7"
+when = "2026-05-06"
 user-id = 6979
 user-login = "rozbb"
 user-name = "Michael Rosenberg"
@@ -844,13 +816,6 @@ when = "2024-10-24"
 user-id = 4484
 user-login = "hsivonen"
 user-name = "Henri Sivonen"
-
-[[publisher.enum-as-inner]]
-version = "0.6.1"
-when = "2024-09-09"
-user-id = 1300
-user-login = "bluejekyll"
-user-name = "Benjamin Fry"
 
 [[publisher.env_filter]]
 version = "0.1.4"
@@ -1122,6 +1087,12 @@ when = "2025-11-20"
 user-id = 55123
 user-login = "rust-lang-owner"
 
+[[publisher.hashbrown]]
+version = "0.17.1"
+when = "2026-05-09"
+user-id = 55123
+user-login = "rust-lang-owner"
+
 [[publisher.heapless]]
 version = "0.7.17"
 when = "2023-12-04"
@@ -1150,15 +1121,15 @@ user-id = 6739
 user-login = "alexjg"
 
 [[publisher.hickory-proto]]
-version = "0.25.2"
-when = "2025-05-03"
+version = "0.26.1"
+when = "2026-05-01"
 user-id = 1300
 user-login = "bluejekyll"
 user-name = "Benjamin Fry"
 
 [[publisher.hickory-resolver]]
-version = "0.25.2"
-when = "2025-05-03"
+version = "0.26.1"
+when = "2026-05-01"
 user-id = 1300
 user-login = "bluejekyll"
 user-name = "Benjamin Fry"
@@ -1255,8 +1226,8 @@ user-login = "messense"
 user-name = "messense"
 
 [[publisher.igd-next]]
-version = "0.16.2"
-when = "2025-07-24"
+version = "0.17.0"
+when = "2026-03-17"
 user-id = 2391
 user-login = "dariusc93"
 user-name = "Darius Clark"
@@ -1303,22 +1274,22 @@ user-login = "lo48576"
 user-name = "YOSHIOKA Takuma"
 
 [[publisher.iroh]]
-version = "0.97.0"
-when = "2026-03-16"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-base]]
-version = "0.97.0"
-when = "2026-03-16"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-blobs]]
-version = "0.99.0"
-when = "2026-03-17"
+version = "0.101.0"
+when = "2026-05-08"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1331,43 +1302,36 @@ user-login = "rklaehn"
 user-name = "Rüdiger Klaehn"
 
 [[publisher.iroh-metrics]]
-version = "0.38.3"
-when = "2026-03-10"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
-[[publisher.iroh-metrics-derive]]
-version = "0.4.1"
-when = "2026-01-26"
-user-id = 192066
-user-login = "ramfox"
-user-name = "ramfox"
-
 [[publisher.iroh-relay]]
-version = "0.97.0"
-when = "2026-03-16"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-tickets]]
-version = "0.4.0"
-when = "2026-03-16"
+version = "1.0.0-rc.0"
+when = "2026-05-08"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.irpc]]
-version = "0.13.0"
-when = "2026-03-16"
+version = "0.15.0"
+when = "2026-05-08"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.irpc-derive]]
-version = "0.10.0"
-when = "2026-03-16"
+version = "0.15.0"
+when = "2026-05-08"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1428,6 +1392,13 @@ user-id = 68864
 user-login = "rib"
 user-name = "Robert Bragg"
 
+[[publisher.jni]]
+version = "0.22.4"
+when = "2026-03-16"
+user-id = 68864
+user-login = "rib"
+user-name = "Robert Bragg"
+
 [[publisher.jobserver]]
 version = "0.1.34"
 when = "2025-08-23"
@@ -1480,13 +1451,6 @@ user-id = 1139
 user-login = "Manishearth"
 user-name = "Manish Goregaokar"
 
-[[publisher.litrs]]
-version = "1.0.0"
-when = "2025-10-20"
-user-id = 915
-user-login = "LukasKalbertodt"
-user-name = "Lukas Kalbertodt"
-
 [[publisher.lock_api]]
 version = "0.4.14"
 when = "2025-10-03"
@@ -1504,6 +1468,13 @@ user-name = "Alice Ryhl"
 [[publisher.lru]]
 version = "0.16.3"
 when = "2026-01-07"
+user-id = 4747
+user-login = "jeromefroe"
+user-name = "Jerome Froelich"
+
+[[publisher.lru]]
+version = "0.18.0"
+when = "2026-04-27"
 user-id = 4747
 user-login = "jeromefroe"
 user-name = "Jerome Froelich"
@@ -1619,6 +1590,13 @@ user-id = 172951
 user-login = "matheus23"
 user-name = "Philipp Krüger"
 
+[[publisher.n0-watcher]]
+version = "1.0.0-rc.0"
+when = "2026-05-06"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
+
 [[publisher.native-tls]]
 version = "0.2.18"
 when = "2026-02-18"
@@ -1641,8 +1619,8 @@ user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.netdev]]
-version = "0.40.1"
-when = "2026-03-03"
+version = "0.43.0"
+when = "2026-05-03"
 user-id = 117934
 user-login = "shellrow"
 user-name = "Shintaro Ito"
@@ -1657,6 +1635,13 @@ user-name = "Gris Ge"
 [[publisher.netlink-packet-route]]
 version = "0.29.0"
 when = "2026-02-19"
+user-id = 14819
+user-login = "cathay4t"
+user-name = "Gris Ge"
+
+[[publisher.netlink-packet-route]]
+version = "0.30.0"
+when = "2026-04-15"
 user-id = 14819
 user-login = "cathay4t"
 user-name = "Gris Ge"
@@ -1676,8 +1661,8 @@ user-login = "cathay4t"
 user-name = "Gris Ge"
 
 [[publisher.netwatch]]
-version = "0.15.0"
-when = "2026-03-10"
+version = "0.17.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1690,32 +1675,25 @@ user-login = "SteveLauC"
 user-name = "SteveLauC"
 
 [[publisher.noq]]
-version = "0.17.0"
-when = "2026-03-09"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.noq-proto]]
-version = "0.16.0"
-when = "2026-03-09"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.noq-udp]]
-version = "0.9.0"
-when = "2026-03-09"
+version = "1.0.0-rc.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
-
-[[publisher.ntimestamp]]
-version = "1.0.0"
-when = "2025-02-21"
-user-id = 182669
-user-login = "Nuhvi"
-user-name = "Nuh"
 
 [[publisher.num-bigint]]
 version = "0.4.6"
@@ -1907,8 +1885,8 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-mesh]]
-version = "0.9.0-rc.17"
-when = "2026-05-22"
+version = "0.9.0-rc.20"
+when = "2026-05-24"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1954,13 +1932,6 @@ when = "2021-10-31"
 user-id = 38159
 user-login = "najamelan"
 user-name = "Naja Melan"
-
-[[publisher.pkarr]]
-version = "5.0.3"
-when = "2026-02-16"
-user-id = 248415
-user-login = "SeverinAlexB"
-user-name = "Severin Alexander Bühler"
 
 [[publisher.pkcs8]]
 version = "0.10.2"
@@ -2012,8 +1983,8 @@ user-login = "taiki-e"
 user-name = "Taiki Endo"
 
 [[publisher.portmapper]]
-version = "0.15.0"
-when = "2026-03-10"
+version = "0.17.0"
+when = "2026-05-07"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -2133,27 +2104,6 @@ when = "2025-11-11"
 user-id = 2927
 user-login = "Mingun"
 
-[[publisher.quinn]]
-version = "0.11.9"
-when = "2025-08-27"
-user-id = 4556
-user-login = "djc"
-user-name = "Dirkjan Ochtman"
-
-[[publisher.quinn-proto]]
-version = "0.11.14"
-when = "2026-03-09"
-user-id = 4556
-user-login = "djc"
-user-name = "Dirkjan Ochtman"
-
-[[publisher.quinn-udp]]
-version = "0.5.14"
-when = "2025-08-27"
-user-id = 4556
-user-login = "djc"
-user-name = "Dirkjan Ochtman"
-
 [[publisher.quote]]
 version = "1.0.45"
 when = "2026-03-03"
@@ -2182,6 +2132,13 @@ user-id = 1234
 user-login = "dhardy"
 user-name = "Diggory Hardy"
 
+[[publisher.rand]]
+version = "0.10.0"
+when = "2026-02-08"
+user-id = 1234
+user-login = "dhardy"
+user-name = "Diggory Hardy"
+
 [[publisher.rand_xorshift]]
 version = "0.4.0"
 when = "2025-01-27"
@@ -2206,6 +2163,13 @@ user-name = "Dirkjan Ochtman"
 [[publisher.redb]]
 version = "2.6.3"
 when = "2025-08-23"
+user-id = 29160
+user-login = "cberner"
+user-name = "Christopher Berner"
+
+[[publisher.redb]]
+version = "4.1.0"
+when = "2026-04-19"
 user-id = 29160
 user-login = "cberner"
 user-name = "Christopher Berner"
@@ -2255,6 +2219,13 @@ user-name = "Andrew Gallant"
 [[publisher.reqwest]]
 version = "0.12.28"
 when = "2025-12-22"
+user-id = 359
+user-login = "seanmonstar"
+user-name = "Sean McArthur"
+
+[[publisher.reqwest]]
+version = "0.13.3"
+when = "2026-04-27"
 user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
@@ -2330,8 +2301,8 @@ user-login = "djc"
 user-name = "Dirkjan Ochtman"
 
 [[publisher.rustls-platform-verifier]]
-version = "0.6.2"
-when = "2025-10-22"
+version = "0.7.0"
+when = "2026-04-12"
 user-id = 4556
 user-login = "djc"
 user-name = "Dirkjan Ochtman"
@@ -2522,13 +2493,6 @@ user-id = 4047
 user-login = "palfrey"
 user-name = "Tom Parker-Shemilt"
 
-[[publisher.sha2]]
-version = "0.11.0-rc.2"
-when = "2025-09-02"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
-
 [[publisher.signal-hook-registry]]
 version = "1.4.8"
 when = "2025-12-25"
@@ -2539,13 +2503,6 @@ user-name = "Michal 'vorner' Vaner"
 [[publisher.signature]]
 version = "2.2.0"
 when = "2023-11-12"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
-
-[[publisher.signature]]
-version = "3.0.0-rc.10"
-when = "2026-02-01"
 user-id = 267
 user-login = "tarcieri"
 user-name = "Tony Arcieri"
@@ -2565,8 +2522,8 @@ user-login = "hkratz"
 user-name = "Hans Kratz"
 
 [[publisher.simple-dns]]
-version = "0.9.3"
-when = "2025-01-18"
+version = "0.11.3"
+when = "2026-05-14"
 user-id = 123206
 user-login = "balliegojr"
 user-name = "Ilson Balliego"
@@ -2655,13 +2612,6 @@ user-id = 11235
 user-login = "baloo"
 user-name = "Arthur Gautier"
 
-[[publisher.spki]]
-version = "0.8.0-rc.4"
-when = "2025-07-10"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
-
 [[publisher.stable_deref_trait]]
 version = "1.2.1"
 when = "2025-10-09"
@@ -2684,8 +2634,8 @@ user-login = "Peternator7"
 user-name = "Peter Glotfelty"
 
 [[publisher.swarm-discovery]]
-version = "0.5.0"
-when = "2026-01-18"
+version = "0.6.1"
+when = "2026-05-19"
 user-id = 86681
 user-login = "rkuhn"
 user-name = "Roland Kuhn"
@@ -2844,8 +2794,8 @@ user-login = "Darksonn"
 user-name = "Alice Ryhl"
 
 [[publisher.tokio-websockets]]
-version = "0.12.3"
-when = "2025-09-28"
+version = "0.13.2"
+when = "2026-03-17"
 user-id = 110460
 user-login = "Gelbpunkt"
 user-name = "Aelin"
@@ -3285,13 +3235,6 @@ version = "0.236.0"
 when = "2025-07-28"
 user-id = 73222
 user-login = "wasmtime-publish"
-
-[[publisher.wasm-streams]]
-version = "0.4.2"
-when = "2024-10-25"
-user-id = 64142
-user-login = "MattiasBuelens"
-user-name = "Mattias Buelens"
 
 [[publisher.wasmparser]]
 version = "0.244.0"
@@ -3863,13 +3806,6 @@ user-id = 1139
 user-login = "Manishearth"
 user-name = "Manish Goregaokar"
 
-[[publisher.z32]]
-version = "1.3.0"
-when = "2025-02-13"
-user-id = 182669
-user-login = "Nuhvi"
-user-name = "Nuh"
-
 [[publisher.zerocopy]]
 version = "0.8.42"
 when = "2026-03-09"
@@ -4279,6 +4215,17 @@ who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"
 delta = "0.9.2 -> 0.9.4"
 notes = "Minor bugfix release"
+
+[[audits.bytecode-alliance.audits.rand]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.10.0 -> 0.10.1"
+notes = "Minor logging-based updated fixing a recent advisory for the crate."
+
+[[audits.bytecode-alliance.audits.sha1_smol]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+version = "1.0.1"
 
 [[audits.bytecode-alliance.audits.sharded-slab]]
 who = "Pat Hickey <phickey@fastly.com>"
@@ -5156,6 +5103,16 @@ who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 delta = "1.0.3 -> 1.0.4"
 
+[[audits.isrg.audits.chacha20]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+version = "0.10.0"
+
+[[audits.isrg.audits.cpufeatures]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.2.17 -> 0.3.0"
+
 [[audits.isrg.audits.fiat-crypto]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
@@ -5987,6 +5944,22 @@ who = "Andy Leiserson <aleiserson@mozilla.com>"
 criteria = "safe-to-deploy"
 version = "4.1.0"
 notes = "Support library for objc2 with no unsafe code"
+aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.objc2-foundation]]
+who = "Andy Leiserson <aleiserson@mozilla.com>"
+criteria = "safe-to-deploy"
+version = "0.3.2"
+notes = """
+Contains substantial unsafe code, as is typical for FFI.
+
+The (non-published) `header-translator` crate that produces generated bindings
+in this crate was also reviewed, in lieu of a full review of the generated
+bindings.
+
+Users of this crate should be aware of the information in
+https://github.com/madsmtm/objc2/blob/main/crates/objc2/src/topics/frameworks_soundness.md.
+"""
 aggregated-from = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.oorandom]]
