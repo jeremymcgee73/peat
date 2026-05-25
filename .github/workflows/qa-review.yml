@@ -92,4 +92,7 @@ jobs:
                [ARCH]     — architectural concern requiring human design review; do NOT propose a fix, escalate
              If there are no findings under any tag, post a single line: "No findings."
              NEVER approve or request-changes — comment only.
+             CRITICAL: call `gh pr review` EXACTLY ONCE with the complete, final review body.
+             Do NOT make test, probe, or draft calls to `gh pr review` before posting.
+             Compose the full review body in memory first, then post it in a single call.
           PROMPT
