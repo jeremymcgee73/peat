@@ -14,6 +14,30 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.16] - 2026-05-26
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.15` → `0.9.0-rc.16`. `peat-ffi` stays at `0.2.5` — no JNI surface additions; the `formation_handshake` migration is a pure signature swap (`&Connection` → `&dyn QuicMeshConnection`) with no UniFFI surface impact.
+>
+> **ADR-062 follow-up closure milestone.** Closes [peat#932](https://github.com/defenseunicorns/peat/issues/932) — `formation_handshake.rs` now takes `&dyn QuicMeshConnection` from `peat_mesh::network` instead of the raw `iroh::endpoint::Connection`. peat-protocol's reach into iroh-specific surface area shrinks from "any `Connection` method" to "exactly four trait methods" (`open_bi`, `accept_bi`, `close_reason`, `remote_endpoint_id`). A future iroh `Connection` method addition no longer widens peat-protocol's reachable surface by default — widening the trait requires a deliberate peat-mesh PR. This closes the ADR-062-Phase-2-follow-up gap the QA reviewer of [peat-mesh#166](https://github.com/defenseunicorns/peat-mesh/pull/166) flagged: "transport-agnosticism enforced only at the import path, not the API shape."
+>
+> Validated end-to-end on `rpi-ci` + `rpi-ci2` + laptop (192.168.228.0/24) against the published `peat-mesh 0.9.0-rc.24`: all four QUICKSTART scenarios converge cleanly, transitive gossip working across heterogeneous hardware (x86_64 laptop + aarch64 Pi 5s).
+
+### Changed
+
+- **Workspace `peat-mesh` floor bumped to `0.9.0-rc.24`** (was `>=0.9.0-rc.22, <0.9.1` → `>=0.9.0-rc.24, <0.9.1`). rc.23 ([peat-mesh#171](https://github.com/defenseunicorns/peat-mesh/pull/171)) shipped the `parse_close_reason` structured-variant refactor (peat-mesh#164) — internal to peat-mesh, no consumer change. rc.24 ([peat-mesh#173](https://github.com/defenseunicorns/peat-mesh/pull/173)) introduces the narrow `peat_mesh::network::QuicMeshConnection` trait and removes the `pub use iroh::endpoint::Connection` re-export at `peat_mesh::network::Connection`. Pinning below rc.24 would fail to resolve `QuicMeshConnection`; staying at rc.22/rc.23 would keep the old `Connection` import path alive but block the SKILL.md transport-agnosticism-at-API-shape gate this release closes.
+- **`peat-protocol/src/network/formation_handshake.rs` signatures**: `perform_initiator_handshake` and `perform_responder_handshake` take `connection: &dyn QuicMeshConnection` instead of `&Connection`. Method bodies unchanged — the two methods used (`open_bi`, `accept_bi`) are dispatched through the trait object. The two callsites in `peat-protocol/src/sync/automerge.rs` (lines 1681, 2433) pass `&conn` where `conn: iroh::endpoint::Connection`; Rust's deref-coerce handles `&Connection → &dyn QuicMeshConnection` automatically through the `impl QuicMeshConnection for Connection` upstream, so no callsite changes needed.
+- **`peat-protocol/src/network.rs` re-export list**: `Connection` dropped, `QuicMeshConnection` added — `pub use peat_mesh::network::{DiscoveryEvent, EndpointId, QuicMeshConnection};`.
+
+### Validation
+
+- `cargo test --workspace --features automerge-backend --lib`: **1226 passed**; 0 failed.
+- 4 iroh-touching integration tests (`automerge_iroh_sync_e2e`, `tombstone_sync_e2e`, `startup_optimization_e2e`, `iroh_minimal_connection`): **12 passed**.
+- `cargo clippy --workspace --features automerge-backend --all-targets -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- SKILL.md verification gate `grep -rln "use iroh\|use iroh_blobs\|iroh::Endpoint" peat-protocol/src/`: zero matches outside the re-export shim layer.
+- **QUICKSTART 4 scenarios validated on rpi-ci + rpi-ci2 + laptop** (192.168.228.0/24) against the **unpatched workspace consuming published `peat-mesh 0.9.0-rc.24` from crates.io** — not a `[patch.crates-io]` override.
+- All 22 CI checks on [#933](https://github.com/defenseunicorns/peat/pull/933) green.
+
 ## [0.9.0-rc.15] - 2026-05-25
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.14` → `0.9.0-rc.15`. `peat-ffi` stays at `0.2.5` — no JNI surface additions in this release; the only peat-ffi change is the internal `IrohMeshTransport::new` constructor call switching from `peat_protocol::transport::iroh::IrohMeshTransport` (deleted) to `peat_mesh::transport::iroh_mesh::IrohMeshTransport` (canonical, via the `peat_protocol::transport::*` re-export shim). The `create_node` UniFFI signature is byte-identical; the Kotlin/Swift binding surface is unchanged.
