@@ -42,7 +42,7 @@ use crate::security::{
 #[cfg(feature = "automerge-backend")]
 use anyhow::{Context, Result};
 #[cfg(feature = "automerge-backend")]
-use peat_mesh::network::Connection;
+use peat_mesh::network::QuicMeshConnection;
 
 /// ALPN for formation handshake stream
 #[cfg(feature = "automerge-backend")]
@@ -72,7 +72,7 @@ const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 /// `Ok(())` if authentication succeeded, error otherwise
 #[cfg(feature = "automerge-backend")]
 pub async fn perform_initiator_handshake(
-    connection: &Connection,
+    connection: &dyn QuicMeshConnection,
     formation_key: &FormationKey,
 ) -> Result<()> {
     use std::time::Duration;
@@ -184,7 +184,7 @@ pub async fn perform_initiator_handshake(
 /// `Ok(())` if authentication succeeded, error otherwise
 #[cfg(feature = "automerge-backend")]
 pub async fn perform_responder_handshake(
-    connection: &Connection,
+    connection: &dyn QuicMeshConnection,
     formation_key: &FormationKey,
 ) -> Result<()> {
     use std::time::Duration;

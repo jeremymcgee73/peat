@@ -170,7 +170,21 @@ repository = "https://github.com/defenseunicorns/peat"
 # `peat_mesh::transport::iroh_mesh::IrohMeshTransport` import (rc.20)
 # or fail to resolve the `Connection`/`DiscoveryEvent` re-exports the
 # consumer-side `use` statements now reach for (rc.21).
-peat-mesh = { version = ">=0.9.0-rc.22, <0.9.1", default-features = false }
+#
+# Floor advanced to rc.24 on 2026-05-26 (peat-mesh#173 / peat#932) —
+# rc.23 shipped the `parse_close_reason` structured-variant refactor
+# (peat-mesh#164) which is internal to peat-mesh and required no
+# consumer change. rc.24 introduces the narrow
+# `peat_mesh::network::QuicMeshConnection` trait and **removes** the
+# `pub use iroh::endpoint::Connection` re-export at
+# `peat_mesh::network::Connection`. peat-protocol's
+# `network/formation_handshake.rs` switches to `&dyn QuicMeshConnection`
+# in this PR and drops `Connection` from `peat-protocol/src/network.rs`'s
+# re-export list. Pinning below rc.24 would fail to resolve
+# `QuicMeshConnection`; staying at rc.22/rc.23 would keep the old
+# `Connection` import path alive but block the SKILL.md
+# transport-agnosticism-at-API-shape gate this work closes.
+peat-mesh = { version = ">=0.9.0-rc.24, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
