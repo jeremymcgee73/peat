@@ -32,6 +32,8 @@ pub use peer_config::{FormationConfig, LocalConfig, PeerConfig, PeerInfo};
 // Re-export iroh primitives that surface in our public API. Downstream consumers
 // should reach for these via `peat_protocol::network::*` rather than a direct
 // `iroh = "..."` dep, so they don't have to track which iroh major peat-mesh
-// transitively resolves to.
+// transitively resolves to. ADR-062 Phase 2: peat-protocol no longer carries
+// `iroh` as a direct dep; these come transitively via peat-mesh's
+// `peat_mesh::network` re-exports (added in rc.21 / rc.22).
 #[cfg(feature = "automerge-backend")]
-pub use iroh::EndpointId;
+pub use peat_mesh::network::{Connection, DiscoveryEvent, EndpointId};

@@ -84,7 +84,7 @@ use crate::network::iroh_transport::IrohTransport;
 #[cfg(feature = "automerge-backend")]
 use anyhow::Result;
 #[cfg(feature = "automerge-backend")]
-use iroh::EndpointId;
+use peat_mesh::network::EndpointId;
 #[cfg(feature = "automerge-backend")]
 use peat_mesh::storage::sync_transport::SyncTransport;
 #[cfg(feature = "automerge-backend")]

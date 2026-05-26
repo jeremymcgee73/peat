@@ -4179,9 +4179,9 @@ dependencies = [
 
 [[package]]
 name = "peat-mesh"
-version = "0.9.0-rc.20"
+version = "0.9.0-rc.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf4e3e5b8340431d65441de6cc4a36f70e9d4f76cb3d433b43cf7f3347987fa7"
+checksum = "c58d0ab88b753d1c9559db000ad0da4d512f10811adb7e6401c025204993b381"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4267,8 +4267,6 @@ dependencies = [
  "hkdf",
  "hmac",
  "iroh",
- "iroh-blobs",
- "iroh-mdns-address-lookup",
  "log",
  "lru 0.16.3",
  "negentropy",

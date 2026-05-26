@@ -33,7 +33,7 @@
 //! ```
 
 use async_trait::async_trait;
-use iroh::EndpointId;
+use peat_mesh::network::EndpointId;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;

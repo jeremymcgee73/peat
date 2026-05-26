@@ -69,16 +69,21 @@ subtle = "2.6"             # Constant-time comparison (formation key auth)
 automerge = { version = "0.7.1", optional = true }  # Automerge CRDT library for evaluation
 
 # AutomergeIrohBackend dependencies (ADR-011)
-# iroh 0.98+ exposes the pluggable `Endpoint::builder().crypto_provider(...)` API
-# (n0-computer/iroh#3978). We disable defaults to drop iroh's `tls-ring` default
-# and select `tls-aws-lc-rs`: ring is NOT FIPS 140-3 validated, aws-lc-rs is the
-# approved provider per CLAUDE.md / ADR-060 §5 (peat#923). `metrics`,
-# `fast-apple-datapath`, and `portmapper` are restored explicitly (they're part
-# of iroh's default set but aren't pulled in once we set `default-features = false`).
-iroh = { version = "=1.0.0-rc.0", optional = true, default-features = false, features = ["metrics", "fast-apple-datapath", "portmapper", "tls-aws-lc-rs"] }
-iroh-blobs = { version = "=0.101.0", optional = true }  # Content-addressed blob storage (ADR-025)
-# iroh 1.0.0-rc.0 extracted the mDNS address-lookup into its own crate.
-iroh-mdns-address-lookup = { version = "=0.2.0", optional = true }
+#
+# ADR-062 Phase 2 (peat#926, this PR) — `iroh`, `iroh-blobs`, and
+# `iroh-mdns-address-lookup` are no longer direct deps of peat-protocol.
+# All three reach peat-protocol transitively via peat-mesh, which is now
+# the canonical owner of the iroh `Endpoint` wrapper, the
+# `MeshTransport` trait impl, and the iroh-backed types peat-protocol's
+# surviving consumers reference (`EndpointId`, `Connection`,
+# `DiscoveryEvent` — all re-exported from `peat_mesh::network` as of
+# peat-mesh 0.9.0-rc.22). Dropping them here satisfies the ADR-062
+# acceptance gate #2: "peat-protocol/Cargo.toml direct-deps section no
+# longer lists iroh or iroh-blobs". The iroh feature configuration
+# (`default-features = false`, `tls-aws-lc-rs`, `metrics`,
+# `fast-apple-datapath`, `portmapper`) lives in `peat-mesh/Cargo.toml`
+# — peat-mesh is the canonical iroh consumer per ADR-060 §5 (FIPS
+# posture: aws-lc-rs, not ring).
 redb = { version = "2.4", optional = true }  # Pure Rust embedded database (pinned to 2.x - 3.x has memory regression, Issue #446)
 lru = { version = "0.16.3", optional = true }  # LRU cache for hot documents
 toml = { version = "0.8", optional = true }  # Static peer configuration
@@ -104,7 +109,7 @@ peat-btle = { workspace = true, optional = true }
 [features]
 default = ["automerge-backend"]
 # Automerge/Iroh backend - pure Rust, works on Android
-automerge-backend = ["automerge", "iroh", "iroh-blobs", "dep:iroh-mdns-address-lookup", "redb", "lru", "toml", "rand", "futures-lite", "negentropy", "peat-mesh/automerge-backend"]
+automerge-backend = ["automerge", "redb", "lru", "toml", "rand", "futures-lite", "negentropy", "peat-mesh/automerge-backend"]
 # Peat-Lite transport - UDP-based communication with embedded devices (ADR-035)
 lite-transport = ["log", "peat-mesh/lite-bridge"]
 # Bluetooth LE transport - BLE mesh networking (ADR-032, ADR-039)
@@ -121,6 +126,16 @@ criterion = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3.13"
 serial_test = "3.1"  # Serialize tests sharing global state (iroh endpoints)
+# ADR-062 Phase 2 (peat#926): iroh is no longer a `[dependencies]` entry
+# (peat-protocol/src/ reaches iroh types via `peat_mesh::network`
+# re-exports). A handful of integration tests under `tests/` still
+# use direct iroh APIs (`Endpoint::builder`, `TransportAddr`,
+# `EndpointAddr`) to construct minimal endpoint scaffolding for
+# transport-level sync e2e checks. Keeping iroh as a dev-only dep so
+# those tests keep compiling without putting iroh back into the
+# runtime dep tree. Same feature set as peat-mesh's iroh activation
+# (default-features off + `tls-aws-lc-rs`) for FIPS posture parity.
+iroh = { version = "=1.0.0-rc.0", default-features = false, features = ["tls-aws-lc-rs"] }
 
 [[bench]]
 name = "cap_benchmarks"

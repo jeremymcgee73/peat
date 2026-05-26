@@ -108,8 +108,6 @@ use peat_protocol::cot::{
 };
 
 #[cfg(feature = "sync")]
-use peat_protocol::network::PeerConfig;
-#[cfg(feature = "sync")]
 use peat_protocol::network::{IrohTransport, PeerInfo as PeatPeerInfo, TransportPeerEvent};
 #[cfg(feature = "sync")]
 use peat_protocol::storage::{AutomergeBackend, AutomergeStore, StorageBackend, SyncCapable};
@@ -130,8 +128,8 @@ use peat_mesh::IrohConfig as PeatMeshIrohConfig;
 use peat_protocol::transport::btle::PeatBleTransport;
 #[cfg(feature = "sync")]
 use peat_protocol::transport::{
-    iroh::IrohMeshTransport, CollectionRouteTable, Transport, TransportCapabilities,
-    TransportInstance, TransportManager, TransportManagerConfig, TransportPolicy, TransportType,
+    CollectionRouteTable, IrohMeshTransport, Transport, TransportCapabilities, TransportInstance,
+    TransportManager, TransportManagerConfig, TransportPolicy, TransportType,
 };
 #[cfg(feature = "sync")]
 use std::net::SocketAddr;
@@ -1498,17 +1496,17 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
 
     let mut transport_manager = TransportManager::new(tm_config);
 
-    // Create IrohMeshTransport wrapper and register with TransportManager
-    // This allows the transport to be selected via PACE policy alongside future transports
-    let peer_config = PeerConfig {
-        local: peat_protocol::network::LocalConfig {
-            bind_address: bind_addr.to_string(),
-            node_id: None,
-        },
-        formation: None,
-        peers: Vec::new(),
-    };
-    let iroh_mesh_transport = Arc::new(IrohMeshTransport::new(Arc::clone(&transport), peer_config));
+    // Create IrohMeshTransport wrapper and register with TransportManager.
+    // This allows the transport to be selected via PACE policy alongside
+    // future transports.
+    //
+    // ADR-062 Phase 2 (peat#926): peat-mesh's IrohMeshTransport takes
+    // `Vec<PeerInfo>` directly instead of `Arc<RwLock<PeerConfig>>` — the
+    // `formation` and `local` fields of PeerConfig were never used by the
+    // transport itself; they remain in peat-protocol's security layer.
+    // peat-ffi starts with an empty static-peer list; runtime peer
+    // additions go through `iroh_mesh_transport.set_static_peers(...)`.
+    let iroh_mesh_transport = Arc::new(IrohMeshTransport::new(Arc::clone(&transport), Vec::new()));
     let iroh_as_transport: Arc<dyn Transport> = iroh_mesh_transport.clone();
     transport_manager.register(iroh_as_transport.clone());
 

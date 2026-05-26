@@ -333,8 +333,8 @@ impl peat_mesh::storage::sync_transport::SyncRouter for HierarchicalRouter {
     async fn get_targets(
         &self,
         direction: peat_mesh::storage::automerge_sync::SyncDirection,
-        connected: &[iroh::EndpointId],
-    ) -> Vec<iroh::EndpointId> {
+        connected: &[peat_mesh::network::EndpointId],
+    ) -> Vec<peat_mesh::network::EndpointId> {
         use peat_mesh::storage::automerge_sync::SyncDirection;
 
         match direction {

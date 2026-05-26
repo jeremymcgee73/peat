@@ -139,6 +139,67 @@ jobs:
           path: bindings/kotlin/
           if-no-files-found: error
 
+  generate-swift-bindings:
+    name: Generate Swift bindings
+    runs-on: ubuntu-latest
+    needs: generate-bindings
+    # ADR-062 §"Cross-compiled FFI binding validation" requires an iOS
+    # UniFFI gate on any peat-ffi change. peat-ffi advertises itself as
+    # "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)" but
+    # iOS isn't actively consumed in the ecosystem yet. This job runs
+    # `uniffi-bindgen swift` on a Linux host — UniFFI's generator is
+    # cross-platform; the Swift compile is not exercised here (would
+    # need a macOS runner). Catches the "UniFFI metadata broke for
+    # Swift" class of regression at PR time; full Swift-compile
+    # validation is deferred until iOS becomes an active consumer.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: bindings
+
+      - name: Build peat-ffi (host)
+        run: cargo build -p peat-ffi --release
+
+      - name: Generate Swift bindings
+        run: |
+          cargo run -p peat-ffi --release --bin uniffi-bindgen -- \
+            generate \
+            --library target/release/libpeat_ffi.so \
+            --language swift \
+            --out-dir bindings/swift
+
+      - name: Verify expected Swift binding artifacts present
+        run: |
+          set -euo pipefail
+          # Pin the surface UniFFI produces for Swift — if any of these
+          # disappear, the generator silently changed shape and downstream
+          # iOS consumers will hit a build break.
+          for f in bindings/swift/peat_ffi.swift \
+                   bindings/swift/peat_ffiFFI.h \
+                   bindings/swift/peat_ffiFFI.modulemap; do
+            if [ ! -s "$f" ]; then
+              echo "::error::Missing or empty Swift binding artifact: $f"
+              exit 1
+            fi
+          done
+          echo "All 3 Swift binding artifacts present and non-empty."
+
+      - name: Upload Swift bindings
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-bindings
+          path: bindings/swift/
+          if-no-files-found: error
+
   package:
     name: Package Android AAR
     runs-on: ubuntu-latest
