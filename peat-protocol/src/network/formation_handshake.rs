@@ -42,7 +42,7 @@ use crate::security::{
 #[cfg(feature = "automerge-backend")]
 use anyhow::{Context, Result};
 #[cfg(feature = "automerge-backend")]
-use iroh::endpoint::Connection;
+use peat_mesh::network::Connection;
 
 /// ALPN for formation handshake stream
 #[cfg(feature = "automerge-backend")]

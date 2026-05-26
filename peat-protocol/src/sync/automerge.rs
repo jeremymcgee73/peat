@@ -1426,7 +1426,7 @@ impl AutomergeIrohBackend {
     }
 
     /// Get this node's endpoint ID
-    pub fn endpoint_id(&self) -> iroh::EndpointId {
+    pub fn endpoint_id(&self) -> peat_mesh::network::EndpointId {
         self.transport.endpoint_id()
     }
 
@@ -1502,7 +1502,7 @@ impl AutomergeIrohBackend {
     /// This is called automatically when document sync connections are established,
     /// but can also be called manually if needed.
     #[cfg(feature = "automerge-backend")]
-    pub async fn register_blob_peer(&self, peer_id: iroh::EndpointId) {
+    pub async fn register_blob_peer(&self, peer_id: peat_mesh::network::EndpointId) {
         if let Some(ref blob_store) = self.blob_store {
             blob_store.add_peer(peer_id).await;
             tracing::debug!(
@@ -1514,7 +1514,7 @@ impl AutomergeIrohBackend {
 
     /// Unregister a peer from the blob store
     #[cfg(feature = "automerge-backend")]
-    pub async fn unregister_blob_peer(&self, peer_id: &iroh::EndpointId) {
+    pub async fn unregister_blob_peer(&self, peer_id: &peat_mesh::network::EndpointId) {
         if let Some(ref blob_store) = self.blob_store {
             blob_store.remove_peer(peer_id).await;
             tracing::debug!(
@@ -2321,7 +2321,8 @@ impl DocumentStore for IrohDocumentStore {
 /// (peat#873). Returns `true` if the connection attempt is allowed,
 /// `false` if it should be skipped.
 #[cfg(feature = "automerge-backend")]
-type PeerAvailabilityCheck = Arc<dyn Fn(&iroh::EndpointId) -> bool + Send + Sync + 'static>;
+type PeerAvailabilityCheck =
+    Arc<dyn Fn(&peat_mesh::network::EndpointId) -> bool + Send + Sync + 'static>;
 
 /// Build the peat#873 peer-availability check from a storage backend.
 ///
@@ -2348,7 +2349,7 @@ fn build_peer_availability_check(
     backend: Arc<crate::storage::AutomergeBackend>,
 ) -> PeerAvailabilityCheck {
     Arc::new(
-        move |peer_id: &iroh::EndpointId| match backend.sync_coordinator() {
+        move |peer_id: &peat_mesh::network::EndpointId| match backend.sync_coordinator() {
             Some(coordinator) => !coordinator.error_handler().should_block_sync(peer_id),
             None => true,
         },
@@ -2504,7 +2505,7 @@ impl PeerDiscovery for IrohPeerDiscovery {
         #[cfg(feature = "automerge-backend")]
         if let Some(mdns) = self.transport.mdns_discovery() {
             use futures_lite::StreamExt;
-            use iroh_mdns_address_lookup::DiscoveryEvent;
+            use peat_mesh::network::DiscoveryEvent;
 
             let mdns = mdns.clone();
             let transport = Arc::clone(&self.transport);
@@ -2699,8 +2700,9 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                         a.copy_from_slice(&b);
                                         a
                                     })
-                                    .and_then(|a| iroh::EndpointId::from_bytes(&a).ok())
-                                {
+                                    .and_then(|a| {
+                                        peat_mesh::network::EndpointId::from_bytes(&a).ok()
+                                    }) {
                                     Some(id) => id,
                                     None => {
                                         tracing::warn!(
@@ -2811,7 +2813,7 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                         let mut array = [0u8; 32];
                                         array.copy_from_slice(&bytes);
                                         if let Ok(endpoint_id) =
-                                            iroh::EndpointId::from_bytes(&array)
+                                            peat_mesh::network::EndpointId::from_bytes(&array)
                                         {
                                             let _ = transport.disconnect(&endpoint_id);
                                         }
@@ -3085,7 +3087,6 @@ impl PeerDiscovery for IrohPeerDiscovery {
     }
 
     async fn add_peer(&self, address: &str, _transport: TransportType) -> anyhow::Result<()> {
-        use crate::network::iroh_transport::IrohTransport;
         use crate::network::PeerInfo as NetworkPeerInfo;
 
         // Get formation key for authentication
@@ -3115,7 +3116,7 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let addr = parts[1];
 
             // Derive EndpointId from seed using deterministic key generation
-            let endpoint_id = IrohTransport::endpoint_id_from_seed(seed);
+            let endpoint_id = crate::network::IrohTransport::endpoint_id_from_seed(seed);
             let node_id_hex = hex::encode(endpoint_id.as_bytes());
 
             tracing::debug!(
@@ -4432,7 +4433,8 @@ mod tests {
         );
 
         let check = build_peer_availability_check(backend);
-        let peer_id = iroh::SecretKey::generate().public();
+        let peer_id =
+            crate::network::IrohTransport::endpoint_id_from_seed(&format!("test-peer-{}", line!()));
 
         assert!(
             check(&peer_id),
@@ -4455,7 +4457,8 @@ mod tests {
         );
 
         let check = build_peer_availability_check(Arc::clone(&backend));
-        let peer_id = iroh::SecretKey::generate().public();
+        let peer_id =
+            crate::network::IrohTransport::endpoint_id_from_seed(&format!("test-peer-{}", line!()));
 
         assert!(
             check(&peer_id),
@@ -4477,7 +4480,8 @@ mod tests {
             .sync_coordinator()
             .expect("with_transport must initialize a sync coordinator");
 
-        let peer_id = iroh::SecretKey::generate().public();
+        let peer_id =
+            crate::network::IrohTransport::endpoint_id_from_seed(&format!("test-peer-{}", line!()));
 
         // Trip the breaker. Default `CircuitBreakerConfig::failure_threshold`
         // is 5; record 8 failures to be robust against env-overridden
@@ -4501,7 +4505,10 @@ mod tests {
         );
 
         // Sanity: a different peer (breaker closed) is still allowed.
-        let other_peer = iroh::SecretKey::generate().public();
+        let other_peer = crate::network::IrohTransport::endpoint_id_from_seed(&format!(
+            "test-other-peer-{}",
+            line!()
+        ));
         assert!(
             check(&other_peer),
             "closure must allow other peers when their breaker is closed — \

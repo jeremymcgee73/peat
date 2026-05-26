@@ -151,7 +151,26 @@ repository = "https://github.com/defenseunicorns/peat"
 # `=1.0.0-rc.0` pin in this PR) or (b) at rc.19, miss the 1.0 API
 # migration. Either outcome is a build break, not a silent regression
 # — but rc.20 is the only floor that actually compiles.
-peat-mesh = { version = ">=0.9.0-rc.20, <0.9.1", default-features = false }
+#
+# Floor advanced to rc.22 on 2026-05-25 (peat-mesh#162 + peat-mesh#166
+# / peat#926, ADR-062 Phase 2) — rc.21 hosted the canonical
+# `peat_mesh::transport::iroh_mesh::IrohMeshTransport` (the iroh-backed
+# `MeshTransport` impl, moved from peat-protocol) and re-exported
+# `iroh::EndpointId` from `peat_mesh::network`. rc.22 added the
+# follow-up `Connection` + `DiscoveryEvent` re-exports the rc.21 surface
+# missed: `peat_mesh::network::Connection` (consumed by
+# `peat-protocol/src/network/formation_handshake.rs`) and
+# `peat_mesh::network::DiscoveryEvent` (consumed by
+# `peat-protocol/src/sync/automerge.rs`'s mDNS event handler).
+# The peat-protocol consumer-side deletion of
+# `peat-protocol/src/transport/iroh.rs` + the direct
+# `iroh`/`iroh-blobs`/`iroh-mdns-address-lookup` dep drop both land in
+# this PR; both depend on rc.22's full re-export surface. Pinning below
+# rc.22 would either fail to resolve the
+# `peat_mesh::transport::iroh_mesh::IrohMeshTransport` import (rc.20)
+# or fail to resolve the `Connection`/`DiscoveryEvent` re-exports the
+# consumer-side `use` statements now reach for (rc.21).
+peat-mesh = { version = ">=0.9.0-rc.22, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
