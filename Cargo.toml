@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.16"
+version = "0.9.0-rc.17"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -184,7 +184,16 @@ repository = "https://github.com/defenseunicorns/peat"
 # `QuicMeshConnection`; staying at rc.22/rc.23 would keep the old
 # `Connection` import path alive but block the SKILL.md
 # transport-agnosticism-at-API-shape gate this work closes.
-peat-mesh = { version = ">=0.9.0-rc.24, <0.9.1", default-features = false }
+#
+# Floor bumped to rc.25 (2026-05-27) — peat-mesh#175 / ADR-063
+# persistent multiplexed sync streams. Pre-rc.25 every consumer ran
+# the legacy per-message-stream fallback (the `Arc<SyncChannelManager>`
+# dropped silently at `AutomergeBackend::new` scope exit, the
+# coordinator's `Weak` dangled, every sync round paid full
+# stream-open RTT). rc.25 fixes the wire-up and adds the writer-task
+# send path; the consumer-visible effect is delivery convergence
+# instead of the rc.24 cliff at sustained-write rates.
+peat-mesh = { version = ">=0.9.0-rc.25, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

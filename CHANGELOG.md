@@ -14,6 +14,31 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.17] - 2026-05-27
+
+**Bump peat-mesh floor to 0.9.0-rc.25** — picks up the ADR-063 persistent multiplexed sync streams landed in [peat-mesh#176](https://github.com/defenseunicorns/peat-mesh/pull/176), [peat-mesh#178](https://github.com/defenseunicorns/peat-mesh/pull/178), and [peat-mesh#180](https://github.com/defenseunicorns/peat-mesh/pull/180), closing [peat-mesh#175](https://github.com/defenseunicorns/peat-mesh/issues/175). Architecture decision in [ADR-063](docs/adr/063-persistent-sync-streams.md) (merged via peat#936).
+
+> **Crate-level versions in this release**: workspace bumps `0.9.0-rc.16` → `0.9.0-rc.17`. `peat-ffi` stays at `0.2.5` — no JNI / UniFFI surface additions; the peat-mesh wire-up fix is entirely behind `AutomergeBackend::new`'s existing API surface.
+
+### Changed
+
+- **`peat-mesh` floor**: `>=0.9.0-rc.24, <0.9.1` → `>=0.9.0-rc.25, <0.9.1`. Before rc.25 every consumer of `AutomergeBackend::new` (peat-protocol, peat-node, peat-sim) ran the legacy per-message-stream fallback because the `Arc<SyncChannelManager>` was dropped at construction scope exit and the coordinator's `Weak` dangled. rc.25 fixes the wire-up — `AutomergeBackend` now owns the strong reference as a field — and adds the writer-task + bounded-mpsc send path that closes the per-peer mutex contention surfaced by the rc.25 lab UAT.
+
+### Consumer-visible behaviour change
+
+peat-protocol's `AutomergeIrohBackend` consumers (`peat_protocol::sync::automerge::*`) automatically take the persistent multiplexed path post-bump — no API change at the peat-protocol surface. The observable effect is delivery convergence through sustained-write workloads where rc.24's legacy fallback cliff'd. peat-mesh#175 UAT (`sweep-telemetry-rate.sh` on the shaped 256 kbps / 100 ms link, platform-3-only emitter, 3 trials per rate):
+
+| Rate  | rc.24 (legacy fallback) | rc.25 (persistent path) | peat-mesh#175 threshold |
+|-------|-------------------------|-------------------------|-------------------------|
+| 1 Hz  | 100% / 100%             | 100% / 100%             | ≥ 99.5% ✓               |
+| 10 Hz | 94.6% / 94.6%           | 98.9% / 100%            | ≥ 99.0% ✓               |
+| 25 Hz | 85.3% / 85.5%           | 98.8% / 100%            | ≥ 95.0% ✓               |
+
+### Cross-repo follow-up
+
+- **peat-node**: pins `peat-mesh = "=0.9.0-rc.24"` (exact) + `peat-protocol = ">=0.9.0-rc.16, <0.9.1"`. Needs a separate bump PR to `=0.9.0-rc.25` and `>=0.9.0-rc.17` respectively, then release `0.3.5`.
+- **peat-sim**: pins `peat-mesh = "=0.9.0-rc.24"` (exact) + `peat-protocol = "=0.9.0-rc.16"` (exact). Needs both exact pins bumped; peat-sim is a lab harness, not a published crate, so the bump lands as a single source-tree commit.
+
 ## [0.9.0-rc.16] - 2026-05-26
 
 > **Crate-level versions in this release**: workspace bumps `0.9.0-rc.15` → `0.9.0-rc.16`. `peat-ffi` stays at `0.2.5` — no JNI surface additions; the `formation_handshake` migration is a pure signature swap (`&Connection` → `&dyn QuicMeshConnection`) with no UniFFI surface impact.
