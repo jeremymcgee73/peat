@@ -478,6 +478,7 @@ fn parse_capability_document(data: &[u8], doc_id: &str) -> Option<PeatMessage> {
                 capabilities,
                 cell_id: json["cell_id"].as_str().map(|s| s.to_string()),
                 formation_id: json["formation_id"].as_str().map(|s| s.to_string()),
+                hardware: None,
                 timestamp: chrono::Utc::now(),
             };
             Some(PeatMessage::Capability(cap))

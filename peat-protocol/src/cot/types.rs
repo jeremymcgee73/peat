@@ -184,6 +184,44 @@ impl OperationalStatus {
     }
 }
 
+/// Hardware specification advertised by a Peat platform.
+///
+/// Used by `CapabilityMatcher` to evaluate `CapabilityFilter`'s hardware
+/// bounds (`min_gpu_memory_mb`, `min_memory_mb`, `min_storage_mb`, custom
+/// k/v map) against a candidate platform.
+///
+/// All fields are optional: platforms advertise what they can introspect
+/// — missing fields are treated as "unknown" by the matcher (a
+/// hardware-bounded filter fails to match when the corresponding bound
+/// is unknown, rather than vacuously matching). This is the conservative
+/// posture and avoids deploying to platforms whose hardware fitness has
+/// not been confirmed.
+///
+/// **Provisional vocabulary for `custom`.** Until the Capability+Labels
+/// ADR formalises the canonical string vocabulary, custom keys/values
+/// are free-form strings agreed between the issuer and the platform
+/// (e.g. `"cpu_arch": "aarch64"`, `"gpu_compute_capability": "8.9"`,
+/// `"tensorrt_version": "10.0"`). Once the ADR lands, this field's
+/// shape will be reconciled to the canonical labels — see peat#773.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareSpec {
+    /// GPU memory in MB. `None` means "no GPU advertised" or "hardware
+    /// introspection didn't run"; the matcher treats both as a non-match
+    /// when the filter sets `min_gpu_memory_mb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_memory_mb: Option<u64>,
+    /// System memory in MB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    /// Available storage in MB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_mb: Option<u64>,
+    /// Custom hardware/label k/v map. Provisional vocabulary — see
+    /// struct-level doc.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom: HashMap<String, String>,
+}
+
 /// Capability advertisement from a Peat platform
 ///
 /// Announces what a platform can do (sensor types, compute capabilities, etc.)
@@ -205,6 +243,13 @@ pub struct CapabilityAdvertisement {
     pub cell_id: Option<String>,
     /// Formation membership (if assigned)
     pub formation_id: Option<String>,
+    /// Hardware specification (optional). Populated by platforms that
+    /// have run hardware introspection; consumed by `CapabilityMatcher`
+    /// when evaluating `CapabilityFilter`'s hardware bounds. Backwards-
+    /// compatible: advertisements from older platforms serialise without
+    /// this field and deserialise as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware: Option<HardwareSpec>,
     /// Timestamp of the advertisement
     pub timestamp: DateTime<Utc>,
 }
@@ -242,6 +287,7 @@ impl CapabilityAdvertisement {
             capabilities: Vec::new(),
             cell_id: None,
             formation_id: None,
+            hardware: None,
             timestamp: Utc::now(),
         }
     }
@@ -255,6 +301,13 @@ impl CapabilityAdvertisement {
     /// Set cell membership
     pub fn with_cell(mut self, cell_id: String) -> Self {
         self.cell_id = Some(cell_id);
+        self
+    }
+
+    /// Attach a hardware specification (peat#773). Used by
+    /// `CapabilityMatcher` to evaluate hardware-bounded filters.
+    pub fn with_hardware(mut self, hardware: HardwareSpec) -> Self {
+        self.hardware = Some(hardware);
         self
     }
 }

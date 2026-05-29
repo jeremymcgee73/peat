@@ -35,7 +35,7 @@ pub use event::{CotDetail, CotEvent, CotEventBuilder, CotLink, CotPoint, CotTrac
 pub use peat_extension::{PeatConfidence, PeatExtension, PeatHierarchy, PeatSource, PeatStatus};
 pub use type_mapper::{Affiliation, CotType, CotTypeMapper, EntityClassification};
 pub use types::{
-    CapabilityAdvertisement, FormationCapabilitySummary, HandoffMessage, HandoffState,
-    MissionBoundary, MissionPriority, MissionTarget, MissionTask, MissionTaskType,
-    OperationalStatus, Position, TrackUpdate, Velocity,
+    CapabilityAdvertisement, CapabilityInfo, FormationCapabilitySummary, HandoffMessage,
+    HandoffState, HardwareSpec, MissionBoundary, MissionPriority, MissionTarget, MissionTask,
+    MissionTaskType, OperationalStatus, Position, TrackUpdate, Velocity,
 };

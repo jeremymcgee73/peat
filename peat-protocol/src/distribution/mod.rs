@@ -35,9 +35,13 @@
 //! - LLM model → `CapabilityType::Compute` (LLM inference)
 //! - etc.
 
+mod capability_matcher;
 mod directive;
 mod manifest;
 mod types;
+
+// Capability matching for Capability-scope directives (peat#773)
+pub use capability_matcher::CapabilityMatcher;
 
 // Deployment directives (ADR-012)
 pub use directive::{

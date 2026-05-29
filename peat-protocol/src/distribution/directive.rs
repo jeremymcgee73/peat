@@ -145,7 +145,18 @@ impl DeploymentDirective {
         self
     }
 
-    /// Check if this directive targets a specific node
+    /// Check if this directive targets a specific node by ID alone.
+    ///
+    /// Conservative for `Capability` scope: returns `true` only if the
+    /// filter is fully empty (no required capabilities, no hardware
+    /// bounds, no custom constraints). Callers that have a candidate
+    /// platform's [`CapabilityAdvertisement`] should use
+    /// [`Self::targets`] for the full match, which evaluates the filter
+    /// against the platform's advertised capabilities and hardware via
+    /// [`CapabilityMatcher`] (peat#773).
+    ///
+    /// [`CapabilityAdvertisement`]: crate::cot::CapabilityAdvertisement
+    /// [`CapabilityMatcher`]: crate::distribution::CapabilityMatcher
     pub fn targets_node(&self, node_id: &str) -> bool {
         match &self.scope {
             DeploymentScope::Broadcast => true,
@@ -156,9 +167,71 @@ impl DeploymentDirective {
             }
             DeploymentScope::Nodes(node_ids) => node_ids.iter().any(|n| n == node_id),
             DeploymentScope::Capability(filter) => {
-                // Would need capability matching
-                // For now, assume match if no specific requirements
-                filter.required_capabilities.is_empty()
+                // Conservative: ID-only callers can't evaluate any real
+                // capability constraint, so we admit only the unconstrained
+                // filter and reject everything else. Pre-peat#773 this arm
+                // returned `filter.required_capabilities.is_empty()`, which
+                // wrongly admitted filters that only set hardware bounds or
+                // custom k/v constraints. Callers that need to evaluate
+                // those constraints should switch to `targets(adv)`.
+                filter.is_unconstrained()
+            }
+        }
+    }
+
+    /// Check if this directive targets a specific platform given its
+    /// [`CapabilityAdvertisement`].
+    ///
+    /// Full evaluation: identity (`platform_id`), formation membership
+    /// (`formation_id` on both directive and advert), and capability
+    /// matching via [`CapabilityMatcher::matches`]. Use this in place of
+    /// [`Self::targets_node`] wherever an advertisement is available — it
+    /// supersedes the ID-only fast path and is the entry point peat#773
+    /// added.
+    ///
+    /// # Formation scope: fall-through for unassigned platforms
+    ///
+    /// For `DeploymentScope::Formation(fid)`, this method matches if
+    /// **either**:
+    ///
+    /// 1. The advert explicitly self-identifies as a member of the
+    ///    scoped formation (`adv.formation_id == Some(fid)`); **or**
+    /// 2. The advert has no `formation_id` set AND the directive was
+    ///    issued by a node in the scoped formation
+    ///    (`self.issuer_formation_id == Some(fid)`).
+    ///
+    /// An advert that explicitly advertises membership in a **different**
+    /// formation does NOT fall through — explicit non-membership wins.
+    ///
+    /// The fall-through exists to support transitional bootstrap flows:
+    /// a freshly-deployed platform with `formation_id = None` can
+    /// receive formation-scoped directives from issuers in that
+    /// formation (e.g., the very directive that sets its
+    /// `formation_id`). This policy is **asymmetric with**
+    /// [`crate::cot::HardwareSpec`]-bound semantics, which treat
+    /// missing fields as non-matches. Hardware-claim absence vs.
+    /// provisioning-state absence are distinct semantic axes; see
+    /// **ADR-064** (`docs/adr/064-deployment-formation-fallthrough.md`)
+    /// for the full rationale, alternatives considered, and operational
+    /// implications.
+    ///
+    /// [`CapabilityAdvertisement`]: crate::cot::CapabilityAdvertisement
+    /// [`CapabilityMatcher::matches`]: crate::distribution::CapabilityMatcher::matches
+    pub fn targets(&self, adv: &crate::cot::CapabilityAdvertisement) -> bool {
+        match &self.scope {
+            DeploymentScope::Broadcast => true,
+            DeploymentScope::Formation(fid) => {
+                // ADR-064: explicit-match wins; otherwise fall through to
+                // the directive's issuer formation iff the advert hasn't
+                // self-identified. An advert that explicitly belongs to a
+                // different formation does NOT fall through.
+                adv.formation_id.as_deref() == Some(fid)
+                    || (adv.formation_id.is_none()
+                        && self.issuer_formation_id.as_deref() == Some(fid))
+            }
+            DeploymentScope::Nodes(node_ids) => node_ids.iter().any(|n| n == &adv.platform_id),
+            DeploymentScope::Capability(filter) => {
+                crate::distribution::CapabilityMatcher::matches(adv, filter)
             }
         }
     }
@@ -216,6 +289,23 @@ pub struct CapabilityFilter {
     /// Custom filters
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom: HashMap<String, String>,
+}
+
+impl CapabilityFilter {
+    /// True iff no constraint is set on this filter. Used by
+    /// [`DeploymentDirective::targets_node`] to admit the trivial
+    /// no-constraint case under ID-only evaluation; any non-empty
+    /// constraint requires a full [`CapabilityAdvertisement`]-aware
+    /// match via [`DeploymentDirective::targets`] (peat#773).
+    ///
+    /// [`CapabilityAdvertisement`]: crate::cot::CapabilityAdvertisement
+    pub fn is_unconstrained(&self) -> bool {
+        self.min_gpu_memory_mb.is_none()
+            && self.min_memory_mb.is_none()
+            && self.min_storage_mb.is_none()
+            && self.required_capabilities.is_empty()
+            && self.custom.is_empty()
+    }
 }
 
 /// Artifact specification for deployment
@@ -571,6 +661,114 @@ mod tests {
         ]));
         assert!(directive.targets_node("node-1"));
         assert!(!directive.targets_node("node-3"));
+    }
+
+    /// peat#773 regression pin: the `targets_node(node_id)` fast path
+    /// must NOT vacuously accept Capability scope when the filter has
+    /// hardware bounds or custom k/v constraints set. Pre-#773 the arm
+    /// only checked `required_capabilities.is_empty()` and would have
+    /// returned `true` for the filter below. The new
+    /// `is_unconstrained()` check rejects every non-trivial filter
+    /// from the ID-only fast path.
+    #[test]
+    fn targets_node_rejects_hardware_only_filter_under_capability_scope() {
+        use crate::distribution::CapabilityFilter;
+        let directive = DeploymentDirective::generate().with_scope(DeploymentScope::Capability(
+            CapabilityFilter {
+                min_gpu_memory_mb: Some(8_192),
+                ..Default::default()
+            },
+        ));
+        assert!(!directive.targets_node("any-node"));
+
+        // Truly unconstrained filter still passes (back-compat for the
+        // pre-#773 callers that built empty Capability filters).
+        let unconstrained = DeploymentDirective::generate()
+            .with_scope(DeploymentScope::Capability(CapabilityFilter::default()));
+        assert!(unconstrained.targets_node("any-node"));
+    }
+
+    /// peat#773 regression pin: `targets(adv)` evaluates the full
+    /// Capability filter via `CapabilityMatcher`. Covers the integration
+    /// surface beyond the unit tests in
+    /// `distribution::capability_matcher::tests`.
+    #[test]
+    fn targets_capability_scope_uses_capability_matcher() {
+        use crate::cot::{
+            CapabilityAdvertisement, CapabilityInfo, HardwareSpec, OperationalStatus, Position,
+        };
+        use crate::distribution::CapabilityFilter;
+
+        let directive = DeploymentDirective::generate().with_scope(DeploymentScope::Capability(
+            CapabilityFilter {
+                required_capabilities: vec!["ELECTRO_OPTICAL".into()],
+                min_gpu_memory_mb: Some(4_096),
+                ..Default::default()
+            },
+        ));
+
+        let base = CapabilityAdvertisement::new(
+            "platform-7".into(),
+            "UAV".into(),
+            Position::new(35.0, -120.0),
+            OperationalStatus::Active,
+            1.0,
+        );
+
+        // No capabilities + no hardware → fails.
+        assert!(!directive.targets(&base));
+
+        // Has EO sensor but no GPU advert → fails on the hardware bound.
+        let with_sensor_no_gpu = base.clone().with_capability(CapabilityInfo {
+            capability_type: "EO".into(),
+            model_name: "Mk1".into(),
+            version: "1.0".into(),
+            precision: 0.9,
+            status: OperationalStatus::Active,
+        });
+        assert!(!directive.targets(&with_sensor_no_gpu));
+
+        // Has EO sensor + sufficient GPU → matches.
+        let fully_fit = with_sensor_no_gpu.with_hardware(HardwareSpec {
+            gpu_memory_mb: Some(8_192),
+            ..Default::default()
+        });
+        assert!(directive.targets(&fully_fit));
+    }
+
+    /// `targets(adv)` for `Formation` scope prefers the advert's
+    /// `formation_id` when set, with a fall-through to the directive's
+    /// issuer formation for advertisements that haven't yet been
+    /// assigned a formation.
+    #[test]
+    fn targets_formation_scope_uses_advert_formation_id() {
+        use crate::cot::{CapabilityAdvertisement, OperationalStatus, Position};
+
+        let directive = DeploymentDirective::generate()
+            .with_formation("formation-alpha")
+            .with_scope(DeploymentScope::Formation("formation-alpha".into()));
+
+        // Advert in matching formation → matches.
+        let mut adv_in_formation = CapabilityAdvertisement::new(
+            "p-1".into(),
+            "UAV".into(),
+            Position::new(0.0, 0.0),
+            OperationalStatus::Active,
+            1.0,
+        );
+        adv_in_formation.formation_id = Some("formation-alpha".into());
+        assert!(directive.targets(&adv_in_formation));
+
+        // Advert in different formation → does not match.
+        let mut adv_other_formation = adv_in_formation.clone();
+        adv_other_formation.formation_id = Some("formation-bravo".into());
+        assert!(!directive.targets(&adv_other_formation));
+
+        // Advert with no formation_id → falls through to issuer's formation
+        // (which matches in this directive).
+        let mut adv_unassigned = adv_in_formation.clone();
+        adv_unassigned.formation_id = None;
+        assert!(directive.targets(&adv_unassigned));
     }
 
     #[test]
