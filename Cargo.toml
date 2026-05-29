@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -193,7 +193,19 @@ repository = "https://github.com/defenseunicorns/peat"
 # stream-open RTT). rc.25 fixes the wire-up and adds the writer-task
 # send path; the consumer-visible effect is delivery convergence
 # instead of the rc.24 cliff at sustained-write rates.
-peat-mesh = { version = ">=0.9.0-rc.25, <0.9.1", default-features = false }
+#
+# Floor bumped to rc.27 (2026-05-29) — peat-mesh#175 closure follow-
+# throughs landed in the rc.26/rc.27 train. rc.26 (peat-mesh#184) is
+# the in-CI behavioural UAT for peat-mesh#175 thresholds (test-only;
+# no API surface change). rc.27 (peat-mesh#188/#189/#190) ships:
+# (a) `AutomergeBackend::get` keyed-lookup override (O(N)→O(1); closes
+# peat-mesh#186), (b) `InMemoryBackend::get` analog with the same
+# shape, and (c) a UAT file-header doc-comment scope clarification.
+# Deletion semantics on both `get` overrides match the trait-default
+# exactly — pure perf improvement, no contract change. Advancing the
+# floor here forces downstream peat consumers to pick up the perf
+# wins on `cargo update`.
+peat-mesh = { version = ">=0.9.0-rc.27, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
