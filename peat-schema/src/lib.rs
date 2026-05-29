@@ -195,6 +195,12 @@ pub mod validation;
 /// Ontology vocabulary and semantic definitions
 pub mod ontology;
 
+/// Runtime type metadata registry (peat#946) — consumer-facing surface
+/// that lets clients identify and validate Peat documents against their
+/// known schema types at runtime. Foundational dependency for typed
+/// renderers and schema-validated writes in downstream consumers.
+pub mod type_registry;
+
 #[cfg(test)]
 mod tests {
     use super::*;
