@@ -1043,6 +1043,91 @@ For scenarios requiring untrusted relays:
 
 See `docs/research/MULTI_HOP_SYNC_INVESTIGATION.md` for full analysis of Ditto flood-fill and Iroh gossip protocols.
 
+## Operator Credential Bundle File Format
+
+### Decision (2026-05-29)
+
+Mesh-joining processes (`peat-cli`, future `peat-gateway` operator interfaces, embedded `peat-lite` nodes — any Peat process that needs to *join* a formation rather than *configure* one) read operational credentials from a YAML file with the following canonical shape:
+
+```yaml
+# Required: formation identifier this credential targets.
+app_id: <string>
+
+# Required: base64-encoded 32-byte formation key. Same value the rest of
+# the mesh uses (passed to peat-node via --shared-key).
+shared_key: <base64-string>
+
+# Optional: initial peers in `<endpoint_id>@<host>:<port>` form. Honored by
+# the joining process to bootstrap reachability when ambient discovery isn't
+# sufficient. `<endpoint_id>` is an Iroh `NodeId` (Ed25519 public key) in
+# canonical base32-nopad lowercase — the same string `peat-node`'s GetStatus
+# RPC emits in its `endpoint_addr` field.
+peers:
+  - <endpoint_id>@<host>:<port>
+```
+
+Readers MUST reject unknown fields strictly (e.g. `#[serde(deny_unknown_fields)]` in Rust impls) so format evolution is explicit.
+
+### Field definitions
+
+- **`app_id`**: opaque UTF-8 string. Identifies the formation. Same value passed to `peat-node` via `--app-id`.
+- **`shared_key`**: base64 (standard, padded) encoding of the 32-byte formation key. Same value passed to `peat-node` via `--shared-key`. **This is the FormationKey** per [ADR-060](060-encryption-tiers-rest-and-transit.md) §Decision #1 — see *File-system custody* below.
+- **`peers`** (optional): list of strings, each of the form `<endpoint_id>@<host>:<port>` where:
+  - `<endpoint_id>` is an Iroh [`NodeId`](https://docs.rs/iroh/latest/iroh/struct.NodeId.html) (the device's Ed25519 public key) serialised in **canonical base32-nopad lowercase**. This is the encoding `iroh::NodeId`'s `Display` impl produces and what `peat-node` advertises via its `GetStatus` RPC's `endpoint_addr` field.
+  - `<host>` is a DNS name or IP literal. Readers MAY resolve via DNS; both A and AAAA records are honored.
+  - `<port>` is the peer's Iroh UDP port.
+
+### File-system custody (MUST)
+
+The credential file contains the FormationKey, which [ADR-060](060-encryption-tiers-rest-and-transit.md) §Risks identifies as **load-bearing for T3 protection**. A local user with read access to the bundle file silently recovers the formation key. Implementations MUST:
+
+1. **Create the file with mode `0600` (or OS equivalent — owner-only read/write)** when writing or installing it. On Unix this is `chmod 0600`; on Windows the equivalent is an ACL granting access only to the owner.
+2. **At load time, check the file's permissions and emit a security warning to stderr** when the bundle is world- or group-readable on Unix.
+3. **On the production path, readers MUST refuse to load a bundle that is world- or group-readable.** Either bit grants the FormationKey to a principal outside the file's owner; [ADR-060](060-encryption-tiers-rest-and-transit.md) §Decision #1 treats both as equivalent T3-protection violations, and Bullet 2's warning surface covers the same union for consistency. Implementations MAY downgrade this refusal to a stderr warning only when an explicit dev/CI escape hatch is in effect — a dedicated environment variable (e.g. `PEAT_ALLOW_INSECURE_CREDS=1`) or build-time feature flag whose name signals the relaxation. The default production code path MUST refuse; the escape hatch MUST be intentional and opt-in.
+
+This MUST closes the operational-surfacing gap the *"FormationKey custody is load-bearing for substrate-cipher T3 protection"* row of [ADR-060](060-encryption-tiers-rest-and-transit.md) §Risks names.
+
+### Rationale
+
+The on-disk credential format was not previously specified. The fields above existed in `peat-node`'s `SidecarConfig` and command-line surface, and `peat-cli`'s `crates/peat-cli/src/creds.rs` shipped a placeholder serde struct to unblock its initial development (per peat-node ADR-001). This amendment promotes that placeholder to the canonical bundle shape so multiple Peat clients converge on one format rather than diverging as more consumers are added.
+
+Scope is deliberately **operational mesh-joining only**:
+
+- **`app_id` + `shared_key`** are the same primitives Layer 3 (Application Authentication) and the formation-key transport authentication already use. The bundle records them on disk in a single document so a joining process can be configured with one file.
+- **`peers`** is a reachability hint, not an identity claim. The joining process still authenticates each peer with the formation key.
+
+Out of scope for this amendment (each tracked separately):
+
+- **Device PKI material** (Layer 1 `DeviceIdentity`: X.509 chains, certificates, private keys). A future amendment can extend the bundle once Layer 1's handshake is enforced in `peat-mesh`; until then Device PKI is distributed through whatever certificate-infrastructure channel a deployment already uses.
+- **Application-level encryption keys.** The cipher-layering question — whether the at-rest cipher operates at the application JSON layer (`peat-node`'s `StoreCipher`) or the byte storage layer (`peat-mesh`'s `Cipher` trait) — is unresolved; `encryption_key` is not part of this amendment's schema. Readers should reject the field (or any other field they don't yet honor) per the deny-unknown-fields stance.
+- **Authorization claims.** Role / per-collection-scope authorization is the subject of peat#941's separate design exercise; the bundle does not carry role claims today.
+
+### Schema Versioning
+
+Future changes to the canonical shape (new fields, deprecations) land as additional entries in this ADR's Decision Log. The deny-unknown-fields stance forces every reader to surface the schema mismatch at load time rather than silently dropping unrecognised fields. If the format ever needs a hard break, a new amendment introduces a `bundle_version` envelope field at that time — until then the flat shape above is sufficient.
+
+### Resolution Order (non-normative reference)
+
+The `peat-cli` reference implementation resolves the bundle path as:
+
+1. `--creds <PATH>` CLI argument
+2. `PEAT_CREDS` environment variable
+3. Platform default (`$XDG_CONFIG_HOME/peat/credentials.yaml` on Unix; OS equivalent on Windows / macOS)
+
+Failure to resolve a bundle is a fatal error — the reference implementation does not silently fall back to anonymous join. Consumers MAY differ on the resolution mechanism; what's normative is the bundle's content.
+
+### Consequences
+
+- **Positive.** Multiple Peat clients share one operational credential file format. Migration between clients (peat-cli ↔ peat-gateway ↔ peat-lite) is config-only.
+- **Negative.** The schema is intentionally minimal; richer use cases (one bundle carrying credentials for multiple formations, embedded device PKI) need follow-up amendments.
+- **Risks.** Operators who hand-edit credential files surface schema errors at load time. The reject-unknown-fields stance flags typos and stale fields rather than silently ignoring them.
+
+### Related
+
+- peat-node ADR-001 §Credentials
+- `peat-node/crates/peat-cli/src/creds.rs` (reference implementation, serde-derived)
+- peat-mesh #135 (operational-credential interop discussion, if applicable)
+
 ## Open Questions
 
 1. **How to handle certificate distribution in disconnected environments?**
@@ -1079,6 +1164,7 @@ See `docs/research/MULTI_HOP_SYNC_INVESTIGATION.md` for full analysis of Ditto f
 |------|----------|-----------|
 | 2025-11-04 | Proposed multi-layer security architecture | Comprehensive defense for tactical systems |
 | 2025-11-24 | Multi-hop trust: Trust all mesh members (Phase 1) | CRDT sync requires relay nodes to read documents; E2E encryption deferred to Phase 2 |
+| 2026-05-29 | Operator credential bundle format ([peat#940](https://github.com/defenseunicorns/peat/issues/940)) | Promotes peat-cli's placeholder YAML shape to the canonical operational mesh-joining bundle so multiple Peat clients converge on one file format |
 | TBD | Full ADR approval | After team and security review |
 
 ---
