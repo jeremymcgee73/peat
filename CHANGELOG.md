@@ -14,6 +14,41 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.18] - 2026-05-29
+
+**Real `CapabilityMatcher` for `DeploymentDirective` Capability-scope targeting (closes [peat#773](https://github.com/defenseunicorns/peat/issues/773)) + peat-mesh floor advance to rc.27.** Closes the last open p0-blocker in the peat workspace and rolls the peat-mesh trail forward to incorporate the peat-mesh#175 closure follow-throughs (rc.26 in-CI UAT, rc.27 `DocumentStore::get` keyed-lookup overrides on both backends).
+
+### Added
+
+- **`peat_protocol::distribution::CapabilityMatcher`** ([peat#942](https://github.com/defenseunicorns/peat/pull/942), closes [peat#773](https://github.com/defenseunicorns/peat/issues/773)). Stateless evaluator that returns `true` iff every constraint in a `CapabilityFilter` is satisfied by the candidate platform's `CapabilityAdvertisement`. All-must-match semantics. Replaces the pre-#773 placeholder in `DeploymentDirective::targets_node` (`scope::Capability` arm) that returned `true` whenever `required_capabilities` happened to be empty — including filters that set only hardware bounds or custom k/v constraints (`Capability { min_gpu_memory_mb: Some(8_192) }` was admitted by every node regardless of GPU pre-#773).
+  - Evaluates **hardware bounds** (`min_gpu_memory_mb`, `min_memory_mb`, `min_storage_mb`) against the new `HardwareSpec` payload. Missing fields are a non-match (conservative; rationale on the `HardwareSpec` doc-comment).
+  - Evaluates **custom k/v constraints** against `HardwareSpec.custom`.
+  - Evaluates **required capability strings** by direct case-insensitive comparison against `CapabilityInfo.capability_type` and via a SensorType vocabulary bridge (a filter `ELECTRO_OPTICAL` matches an advert advertising the canonical `EO` code).
+- **`peat_protocol::cot::HardwareSpec`** ([peat#942](https://github.com/defenseunicorns/peat/pull/942)). Optional hardware-introspection payload attached to `CapabilityAdvertisement` via a new `hardware: Option<HardwareSpec>` field. Backwards-compatible: missing field serialises and deserialises as `None`.
+- **`DeploymentDirective::targets(adv)`** — full-evaluation alternative to the ID-only `targets_node(node_id)`. Identity, formation membership (with documented fall-through; see ADR-064), and capability matching via `CapabilityMatcher`. Callers with an `CapabilityAdvertisement` should switch from `targets_node` to `targets`.
+- **`CapabilityFilter::is_unconstrained()`** — accessor used by `targets_node` to admit the trivial no-constraint case without evaluating the filter.
+- **ADR-064 — Deployment Formation Fall-Through for Unassigned Platforms** ([docs/adr/064-deployment-formation-fallthrough.md](docs/adr/064-deployment-formation-fallthrough.md)). Records the optimistic posture for `targets(adv)` under `DeploymentScope::Formation(fid)` when `adv.formation_id` is `None` — falls through to the directive's issuer formation. The reviewer of [peat#942](https://github.com/defenseunicorns/peat/pull/942) flagged the policy as ADR-territory; ADR-064 anchors the decision with full rationale, three alternatives considered (conservative `None` → non-match, cell-level constraint, explicit transitional flag), implications, and a status-flip gate on lab validation.
+
+### Changed
+
+- **`DeploymentDirective::targets_node`** under `DeploymentScope::Capability` is now conservative — returns `true` only if `filter.is_unconstrained()`. Pre-#773 the arm vacuously admitted filters that set only hardware bounds or custom constraints. Callers that need to evaluate those constraints should switch to `targets(adv)`. Behaviour for `Broadcast`, `Formation`, and `Nodes` scopes is unchanged.
+- **`peat-mesh` workspace floor** advanced from `>=0.9.0-rc.25, <0.9.1` to `>=0.9.0-rc.27, <0.9.1`. Spans:
+  - **peat-mesh rc.26** ([peat-mesh#184](https://github.com/defenseunicorns/peat-mesh/pull/184)) — in-CI behavioural UAT for peat-mesh#175 delivery-ratio thresholds. Test-only; no API surface change.
+  - **peat-mesh rc.27** ([peat-mesh#188](https://github.com/defenseunicorns/peat-mesh/pull/188), [peat-mesh#189](https://github.com/defenseunicorns/peat-mesh/pull/189), [peat-mesh#190](https://github.com/defenseunicorns/peat-mesh/pull/190)) — `AutomergeBackend::get` and `InMemoryBackend::get` keyed-lookup overrides (O(N)→O(1); closes [peat-mesh#186](https://github.com/defenseunicorns/peat-mesh/issues/186)). UAT file-header doc-comment scope clarification. Deletion semantics on both overrides match the trait-default exactly.
+
+  Pure perf improvement on the underlying mesh substrate — no peat-side adaptation required; the bumped floor forces downstream consumers to pick up the perf wins on `cargo update`.
+- **`peat-protocol` internal `peat-schema` exact pin** advanced from `=0.9.0-rc.17` to `=0.9.0-rc.18` to match the workspace version.
+
+### Impact on peat workspace consumers
+
+- **peat-node, peat-sim:** can now consume the matcher by bumping their `peat-protocol` exact pin to `=0.9.0-rc.18`. Separate bump PRs needed in each repo; peat-node bump unlocks downstream peat-sim re-validation. peat-mesh rc.27's `DocumentStore::get` perf overrides ride along transitively.
+- **peat-ffi** stays at 0.2.5 — no JNI / UniFFI surface additions in this bump.
+
+### Cross-repo follow-up
+
+- **peat-node** pins peat-mesh `=0.9.0-rc.27` (exact) + peat-protocol `>=0.9.0-rc.17`. The peat-protocol range admits rc.18 transitively, but a fresh bump PR is needed to pick up the matcher in source. Separate.
+- **peat-sim** pins peat-mesh `=0.9.0-rc.26` + peat-protocol `=0.9.0-rc.17` (both exact). Both pins need advancing for peat-sim to consume rc.18. Separate.
+
 ## [0.9.0-rc.17] - 2026-05-27
 
 **Bump peat-mesh floor to 0.9.0-rc.25** — picks up the ADR-063 persistent multiplexed sync streams landed in [peat-mesh#176](https://github.com/defenseunicorns/peat-mesh/pull/176), [peat-mesh#178](https://github.com/defenseunicorns/peat-mesh/pull/178), and [peat-mesh#180](https://github.com/defenseunicorns/peat-mesh/pull/180), closing [peat-mesh#175](https://github.com/defenseunicorns/peat-mesh/issues/175). Architecture decision in [ADR-063](docs/adr/063-persistent-sync-streams.md) (merged via peat#936).

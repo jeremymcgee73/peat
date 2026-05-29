@@ -1334,7 +1334,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4106,7 +4106,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peat"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 
 [[package]]
 name = "peat-btle"
@@ -4179,9 +4179,9 @@ dependencies = [
 
 [[package]]
 name = "peat-mesh"
-version = "0.9.0-rc.25"
+version = "0.9.0-rc.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79fdc816052bd000f396c057c20b57c144c9c3460363d067dd14f25e5b9c632a"
+checksum = "686a9bc333837f0a17883ff8b5a6d5d906c78e0edec5734650f2d47111728d71"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4225,7 +4225,7 @@ dependencies = [
 
 [[package]]
 name = "peat-persistence"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4250,7 +4250,7 @@ dependencies = [
 
 [[package]]
 name = "peat-protocol"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 dependencies = [
  "anyhow",
  "argon2",
@@ -4296,7 +4296,7 @@ dependencies = [
 
 [[package]]
 name = "peat-quickstart"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 dependencies = [
  "anyhow",
  "clap",
@@ -4312,7 +4312,7 @@ dependencies = [
 
 [[package]]
 name = "peat-schema"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4329,7 +4329,7 @@ dependencies = [
 
 [[package]]
 name = "peat-tak-bridge"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4350,7 +4350,7 @@ dependencies = [
 
 [[package]]
 name = "peat-transport"
-version = "0.9.0-rc.17"
+version = "0.9.0-rc.18"
 dependencies = [
  "anyhow",
  "async-trait",
