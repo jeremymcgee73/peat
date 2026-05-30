@@ -10,6 +10,50 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Current auth-handshake protocol version this build speaks (ADR-065).
+///
+/// Embedded in `Challenge.protocol_version` and
+/// `SignedChallengeResponse.protocol_version`. The responder negotiates
+/// `min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)` and uses
+/// that version's signed-message byte construction. The verifier reads
+/// `response.protocol_version` to know which construction to reconstruct.
+///
+/// **Version 0** is the pre-rc.21+1 fallback (no `protocol_version`
+/// field on the wire; prost defaults it to 0). v0 signed-message:
+/// `nonce || challenger_id || response.timestamp.seconds`.
+///
+/// **Version 1** (this build) extends v0 by appending
+/// `response.protocol_version` (u32 LE, 4 bytes) to the signed bytes,
+/// so a MITM cannot strip or modify the version field without
+/// invalidating the signature.
+///
+/// See ADR-065 for the full negotiation rule and rollout semantics.
+pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
+
+/// Prefix used by the v1 `respond_to_challenge` / `verify_response` path
+/// when the version-mismatch case surfaces via
+/// `SecurityError::AuthenticationFailed(msg)` (ADR-065).
+///
+/// External consumers that need to deterministically detect "peer
+/// claims a protocol version we don't speak" pending the typed
+/// `SecurityError::IncompatibleProtocolVersion` follow-up variant in
+/// peat-mesh's security error module can match on this prefix:
+///
+/// ```ignore
+/// match auth_result {
+///     Err(SecurityError::AuthenticationFailed(msg))
+///         if msg.starts_with(INCOMPATIBLE_PROTOCOL_VERSION_PREFIX) =>
+///     {
+///         // peer too new / too old for us
+///     }
+///     _ => { /* … */ }
+/// }
+/// ```
+///
+/// Once the typed variant lands, the prefix becomes redundant and is
+/// removed; callers should switch to `matches!(_, SecurityError::IncompatibleProtocolVersion { .. })`.
+pub const INCOMPATIBLE_PROTOCOL_VERSION_PREFIX: &str = "incompatible protocol version:";
+
 /// Device authenticator manages challenge-response authentication.
 ///
 /// # Overview
@@ -93,6 +137,11 @@ impl DeviceAuthenticator {
     /// - Current timestamp
     /// - This device's ID
     /// - Expiration timestamp
+    /// - Protocol version this challenger speaks (ADR-065:
+    ///   [`CURRENT_PROTOCOL_VERSION`])
+    /// - Capability advertisements (ADR-065: empty by default at v1;
+    ///   consumers driving feature-flagged behaviour can extend via
+    ///   the public `Challenge.capabilities` field after this call)
     pub fn generate_challenge(&self) -> Challenge {
         let mut nonce = [0u8; CHALLENGE_NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce);
@@ -114,12 +163,69 @@ impl DeviceAuthenticator {
                 seconds: expires.as_secs(),
                 nanos: expires.subsec_nanos(),
             }),
+            // ADR-065 version negotiation: advertise our maximum
+            // supported protocol version so the responder can
+            // negotiate `min(ours, theirs)`.
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            // ADR-065 capability advertising: empty at v1 by default;
+            // callers can mutate the returned Challenge to populate
+            // capabilities for soft-policy use cases.
+            capabilities: Vec::new(),
         }
     }
 
     /// Create a signed response to a challenge.
     ///
     /// Signs the challenge data with this device's private key.
+    ///
+    /// **Version negotiation (ADR-065).** The responder picks
+    /// `negotiated = min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)`,
+    /// signs the byte construction associated with that version,
+    /// and embeds `negotiated` in `response.protocol_version` so the
+    /// verifier knows which construction to reconstruct.
+    ///
+    /// **Signed-message constructions by version:**
+    ///
+    /// - **v0** (pre-rc.21+1 challenger; `challenge.protocol_version == 0`):
+    ///
+    ///   ```text
+    ///   signed = challenge.nonce
+    ///         || challenge.challenger_id
+    ///         || response.timestamp.seconds  (u64 LE, 8 bytes)
+    ///   ```
+    ///
+    /// - **v1** (rc.21+1+; `challenge.protocol_version >= 1`):
+    ///
+    ///   ```text
+    ///   signed = challenge.nonce
+    ///         || challenge.challenger_id
+    ///         || response.timestamp.seconds  (u64 LE, 8 bytes)
+    ///         || response.protocol_version   (u32 LE, 4 bytes)
+    ///   ```
+    ///
+    /// The signed message and the response's `timestamp` field share
+    /// a single captured `SystemTime::now()` value (the peat#952 fix);
+    /// signer and verifier reconstruct an identical byte string
+    /// regardless of how long the auth flow takes or whether it
+    /// spans a wall-clock second boundary.
+    ///
+    /// Replay protection: the challenge's `nonce` is the freshness
+    /// anchor (challenger generates a fresh nonce per challenge),
+    /// and the internal `check_challenge_expiry` helper enforces the
+    /// challenge's `expires_at` window before signing. (Plain prose
+    /// rather than an intra-doc link — `check_challenge_expiry` is
+    /// private, so a `[\`Self::check_challenge_expiry\`]` link would
+    /// fail `rustdoc::private-intra-doc-links` under
+    /// `cargo doc -- -D warnings`.)
+    ///
+    /// **Capabilities (ADR-065 v1 semantics):** the responder
+    /// advertises its capability set in `response.capabilities`.
+    /// At v1 the field is **not** covered by the signature — see
+    /// ADR-065 for the rationale and the v2 path. Callers driving
+    /// soft-policy feature flagging can mutate the returned
+    /// `SignedChallengeResponse.capabilities` after this call;
+    /// hard-policy "reject peers missing a capability" should wait
+    /// for the v2 signed-capability extension.
     pub fn respond_to_challenge(
         &self,
         challenge: &Challenge,
@@ -127,8 +233,29 @@ impl DeviceAuthenticator {
         // Check challenge hasn't expired
         self.check_challenge_expiry(challenge)?;
 
-        // Create message to sign: nonce || challenger_id || timestamp
-        let message = self.create_challenge_message(challenge);
+        // ADR-065 version negotiation: pick min(peer, ours). v0 = the
+        // pre-rc.21+1 byte construction; v1 = the same plus
+        // response.protocol_version covered by the signature.
+        let negotiated_version = challenge.protocol_version.min(CURRENT_PROTOCOL_VERSION);
+
+        // Capture the response timestamp ONCE; use it for both the
+        // signed-message byte string and the response.timestamp
+        // field. This guarantees signer and verifier reconstruct
+        // the same bytes (peat#952).
+        let response_ts_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Build the signed-message bytes for the negotiated version.
+        // The single shared helper keeps signer and verifier byte-
+        // identical across both v0 and v1.
+        let message = build_signed_message(
+            &challenge.nonce,
+            &challenge.challenger_id,
+            response_ts_seconds,
+            negotiated_version,
+        );
 
         // Sign the message
         let signature = self.keypair.sign(&message);
@@ -138,39 +265,76 @@ impl DeviceAuthenticator {
             public_key: self.keypair.public_key_bytes().to_vec(),
             signature: signature.to_bytes().to_vec(),
             timestamp: Some(peat_schema::common::v1::Timestamp {
-                seconds: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
+                seconds: response_ts_seconds,
                 nanos: 0,
             }),
             device_type: 0,       // DEVICE_TYPE_UNSPECIFIED for MVP
             certificates: vec![], // Empty for MVP (no X.509 chain)
+            // ADR-065: negotiated version covered by the signature
+            // from v1 onward; advertised verbatim on the wire so the
+            // verifier knows which construction to reconstruct.
+            protocol_version: negotiated_version,
+            // ADR-065 capabilities: empty at v1 by default.
+            capabilities: Vec::new(),
         })
     }
 
     /// Verify a peer's challenge response.
     ///
     /// On success, caches the peer's identity and returns their DeviceId.
+    ///
+    /// **Version negotiation (ADR-065).** Reads
+    /// `response.protocol_version` to know which signed-message byte
+    /// construction the responder used. A value greater than
+    /// [`CURRENT_PROTOCOL_VERSION`] surfaces as
+    /// `SecurityError::AuthenticationFailed(msg)` with the
+    /// [`INCOMPATIBLE_PROTOCOL_VERSION_PREFIX`] prefix — distinct from
+    /// `InvalidSignature` so operators can distinguish "peer is too
+    /// new for me" from "signature was tampered with."
     pub fn verify_response(
         &self,
         response: &SignedChallengeResponse,
     ) -> Result<DeviceId, SecurityError> {
+        // ADR-065 version negotiation: detect "peer claims a version
+        // we don't speak" before attempting signature verification.
+        // This way the operator-visible error names the actual
+        // problem ("incompatible protocol version") rather than the
+        // downstream symptom ("Verification equation was not
+        // satisfied"). Future-version response cannot have been
+        // produced by a v1 responder negotiating down (it would have
+        // capped at min(peer, our_max)), so a value > our max means
+        // the response was constructed by a higher-version build —
+        // a coordination problem, not a tampering problem.
+        if response.protocol_version > CURRENT_PROTOCOL_VERSION {
+            return Err(SecurityError::AuthenticationFailed(format!(
+                "{INCOMPATIBLE_PROTOCOL_VERSION_PREFIX} peer claims {peer}, our maximum is {ours}",
+                peer = response.protocol_version,
+                ours = CURRENT_PROTOCOL_VERSION,
+            )));
+        }
+
         // Parse public key
         let public_key = DeviceKeypair::verifying_key_from_bytes(&response.public_key)?;
 
         // Derive device ID from public key
         let peer_device_id = DeviceId::from_public_key(&public_key);
 
-        // Recreate the message that should have been signed
-        // Note: In a full implementation, we would look up the original challenge
-        // For MVP, we verify the signature is valid for the provided nonce
-        let mut message = response.challenge_nonce.clone();
-        message.extend_from_slice(self.device_id().to_hex().as_bytes());
-        // Append timestamp if available
-        if let Some(ts) = &response.timestamp {
-            message.extend_from_slice(&ts.seconds.to_le_bytes());
-        }
+        // Reconstruct the signed-message bytes for the negotiated
+        // version. `build_signed_message` is the single source of
+        // truth for both signer and verifier byte construction; v0
+        // and v1 differ only in whether response.protocol_version is
+        // appended.
+        let response_ts_seconds = response
+            .timestamp
+            .as_ref()
+            .map(|ts| ts.seconds)
+            .unwrap_or(0);
+        let message = build_signed_message(
+            &response.challenge_nonce,
+            &self.device_id().to_hex(),
+            response_ts_seconds,
+            response.protocol_version,
+        );
 
         // Parse and verify signature
         let signature = DeviceKeypair::signature_from_bytes(&response.signature)?;
@@ -229,16 +393,6 @@ impl DeviceAuthenticator {
             .unwrap_or(0)
     }
 
-    /// Create the message bytes that should be signed for a challenge.
-    fn create_challenge_message(&self, challenge: &Challenge) -> Vec<u8> {
-        let mut message = challenge.nonce.clone();
-        message.extend_from_slice(challenge.challenger_id.as_bytes());
-        if let Some(ts) = &challenge.timestamp {
-            message.extend_from_slice(&ts.seconds.to_le_bytes());
-        }
-        message
-    }
-
     /// Check if a challenge has expired.
     fn check_challenge_expiry(&self, challenge: &Challenge) -> Result<(), SecurityError> {
         if let Some(expires) = &challenge.expires_at {
@@ -252,6 +406,55 @@ impl DeviceAuthenticator {
         }
         Ok(())
     }
+}
+
+/// Build the byte string covered by the Ed25519 signature in the
+/// challenge-response handshake (ADR-065).
+///
+/// Shared between [`DeviceAuthenticator::respond_to_challenge`] (the
+/// signer) and [`DeviceAuthenticator::verify_response`] (the verifier)
+/// so the byte construction lives in exactly one place, byte-identical
+/// across the two call sites. Any future change to the construction
+/// (e.g. v2 extending coverage to capabilities) goes here and shows up
+/// on both sides.
+///
+/// # Constructions by version
+///
+/// - **v0** (`protocol_version == 0`, pre-rc.21+1 peer):
+///
+///   ```text
+///   nonce || challenger_id || response_ts_seconds  (u64 LE, 8 bytes)
+///   ```
+///
+/// - **v1+** (`protocol_version >= 1`, this build's
+///   [`CURRENT_PROTOCOL_VERSION`] = 1):
+///
+///   ```text
+///   nonce || challenger_id || response_ts_seconds  (u64 LE, 8 bytes)
+///                          || protocol_version     (u32 LE, 4 bytes)
+///   ```
+///
+/// The v1 extension binds the version field into the signature so a
+/// MITM cannot strip or modify it without invalidating the signature.
+/// A v0 peer's `protocol_version == 0` falls through the `>= 1` arm
+/// and gets the v0 construction, preserving wire-compat with
+/// pre-version-token peers.
+fn build_signed_message(
+    nonce: &[u8],
+    challenger_id: &str,
+    response_ts_seconds: u64,
+    protocol_version: u32,
+) -> Vec<u8> {
+    let mut message = Vec::with_capacity(
+        nonce.len() + challenger_id.len() + 8 + if protocol_version >= 1 { 4 } else { 0 },
+    );
+    message.extend_from_slice(nonce);
+    message.extend_from_slice(challenger_id.as_bytes());
+    message.extend_from_slice(&response_ts_seconds.to_le_bytes());
+    if protocol_version >= 1 {
+        message.extend_from_slice(&protocol_version.to_le_bytes());
+    }
+    message
 }
 
 impl std::fmt::Debug for DeviceAuthenticator {
@@ -393,5 +596,241 @@ mod tests {
 
         auth1.clear_verified_peers();
         assert_eq!(auth1.verified_peer_count(), 0);
+    }
+
+    /// peat#952 second-boundary regression: pre-fix, the signer's
+    /// `respond_to_challenge` signed over `challenge.timestamp.seconds`
+    /// (captured in `generate_challenge`) but embedded a freshly-
+    /// captured `SystemTime::now().as_secs()` in `response.timestamp`
+    /// (captured immediately *after* signing). The verifier's
+    /// `verify_response` reconstructed the signed message from
+    /// `response.timestamp.seconds`. When the two SystemTime captures
+    /// fell within the same wall-clock second they happened to match
+    /// — but any time the auth flow spanned a second boundary (a few
+    /// microseconds either side of the tick), they differed by 1 and
+    /// Ed25519 verification failed with "Verification equation was
+    /// not satisfied."
+    ///
+    /// This pin reconstructs that exact scenario deterministically:
+    /// hand-build a `Challenge` with `timestamp.seconds = T - 5`,
+    /// `respond_to_challenge` runs at wall-clock time T (or later),
+    /// so pre-fix the signer's message includes `T - 5` while the
+    /// verifier's message includes `T` — mismatched, fails. Post-fix
+    /// the signer uses the same `response.timestamp.seconds` value
+    /// the verifier reads, so the message is consistent and the
+    /// signature verifies.
+    #[test]
+    fn timestamp_mismatch_between_challenge_and_response_does_not_break_verification() {
+        let auth1 = create_test_authenticator();
+        let auth2 = create_test_authenticator();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        // Hand-construct a challenge with a timestamp from 5 seconds
+        // ago. `generate_challenge` would normally use `now`; using
+        // a divergent value here simulates the wall-clock-boundary
+        // race that the production code path can hit at a 10^-6
+        // probability per attempt under normal load.
+        let challenge = Challenge {
+            nonce: vec![7u8; CHALLENGE_NONCE_SIZE],
+            timestamp: Some(peat_schema::common::v1::Timestamp {
+                seconds: now.as_secs() - 5,
+                nanos: 0,
+            }),
+            challenger_id: auth1.device_id().to_hex(),
+            expires_at: Some(peat_schema::common::v1::Timestamp {
+                seconds: now.as_secs() + 60,
+                nanos: 0,
+            }),
+            // ADR-065: v1 protocol — both ends speak the current
+            // version, so the signed-message byte construction
+            // includes response.protocol_version.
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            capabilities: Vec::new(),
+        };
+
+        // Sign. Pre-fix this signs over (nonce, challenger_id,
+        // T-5); post-fix it signs over (nonce, challenger_id,
+        // response.timestamp.seconds), where response.timestamp is
+        // captured once and used for both the signed message and
+        // the response field.
+        let response = auth2
+            .respond_to_challenge(&challenge)
+            .expect("respond_to_challenge succeeds (challenge not expired)");
+
+        // Verify. The verifier reads `response.timestamp.seconds`
+        // and reconstructs the signed message. Post-fix this is the
+        // same value the signer used; pre-fix it's a different
+        // value (now-time, not T-5).
+        let peer_id = auth1
+            .verify_response(&response)
+            .expect("verify_response must succeed regardless of when the challenge was issued");
+
+        assert_eq!(peer_id, auth2.device_id());
+    }
+
+    /// ADR-065 v1↔v1 roundtrip: both peers speak the current
+    /// version, so the negotiated version is 1 and the signed-message
+    /// construction includes `response.protocol_version` (u32 LE).
+    /// `generate_challenge()` advertises `CURRENT_PROTOCOL_VERSION`
+    /// automatically; the responder picks min(peer, ours) = 1.
+    #[test]
+    fn v1_v1_roundtrip_negotiates_to_current_version() {
+        let auth1 = create_test_authenticator();
+        let auth2 = create_test_authenticator();
+
+        let challenge = auth1.generate_challenge();
+        assert_eq!(
+            challenge.protocol_version, CURRENT_PROTOCOL_VERSION,
+            "generate_challenge must advertise our current version"
+        );
+
+        let response = auth2.respond_to_challenge(&challenge).unwrap();
+        assert_eq!(
+            response.protocol_version, CURRENT_PROTOCOL_VERSION,
+            "v1 responder must negotiate to CURRENT_PROTOCOL_VERSION when peer also speaks it"
+        );
+
+        let peer_id = auth1.verify_response(&response).expect("verify v1");
+        assert_eq!(peer_id, auth2.device_id());
+    }
+
+    /// ADR-065 v0 challenger ↔ v1 responder: the responder receives
+    /// a Challenge with `protocol_version == 0` (a pre-rc.21+1 peer
+    /// or a v1 peer that for some reason left the field as default),
+    /// picks `min(0, CURRENT) = 0`, and falls through to the v0
+    /// signed-message construction (no version field appended).
+    /// `response.protocol_version` is set to 0 so a v0-aware
+    /// verifier reconstructs the same v0 bytes.
+    #[test]
+    fn v0_challenger_negotiates_down_to_v0_construction() {
+        let auth1 = create_test_authenticator();
+        let auth2 = create_test_authenticator();
+
+        // Hand-build a v0 Challenge (explicit protocol_version=0
+        // to simulate a peer that didn't advertise).
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let challenge = Challenge {
+            nonce: vec![3u8; CHALLENGE_NONCE_SIZE],
+            timestamp: Some(peat_schema::common::v1::Timestamp {
+                seconds: now_secs,
+                nanos: 0,
+            }),
+            challenger_id: auth1.device_id().to_hex(),
+            expires_at: Some(peat_schema::common::v1::Timestamp {
+                seconds: now_secs + 60,
+                nanos: 0,
+            }),
+            protocol_version: 0,
+            capabilities: Vec::new(),
+        };
+
+        let response = auth2.respond_to_challenge(&challenge).unwrap();
+        assert_eq!(
+            response.protocol_version, 0,
+            "v1 responder must negotiate down to 0 when peer advertises 0"
+        );
+
+        // Verifier sees response.protocol_version=0 and uses v0
+        // construction. Verification succeeds.
+        let peer_id = auth1
+            .verify_response(&response)
+            .expect("v0 roundtrip verifies cleanly");
+        assert_eq!(peer_id, auth2.device_id());
+    }
+
+    /// ADR-065 future-version response: a verifier receives a
+    /// response claiming `protocol_version > CURRENT_PROTOCOL_VERSION`
+    /// (a peer running a newer build). The verifier cannot
+    /// reconstruct the signed bytes for an unknown version and must
+    /// surface the operator-visible error
+    /// `SecurityError::AuthenticationFailed("incompatible protocol version: ...")`
+    /// — distinct from `InvalidSignature` so operators can
+    /// distinguish "peer is too new" from "sig was tampered with."
+    #[test]
+    fn v1_verifier_rejects_future_protocol_version_with_distinct_error() {
+        let auth = create_test_authenticator();
+
+        // Hand-build a response claiming version u32::MAX
+        // (representing "the far future"). Public_key + signature
+        // can be junk — we want to verify the version-check fires
+        // BEFORE signature verification.
+        let response = SignedChallengeResponse {
+            challenge_nonce: vec![0u8; CHALLENGE_NONCE_SIZE],
+            public_key: vec![0u8; 32],
+            signature: vec![0u8; 64],
+            timestamp: Some(peat_schema::common::v1::Timestamp {
+                seconds: 0,
+                nanos: 0,
+            }),
+            device_type: 0,
+            certificates: vec![],
+            protocol_version: u32::MAX,
+            capabilities: Vec::new(),
+        };
+
+        let err = auth
+            .verify_response(&response)
+            .expect_err("version-mismatch must surface as Err");
+
+        match err {
+            SecurityError::AuthenticationFailed(msg) => {
+                assert!(
+                    msg.starts_with(INCOMPATIBLE_PROTOCOL_VERSION_PREFIX),
+                    "operator-visible message must start with the documented \
+                     prefix for callers to detect; got: {msg}"
+                );
+                assert!(
+                    msg.contains(&u32::MAX.to_string())
+                        && msg.contains(&CURRENT_PROTOCOL_VERSION.to_string()),
+                    "diagnostic must name both the peer's claimed version \
+                     and our maximum; got: {msg}"
+                );
+            }
+            other => panic!(
+                "version mismatch must surface as AuthenticationFailed \
+                 (distinct from InvalidSignature), not: {other:?}"
+            ),
+        }
+    }
+
+    /// ADR-065 MITM downgrade resistance: at v1, `response.protocol_version`
+    /// is included in the signed bytes. A network attacker that
+    /// modifies the field on the wire — flipping a v1 response to
+    /// claim v0 — cannot get the signature to verify because the
+    /// verifier reconstructs bytes for the claimed v0 (omitting the
+    /// version-bind suffix) while the signer's bytes include it.
+    /// Bytes mismatch → Ed25519 fails → `InvalidSignature`. The
+    /// attacker cannot strip or modify the version without breaking
+    /// the signature.
+    #[test]
+    fn v1_signature_binds_protocol_version_against_mitm_downgrade() {
+        let auth1 = create_test_authenticator();
+        let auth2 = create_test_authenticator();
+
+        let challenge = auth1.generate_challenge();
+        let mut response = auth2.respond_to_challenge(&challenge).unwrap();
+        assert_eq!(response.protocol_version, CURRENT_PROTOCOL_VERSION);
+
+        // Simulate MITM: peer's response was constructed with v1
+        // semantics (signed-bytes include version), but the attacker
+        // flips the field to 0 on the wire. The verifier reconstructs
+        // v0 bytes (omitting the version-bind suffix), which differ
+        // from what the signer signed → InvalidSignature.
+        response.protocol_version = 0;
+        let err = auth1
+            .verify_response(&response)
+            .expect_err("MITM-downgraded version must fail signature verification");
+
+        assert!(
+            matches!(err, SecurityError::InvalidSignature(_)),
+            "downgrade attempt must surface as InvalidSignature (the bytes \
+             don't match), not as a clean negotiation result; got: {err:?}"
+        );
     }
 }

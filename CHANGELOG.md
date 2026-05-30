@@ -14,6 +14,28 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+### Added — ADR-065 auth-handshake version + capability negotiation
+
+The forthcoming rc.21 ships [ADR-065](docs/adr/065-auth-handshake-version-negotiation.md) — a version token + advertise-only capability set in the challenge-response handshake. Future protocol revisions can now ship to a heterogeneous mesh without producing the same hard rollout cliff this rc.21 release does (see below).
+
+- **`Challenge.protocol_version: uint32`** (proto field `5`) and **`Challenge.capabilities: repeated string`** (proto field `6`) — the challenger advertises which protocol version it speaks and which capability strings it can offer.
+- **`SignedChallengeResponse.protocol_version: uint32`** (proto field `7`) and **`SignedChallengeResponse.capabilities: repeated string`** (proto field `8`) — the responder sets `protocol_version = min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)`, signs the byte construction for the negotiated version, and writes `protocol_version` so the verifier knows which construction to reconstruct.
+- **Per-version signed-message byte construction.** v0 (pre-rc.21 peers; field absent on the wire and reads as `0`): `nonce || challenger_id || response.timestamp.seconds`. v1 (rc.21+): same prefix `|| response.protocol_version` (u32 little-endian, 4 bytes). The v1 suffix binds the negotiated version into the signature so a MITM cannot strip the field or rewrite it across protocol bumps.
+- **`peat_protocol::security::CURRENT_PROTOCOL_VERSION: u32 = 1`** and **`peat_protocol::security::INCOMPATIBLE_PROTOCOL_VERSION_PREFIX: &str`** are re-exported as stable consumer-facing API surface. Consumers can match against the prefix on a `SecurityError::AuthenticationFailed` to distinguish version-incompatibility from a genuine signature/forgery failure; a typed `SecurityError::IncompatibleProtocolVersion` variant is queued as a peat-mesh follow-up.
+- **v1 capability semantics are advertise-only.** `Challenge.capabilities` and `SignedChallengeResponse.capabilities` carry sorted opaque ASCII identifiers consumers can read for soft-policy feature flagging. The capabilities are not part of the v1 signed bytes; ADR-065 §"Capabilities (v1 semantics)" tracks the v2 path for binding them.
+
+### Operational note — auth wire-incompatibility with pre-rc.21 peers
+
+The rc.21 release also carries [peat#952](https://github.com/defenseunicorns/peat/pull/952)'s auth-timestamp fix, which changes which timestamp is covered by the Ed25519 signature in the challenge-response handshake: signer and verifier now use `response.timestamp.seconds` instead of the pre-rc.21 mix where the signer used `challenge.timestamp.seconds` and the verifier used `response.timestamp.seconds` (the bug rc.21 fixes).
+
+**Consequence:** pre-rc.21 nodes and post-rc.21 nodes cannot authenticate with each other across this one cliff. A mesh that rolls upgrades incrementally rather than simultaneously will see mutual-auth failures between the old-code and new-code segments of the mesh for the duration of the rollout window.
+
+**This is the LAST staggered-upgrade cliff in the auth path.** ADR-065's version negotiation makes future protocol revisions (rc.21 → rc.22+ and beyond) interoperable across mixed-version meshes: a v1 peer talking to a future v2 peer will negotiate down to v1, and a future v2 peer will know — from the signed `response.protocol_version` byte — which byte construction the v1 peer used. The rc.20 → rc.21 cliff exists because pre-rc.21 wire format has no version field at all (it reads as `0` via the prost default, but the v0 byte construction is the new, fixed construction; pre-rc.21 nodes don't know to send it). After rc.21, this class of operational risk is eliminated.
+
+**Operator action:** upgrade all nodes in a mesh together for the rc.20 → rc.21 boundary. The pre-rc.21 protocol was already producing flaky auth failures at a ~10⁻⁶-per-attempt rate from this same bug; this is therefore not a regression from a stable baseline — but it IS a hard incompatibility that needs the deploy to be coordinated this one time.
+
+Spec reference: `docs/spec/005-security.md` §5.3, `docs/whitepaper/10b-spec-appendix.md` §5.3, `peat-schema/proto/security.proto::SignedChallengeResponse.signature` doc-comment, [ADR-065](docs/adr/065-auth-handshake-version-negotiation.md).
+
 ## [0.9.0-rc.20] - 2026-05-30
 
 **peat-mesh floor advance to rc.29 — `subscribe_to_observer_changes` now fires on tombstone-driven deletes.** Single-fix peat-mesh release ([peat-mesh#203](https://github.com/defenseunicorns/peat-mesh/pull/203)) closes [peat-mesh#202](https://github.com/defenseunicorns/peat-mesh/issues/202). Pre-rc.29 the CDC channel was insert/update-complete but delete-blind from any peer; rc.29 closes the documented "fires for ALL document changes" contract by routing the receive-side `apply_tombstone` through `delete_with_origin(.., Remote(peer))` and updating local `AutomergeStore::delete` to fire the same broadcast pipeline as `put`. peat-cli's `peat observe`-with-`peat delete` cross-CLI flow (peat-node ADR-001 Open Question §7) is unblocked.

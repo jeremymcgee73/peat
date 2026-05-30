@@ -257,7 +257,7 @@ All primitives are on the FIPS 140-3 approved list (see ADR-060 §5).
 
 ### Security Layers
 
-**Layer 1 — Device Identity.** Each device generates an Ed25519 keypair. The device ID is the SHA-256 hash of its public key. Peers authenticate via challenge-response: the challenger sends a nonce, the device signs `nonce || challenger_id || timestamp`, and the challenger verifies the signature.
+**Layer 1 — Device Identity.** Each device generates an Ed25519 keypair. The device ID is the SHA-256 hash of its public key. Peers authenticate via challenge-response: the challenger sends a nonce, the device signs `challenge.nonce || challenge.challenger_id || response.timestamp.seconds` (where `response.timestamp.seconds` is the responder's own wall-clock-seconds capture at sign time, carried verbatim in the response), and the challenger verifies the signature against the same byte string reconstructed from `response.timestamp.seconds` on the wire.
 
 **Layer 2 — Transport Encryption.** All peer connections use TLS 1.3 via QUIC (built into Iroh), providing authenticated encrypted streams with ephemeral key exchange. There is no unencrypted mode.
 

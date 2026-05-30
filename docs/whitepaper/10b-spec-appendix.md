@@ -3093,11 +3093,25 @@ pub fn generate_challenge() -> Challenge {
 
 ### 5.3 Challenge Response
 
-The prover signs:
+The signed-message byte construction depends on the negotiated protocol version (ADR-065). The responder picks `negotiated = min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)`, signs the byte string for that version, and writes `negotiated` into `response.protocol_version` so the verifier knows which construction to reconstruct.
+
+**Version 0** (pre-rc.21+1 peers; `challenge.protocol_version == 0`):
+
 ```
-message = nonce || challenger_id || timestamp
+message = challenge.nonce || challenge.challenger_id || response.timestamp.seconds
 signature = Ed25519_Sign(signing_key, message)
 ```
+
+**Version 1** (rc.21+1+; `CURRENT_PROTOCOL_VERSION` at this release):
+
+```
+message = challenge.nonce || challenge.challenger_id || response.timestamp.seconds || response.protocol_version
+signature = Ed25519_Sign(signing_key, message)
+```
+
+The `response.timestamp.seconds` field is the responder's own wall-clock-seconds capture at sign time, carried verbatim in the response's `timestamp` field and used by the verifier to reconstruct the signed-message byte string. It is **not** the challenger's `Challenge.timestamp` (which is informational and not part of the signed payload). The single-capture rule keeps signer and verifier in sync regardless of how long the auth flow takes or whether it spans a wall-clock second boundary. `.seconds` is encoded as 8 bytes little-endian; `response.protocol_version` (v1+) is encoded as 4 bytes little-endian (u32).
+
+The version-negotiation min() rule means a v1 peer talking to a v0 peer falls through to the v0 construction (preserving wire-compat with pre-version-token peers); two v1 peers use the v1 construction, which binds the negotiated version into the signature so a MITM cannot strip or rewrite it. A `response.protocol_version` greater than the verifier's `CURRENT_PROTOCOL_VERSION` surfaces as `SecurityError::AuthenticationFailed` with the `INCOMPATIBLE_PROTOCOL_VERSION_PREFIX` (re-exported from `peat_protocol::security`), distinct from `InvalidSignature`. `Challenge.capabilities` and `SignedChallengeResponse.capabilities` carry advertise-only string sets at v1 — readable for soft-policy feature flagging but not covered by the signature. See ADR-065 for the full negotiation rule, rollout semantics, and the v2 path for binding capabilities into the signed bytes.
 
 ### 5.4 Verification
 
