@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.19"
+version = "0.9.0-rc.20"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -245,7 +245,32 @@ repository = "https://github.com/defenseunicorns/peat"
 # depends on. Direct consumer of these APIs in the workspace today: none
 # (this is the upstream-ready release); the consumer is `peat-cli`
 # (peat-node), which picks up the new surface via this floor bump.
-peat-mesh = { version = ">=0.9.0-rc.28, <0.9.1", default-features = false }
+#
+# Floor bumped to rc.29 (2026-05-30) — single-fix release closing
+# peat-mesh#202 ([peat-mesh#203]). Pre-rc.29 `AutomergeStore::delete`
+# silently removed from disk + cache without firing any of the three
+# broadcast channels; a CDC consumer subscribed to the documented
+# `subscribe_to_observer_changes` channel saw inserts and updates
+# from any peer but never saw deletes. rc.29 ships:
+# (a) `AutomergeStore::delete` now fires the same broadcast pipeline
+#     as `put` (observer_tx + change_tx + gossip_tx(Local)).
+# (b) New `AutomergeStore::delete_with_origin(key, ChangeOrigin)` —
+#     mirrors `put_with_origin`; Remote(peer) suppresses change_tx
+#     per the peat-mesh#115 ping-pong invariant while observer/gossip
+#     fire with peer attribution.
+# (c) `AutomergeSyncCoordinator::apply_tombstone` routes through
+#     `delete_with_origin(.., Remote(peer))` — CDC consumers now
+#     see remote-driven deletes; transitive-gossip drivers see the
+#     peer attribution to skip the source.
+# Closes the operator-visible `peat observe`-with-`peat delete`
+# cross-CLI flow (peat-node ADR-001 Open Question §7). Direct
+# consumer of these APIs in the workspace today: none (additive
+# upstream surface); the consumer is peat-cli (peat-node) `peat
+# observe`, which picks up the delete-coverage on the documented
+# CDC channel via this floor bump. Pinning below rc.29 would let
+# the workspace build against a peat-mesh whose CDC channel is
+# still delete-blind — silent contract violation, not a build break.
+peat-mesh = { version = ">=0.9.0-rc.29, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

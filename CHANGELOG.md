@@ -14,6 +14,34 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.20] - 2026-05-30
+
+**peat-mesh floor advance to rc.29 — `subscribe_to_observer_changes` now fires on tombstone-driven deletes.** Single-fix peat-mesh release ([peat-mesh#203](https://github.com/defenseunicorns/peat-mesh/pull/203)) closes [peat-mesh#202](https://github.com/defenseunicorns/peat-mesh/issues/202). Pre-rc.29 the CDC channel was insert/update-complete but delete-blind from any peer; rc.29 closes the documented "fires for ALL document changes" contract by routing the receive-side `apply_tombstone` through `delete_with_origin(.., Remote(peer))` and updating local `AutomergeStore::delete` to fire the same broadcast pipeline as `put`. peat-cli's `peat observe`-with-`peat delete` cross-CLI flow (peat-node ADR-001 Open Question §7) is unblocked.
+
+### Changed
+
+- **`peat-mesh` workspace floor** advanced from `>=0.9.0-rc.28, <0.9.1` to `>=0.9.0-rc.29, <0.9.1`. Spans peat-mesh rc.29's full surface change:
+  - **`AutomergeStore::delete` broadcast contract** ([peat-mesh#203](https://github.com/defenseunicorns/peat-mesh/pull/203), closes [peat-mesh#202](https://github.com/defenseunicorns/peat-mesh/issues/202)). `delete(key)` now fires `observer_tx` (CDC) + `change_tx` (local sync-out trigger) + `gossip_tx` (origin-tagged), matching the existing `put` / `put_with_origin` channel-gating matrix. A CDC consumer subscribed to `subscribe_to_observer_changes` now sees the delete via `store.get(key)` returning `Ok(None)` on the event — the "Some → insert/update, None → delete" detection pattern peat-cli's `cli/observe.rs:94-102` already implements.
+  - **New `AutomergeStore::delete_with_origin(key, ChangeOrigin)`**. Mirrors `put_with_origin`: `Remote(peer)` suppresses `change_tx` per the peat-mesh#115 ping-pong invariant while observer/gossip fire with peer attribution.
+  - **`AutomergeSyncCoordinator::apply_tombstone`** routes the post-tombstone document removal through `delete_with_origin(.., Remote(peer))` — CDC consumers now see remote-driven deletes; transitive-gossip drivers see the peer attribution.
+
+  No peat-side code change required to consume — the workspace continues to compile against rc.28's surface (the rc.29 changes are additive to `AutomergeStore::delete`'s broadcast behaviour and additive on `delete_with_origin`). The floor advance forces downstream peat consumers (peat-node, peat-sim) to pick up the corrected CDC contract on `cargo update`.
+
+### Behavioural delta worth noting for operators
+
+- **TTL eviction** now wakes the sync-coordinator's local-only outbound pusher per evicted document, because each `store.delete` call fires `change_tx`. The doc is already gone by the time the pusher runs (nothing to push) — the side-effect is the wakeup, not propagation. peat-mesh#203 added inline comments at both `ttl_manager.rs` call sites naming this explicitly. Consumers tracking a wakeup rate that aligns with TTL expiry cadence will find the in-place explanation.
+
+### Impact on peat workspace consumers
+
+- **peat-cli `peat observe`** (peat-node): unblocked. The `cli/observe.rs` workaround "render deletes only on locally-observed races" can come out; the channel fires on cross-peer tombstone propagation now.
+- **peat-sim:** picks up the corrected CDC contract transitively. No source change required.
+- **peat-ffi:** unchanged — no JNI / UniFFI surface additions in this bump.
+
+### Cross-repo follow-up
+
+- **peat-node** pins peat-mesh `=0.9.0-rc.27` (exact). Two-step bump pending: first to `=0.9.0-rc.28` (the rc.28 delta/Lamport/persistence/wire-up surface), then to `=0.9.0-rc.29` (the rc.29 observer-fires-on-delete contract fix). Both can be a single PR if the consumer-side migration is concurrent. Separate.
+- **peat-sim** pins peat-mesh `=0.9.0-rc.26` + peat-protocol `=0.9.0-rc.17` (both exact). Both pins need advancing to consume the rc.28-rc.29 train + the peat rc.18-rc.20 train. Separate.
+
 ## [0.9.0-rc.19] - 2026-05-29
 
 **peat-mesh floor advance to rc.28 — `peat-cli` round-trip-edit + tombstone-authorship unblocker.** Rolls the peat-mesh trail forward to incorporate four landed PRs ([peat-mesh#193](https://github.com/defenseunicorns/peat-mesh/pull/193), [peat-mesh#194](https://github.com/defenseunicorns/peat-mesh/pull/194), [peat-mesh#197](https://github.com/defenseunicorns/peat-mesh/pull/197), [peat-mesh#198](https://github.com/defenseunicorns/peat-mesh/pull/198)) that close [peat-mesh#187](https://github.com/defenseunicorns/peat-mesh/issues/187), [peat-mesh#192](https://github.com/defenseunicorns/peat-mesh/issues/192), [peat-mesh#195](https://github.com/defenseunicorns/peat-mesh/issues/195), and [peat-mesh#196](https://github.com/defenseunicorns/peat-mesh/issues/196). Adds the Automerge delta primitive + node-local Lamport clock + cross-restart persistence + sync-receive wire-up that `peat-cli` (peat-node) needs for the round-trip-edit pattern (`peat update --from <PATH>`) and tombstone authorship (`peat delete`).
