@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.18"
+version = "0.9.0-rc.19"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -205,7 +205,47 @@ repository = "https://github.com/defenseunicorns/peat"
 # exactly — pure perf improvement, no contract change. Advancing the
 # floor here forces downstream peat consumers to pick up the perf
 # wins on `cargo update`.
-peat-mesh = { version = ">=0.9.0-rc.27, <0.9.1", default-features = false }
+#
+# Floor bumped to rc.28 (2026-05-29) — `peat-cli` round-trip-edit +
+# tombstone-authorship unblocker (four PRs: peat-mesh#193, peat-mesh#194,
+# peat-mesh#197, peat-mesh#198; closes peat-mesh#187, peat-mesh#192,
+# peat-mesh#195, peat-mesh#196). rc.28 ships:
+# (a) `AutomergeStore::diff` / `apply_delta` / `apply_delta_with_origin`
+#     + `AutomergeDelta` value type with `to_bytes`/`from_bytes` framing —
+#     surfaces Automerge's delta primitive so `peat-cli`'s round-trip-edit
+#     pattern (`peat update --from <PATH>`) can apply minimal changes
+#     to a stored document without recreating it. Preserves ADR-021's
+#     "create once, evolve through deltas" invariant.
+# (b) `AutomergeBackend::next_lamport` / `current_lamport` /
+#     `observe_lamport` — node-local Lamport clock for consumer-authored
+#     operations. Replaces the `peat-cli delete` wall-clock proxy
+#     (`SystemTime::now()` nanos) at the right surface with strict
+#     node-local monotonicity under concurrent writes. `u64::MAX - 1`
+#     cap inside `observe_atomic` prevents hostile/buggy peer Lamports
+#     from saturating the atomic and wrapping `next_lamport` to 0.
+# (c) Cross-restart Lamport persistence — new `metadata` redb table
+#     with monotonic-write semantics, periodic + clean-shutdown flush
+#     paths, resumed seed `max(persisted, SystemTime nanos, 1)`. Resists
+#     wall-clock regression on tactical hardware (battery-less RTC,
+#     intermittent NTP, manual time-set).
+# (d) `AutomergeBackend::shutdown_and_release` — async teardown awaiting
+#     iroh Router shutdown, idempotent via `AtomicBool` CAS. Enables
+#     deterministic same-process drop-and-reopen for hot-restart flows
+#     and integration tests; previously the iroh Router's background
+#     I/O briefly outlived synchronous `Drop` and held the redb file
+#     lock past return.
+# (e) `observe_lamport` sync-receive wire-up — inbound `Tombstone.lamport`
+#     values from `handle_incoming_tombstone` / `handle_incoming_tombstone_batch`
+#     advance the node-local clock automatically (batch path observes the
+#     max in a single CAS). Completes the cross-node half of Lamport
+#     partial-order semantics. Opt-in for standalone coordinator consumers
+#     via `AutomergeSyncCoordinator::set_lamport_clock`.
+# Pinning below rc.28 would let the workspace build against a peat-mesh
+# missing the consumer-facing Lamport / delta API surface `peat-cli`
+# depends on. Direct consumer of these APIs in the workspace today: none
+# (this is the upstream-ready release); the consumer is `peat-cli`
+# (peat-node), which picks up the new surface via this floor bump.
+peat-mesh = { version = ">=0.9.0-rc.28, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

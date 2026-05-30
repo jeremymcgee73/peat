@@ -14,6 +14,34 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.19] - 2026-05-29
+
+**peat-mesh floor advance to rc.28 — `peat-cli` round-trip-edit + tombstone-authorship unblocker.** Rolls the peat-mesh trail forward to incorporate four landed PRs ([peat-mesh#193](https://github.com/defenseunicorns/peat-mesh/pull/193), [peat-mesh#194](https://github.com/defenseunicorns/peat-mesh/pull/194), [peat-mesh#197](https://github.com/defenseunicorns/peat-mesh/pull/197), [peat-mesh#198](https://github.com/defenseunicorns/peat-mesh/pull/198)) that close [peat-mesh#187](https://github.com/defenseunicorns/peat-mesh/issues/187), [peat-mesh#192](https://github.com/defenseunicorns/peat-mesh/issues/192), [peat-mesh#195](https://github.com/defenseunicorns/peat-mesh/issues/195), and [peat-mesh#196](https://github.com/defenseunicorns/peat-mesh/issues/196). Adds the Automerge delta primitive + node-local Lamport clock + cross-restart persistence + sync-receive wire-up that `peat-cli` (peat-node) needs for the round-trip-edit pattern (`peat update --from <PATH>`) and tombstone authorship (`peat delete`).
+
+### Changed
+
+- **`peat-mesh` workspace floor** advanced from `>=0.9.0-rc.27, <0.9.1` to `>=0.9.0-rc.28, <0.9.1`. Spans peat-mesh rc.28's full surface addition:
+  - **`AutomergeStore::diff` / `apply_delta` / `apply_delta_with_origin`** + **`AutomergeDelta`** value type with `to_bytes` / `from_bytes` framing. Surfaces Automerge's delta primitive at the storage layer so consumers can apply minimal changes to a stored document without recreating it. Preserves ADR-021's "create once, evolve through deltas" invariant.
+  - **`AutomergeBackend::next_lamport` / `current_lamport` / `observe_lamport`** — node-local Lamport clock for consumer-authored operations. Replaces the prior `peat-cli delete` wall-clock proxy at the right surface with strict per-node monotonicity under concurrent writes. `u64::MAX - 1` cap inside `observe_atomic` prevents hostile/buggy peer Lamports from saturating the atomic and wrapping `next_lamport` to 0.
+  - **`AutomergeStore::read_lamport_highwater` / `write_lamport_highwater`** + **`AutomergeBackend::flush_lamport_highwater`** — cross-restart Lamport persistence via a new `metadata` redb table with monotonic-write semantics; periodic + clean-shutdown flush paths. Resumed seed is `max(persisted_highwater, SystemTime nanos, 1)` — resists wall-clock regression on tactical hardware (battery-less RTC, intermittent NTP, manual time-set).
+  - **`AutomergeBackend::shutdown_and_release`** — async teardown awaiting iroh Router shutdown, idempotent via `AtomicBool` CAS guard. Enables deterministic same-process drop-and-reopen for hot-restart flows (config reload, daemon-rotate, mobile pause/resume) and integration tests. Previously the iroh Router's background I/O briefly outlived synchronous `Drop` and held the redb file lock past return.
+  - **`AutomergeSyncCoordinator::set_lamport_clock`** + automatic receive-side Lamport observation — inbound `Tombstone.lamport` values from `handle_incoming_tombstone` / `handle_incoming_tombstone_batch` flow through the node-local clock automatically (batch path observes the max in a single CAS). Completes the cross-node half of Lamport partial-order semantics. Opt-in for standalone coordinator consumers.
+
+  No peat-side code change required to consume — the workspace continues to compile against rc.27's surface (the rc.28 additions are purely additive). The floor advance forces downstream peat consumers (peat-node, peat-sim) to pick up the new surface on `cargo update`.
+
+### Impact on peat workspace consumers
+
+- **peat-cli (peat-node):** the motivating consumer. `peat update --from <PATH>` round-trip-edit and `peat delete` tombstone authorship can now drop their interim workarounds and consume the peat-mesh APIs directly:
+  - `peat update --from <PATH>` uses `AutomergeStore::diff(current, proposed)` + `apply_delta(key, &delta)` instead of full-document replacement via `put()`.
+  - `peat delete` uses `AutomergeBackend::next_lamport()` for tombstone authorship instead of `SystemTime::now()` nanos as a Lamport proxy. Inbound tombstone Lamports flow through `observe_lamport` automatically via the coordinator wire-up.
+- **peat-sim:** picks up the persistence + receive-side wire-up transitively. No source change required; the perf/correctness wins ride along on `cargo update`.
+- **peat-ffi:** unchanged — no JNI / UniFFI surface additions in this bump.
+
+### Cross-repo follow-up
+
+- **peat-node** pins peat-mesh `=0.9.0-rc.27` (exact). Needs a fresh bump PR to advance to `=0.9.0-rc.28` (or `>=0.9.0-rc.28, <0.9.1`) to consume the new surface in source. Separate.
+- **peat-sim** pins peat-mesh `=0.9.0-rc.26` + peat-protocol `=0.9.0-rc.17` (both exact). Both pins need advancing for peat-sim to consume the rc.28 + rc.18 train. Separate.
+
 ## [0.9.0-rc.18] - 2026-05-29
 
 **Real `CapabilityMatcher` for `DeploymentDirective` Capability-scope targeting (closes [peat#773](https://github.com/defenseunicorns/peat/issues/773)) + peat-mesh floor advance to rc.27.** Closes the last open p0-blocker in the peat workspace and rolls the peat-mesh trail forward to incorporate the peat-mesh#175 closure follow-throughs (rc.26 in-CI UAT, rc.27 `DocumentStore::get` keyed-lookup overrides on both backends).
