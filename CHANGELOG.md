@@ -14,15 +14,30 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.21] - 2026-05-30
+
+**ADR-065 auth-handshake version + capability negotiation ([peat#952](https://github.com/defenseunicorns/peat/pull/952)) + descriptor-driven proto3-zero JSON on `TypeDescriptor` ([peat#954](https://github.com/defenseunicorns/peat/pull/954), closes [peat#953](https://github.com/defenseunicorns/peat/issues/953)).** rc.21 fixes the long-standing authenticator timestamp-mismatch bug that produced ~10⁻⁶ flaky auth failures across the wall-clock-second boundary, and at the same time anchors the wire-format so future protocol revisions can roll across a heterogeneous mesh without producing the same hard rollout cliff this release carries (see the operational note below). Independently, `TypeDescriptor` now drives proto3-zero JSON per registered type — unblocking consumer-side proto3 defaulting (peat-cli, future SDKs) without the per-collection hardcoded table.
+
 ### Added — ADR-065 auth-handshake version + capability negotiation
 
-The forthcoming rc.21 ships [ADR-065](docs/adr/065-auth-handshake-version-negotiation.md) — a version token + advertise-only capability set in the challenge-response handshake. Future protocol revisions can now ship to a heterogeneous mesh without producing the same hard rollout cliff this rc.21 release does (see below).
+rc.21 ships [ADR-065](docs/adr/065-auth-handshake-version-negotiation.md) — a version token + advertise-only capability set in the challenge-response handshake. Future protocol revisions can now ship to a heterogeneous mesh without producing the same hard rollout cliff this rc.21 release does (see below).
 
 - **`Challenge.protocol_version: uint32`** (proto field `5`) and **`Challenge.capabilities: repeated string`** (proto field `6`) — the challenger advertises which protocol version it speaks and which capability strings it can offer.
 - **`SignedChallengeResponse.protocol_version: uint32`** (proto field `7`) and **`SignedChallengeResponse.capabilities: repeated string`** (proto field `8`) — the responder sets `protocol_version = min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)`, signs the byte construction for the negotiated version, and writes `protocol_version` so the verifier knows which construction to reconstruct.
 - **Per-version signed-message byte construction.** v0 (pre-rc.21 peers; field absent on the wire and reads as `0`): `nonce || challenger_id || response.timestamp.seconds`. v1 (rc.21+): same prefix `|| response.protocol_version` (u32 little-endian, 4 bytes). The v1 suffix binds the negotiated version into the signature so a MITM cannot strip the field or rewrite it across protocol bumps.
 - **`peat_protocol::security::CURRENT_PROTOCOL_VERSION: u32 = 1`** and **`peat_protocol::security::INCOMPATIBLE_PROTOCOL_VERSION_PREFIX: &str`** are re-exported as stable consumer-facing API surface. Consumers can match against the prefix on a `SecurityError::AuthenticationFailed` to distinguish version-incompatibility from a genuine signature/forgery failure; a typed `SecurityError::IncompatibleProtocolVersion` variant is queued as a peat-mesh follow-up.
 - **v1 capability semantics are advertise-only.** `Challenge.capabilities` and `SignedChallengeResponse.capabilities` carry sorted opaque ASCII identifiers consumers can read for soft-policy feature flagging. The capabilities are not part of the v1 signed bytes; ADR-065 §"Capabilities (v1 semantics)" tracks the v2 path for binding them.
+
+### Added — `TypeDescriptor::proto3_zero()` descriptor-driven proto3-zero JSON
+
+[peat#954](https://github.com/defenseunicorns/peat/pull/954), closes [peat#953](https://github.com/defenseunicorns/peat/issues/953). `peat_schema::type_registry::TypeDescriptor` gains a `proto3_zero()` method that returns the canonical proto3 wire-zero `serde_json::Value` for the registered type, driven by the prost-generated `Default` impl + the existing `serde::Serialize` derive. Replaces the per-collection hardcoded defaults table downstream consumers (peat-cli, future SDKs) previously had to maintain.
+
+- **`peat_schema::type_registry::Proto3ZeroFn`** type alias (`fn() -> Value`) and **`peat_schema::type_registry::default_proto3_zero`** fallback (returns `{}`). Public surface — external consumers building descriptors via `TypeDescriptor::new()` get the safe empty-object fallback under the merge-on-top-of-defaults pattern.
+- **`TypeDescriptor::proto3_zero_fn: Proto3ZeroFn`** field + **`TypeDescriptor::proto3_zero(&self) -> Value`** accessor. Additive on `TypeDescriptor` — `TypeDescriptor::new(...)` defaults `proto3_zero_fn` to `default_proto3_zero`, so external crates that construct descriptors via the public `new()` API continue to compile unchanged.
+- **All five `descriptors::*()` builders** (Capability, NodeConfig, NodeState, CellConfig, CellState) wire `proto3_zero_fn` to a local `fn` calling `serde_json::to_value(<MessageType>::default())`. The zero shape IS the serialised default of the prost-generated struct — cannot drift from the proto3 field list. Resolves the `FieldFormat::JsonString` ambiguity (real strings default to `""`, optional messages default to `null`) per-type rather than per-format-hint.
+- **Four regression tests** pin the surface: universal JSON-object shape across every registered descriptor, deserialise-cleanly round-trip via `desc.validate_json` (the round-trip property the API exists to provide), spot-check on the Capability descriptor that the zero matches the prost `Default` field-by-field, and the public `new()` fallback returning `{}`.
+
+Downstream-consumer migration (separate PR in peat-node) replaces `peat-cli`'s ~50-line hardcoded `proto3_defaults_for(collection)` table with a single `desc.proto3_zero()` lookup driven by the registry. Sibling: [peat-node#112](https://github.com/defenseunicorns/peat-node/issues/112).
 
 ### Operational note — auth wire-incompatibility with pre-rc.21 peers
 
