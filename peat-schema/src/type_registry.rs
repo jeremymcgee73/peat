@@ -86,6 +86,63 @@ impl From<&str> for TypeId {
 /// or the validation fails.
 pub type JsonValidatorFn = fn(&Value) -> ValidationResult<()>;
 
+/// Common prefix used by every `validate_json` closure in
+/// [`mod@descriptors`] when wrapping a strict prost-derived
+/// `Deserialize` failure into [`ValidationError::InvalidValue`].
+///
+/// Centralising the prefix as a `const` (rather than duplicating the
+/// literal at each error site) means the
+/// `proto3_zero_deserialises_cleanly_for_every_registered_type`
+/// regression test can match on the same identifier the producers use.
+/// If the prefix is ever renamed and any of the six sites (five
+/// validators in this module + the test guard) fails to update in
+/// lockstep, the change surfaces as a compile error — not as silent
+/// coverage degradation where the test's `Err(_other)` arm starts
+/// swallowing a deserialise failure that should have been flagged.
+pub(crate) const DESERIALISE_ERROR_PREFIX: &str = "could not deserialise as ";
+
+/// Proto3 wire-zero JSON dispatch function (peat#953).
+///
+/// Returns the canonical proto3 zero `serde_json::Value` for a registered
+/// type — the JSON form of `Type::default()` for that type's prost-
+/// generated struct. Every field is populated with its proto3 zero
+/// (`string → ""`, numeric `→ 0` / `0.0`, `bool → false`, `enum →
+/// first variant, `repeated → []`, `optional message → null`, etc.),
+/// matching the proto3 default semantics exactly.
+///
+/// **Round-trip property by construction.** The result is `serde_json::to_value(<T>::default())`
+/// where `<T>` is a prost-generated message implementing `serde::Serialize` +
+/// `Default`. Calling `<T>::deserialize` on this value succeeds by
+/// construction — the JSON is the wire-serialised form of an instance
+/// that prost already produced.
+///
+/// Consumers driving JSON-based defaulting (e.g. `peat-cli`'s
+/// `apply_proto3_defaults` for partial `--set` payloads) merge user-
+/// supplied fields on top of this zero object, then deserialise the
+/// result through the type's strict prost-derived `Deserialize` impl.
+/// The descriptor-driven path eliminates the per-collection hardcoded
+/// table that consumers previously had to maintain.
+///
+/// The signature matches [`JsonValidatorFn`]'s `fn` pointer shape so
+/// the descriptor can store it in a `Copy + 'static` slot alongside
+/// the other dispatch functions.
+pub type Proto3ZeroFn = fn() -> Value;
+
+/// Default `Proto3ZeroFn` used by [`TypeDescriptor::new`] for descriptors
+/// constructed without an explicit proto3-zero supplier (peat#953).
+///
+/// Returns an empty JSON object (`{}`). Consumers that hit this fallback
+/// from a descriptor built via the public `TypeDescriptor::new` API see
+/// "no per-field defaults" rather than "type-shaped defaults," and can
+/// either register the descriptor through the `descriptors::*` helpers
+/// in this module (which set the function explicitly) or supply their
+/// own via the public field. Returning `{}` (rather than `Value::Null`)
+/// keeps the merge-on-top-of-defaults pattern in `apply_proto3_defaults`
+/// safe — merging a user object onto `{}` always yields the user object.
+pub fn default_proto3_zero() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
 /// How a single field is intended to be rendered. Downstream renderers
 /// (CLI typed-output paths, operator UIs, introspection tools) dispatch
 /// off this to pick a display strategy. The renderer owns the actual
@@ -210,6 +267,29 @@ pub struct TypeDescriptor {
     /// Validator: JSON value → typed message → field-level validate.
     pub validate_json: JsonValidatorFn,
 
+    /// Proto3 wire-zero JSON supplier (peat#953). Returns the canonical
+    /// proto3 zero JSON for this type — every field populated with its
+    /// proto3 default (string → "", numeric → 0/0.0, bool → false,
+    /// enum → first variant, repeated → [], optional message → null).
+    ///
+    /// Driven by the prost-generated `Default` impl on the underlying
+    /// message struct, so the value cannot drift from the proto3 field
+    /// list — consumers always get the current canonical zero shape as
+    /// the schema evolves.
+    ///
+    /// Defaulted to [`default_proto3_zero`] (returns `{}`) by
+    /// [`Self::new`] so external callers that haven't wired in a
+    /// proto3-aware zero supplier fall back to a safe empty-object
+    /// shape; descriptors registered by
+    /// [`BuiltinRegistry::with_peat_schema_types`] are built by the
+    /// crate's private `descriptors` module helpers, which set this
+    /// field explicitly via the prost-generated `Default` of each
+    /// type. (Plain prose rather than an intra-doc link on the
+    /// helpers — the `descriptors` module is private, so a
+    /// `[\`mod@descriptors\`]` link would fail
+    /// `rustdoc::private-intra-doc-links` under `cargo doc -- -D warnings`.)
+    pub proto3_zero_fn: Proto3ZeroFn,
+
     /// Fields in canonical display order, with rendering hints.
     /// Renderer-side downstream consumers iterate this list to produce
     /// typed output. Empty for types that don't yet have field
@@ -219,8 +299,9 @@ pub struct TypeDescriptor {
 
 impl TypeDescriptor {
     /// Construct a `TypeDescriptor` with the required fields. Optional
-    /// fields (`canonical_collection`, `fields`) default to empty;
-    /// callers set them via direct field assignment after construction.
+    /// fields (`canonical_collection`, `proto3_zero_fn`, `fields`)
+    /// default to empty / no-op; callers set them via direct field
+    /// assignment after construction.
     ///
     /// Use this from external crates that register their own types —
     /// direct struct-literal construction is reserved for `peat-schema`
@@ -237,8 +318,43 @@ impl TypeDescriptor {
             version: version.into(),
             canonical_collection: None,
             validate_json,
+            proto3_zero_fn: default_proto3_zero,
             fields: Vec::new(),
         }
+    }
+
+    /// Return the canonical proto3 wire-zero JSON for this type
+    /// (peat#953).
+    ///
+    /// Every field of the proto3 message is populated with its zero
+    /// value, exactly as the prost-generated `Default::default()` for
+    /// the underlying struct would produce after `serde_json::to_value`.
+    /// Consumers that need to fill in a partial user payload before
+    /// strict prost-derived `Deserialize` (e.g. `peat-cli`'s
+    /// `apply_proto3_defaults` for partial `--set` payloads, or any
+    /// SDK that needs to construct a baseline document programmatically)
+    /// merge user-supplied fields on top of this value.
+    ///
+    /// Round-trips through this type's `Deserialize` impl by
+    /// construction: the value is `serde_json::to_value(<T>::default())`
+    /// where `<T>` already implements both `Default` (prost) and
+    /// `Serialize` (peat-schema build script), so the deserialise of
+    /// the wire-form of a valid in-memory instance is always a valid
+    /// in-memory instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use peat_schema::type_registry::{BuiltinRegistry, TypeRegistry};
+    ///
+    /// let registry = BuiltinRegistry::with_peat_schema_types();
+    /// let desc = registry.for_collection("capabilities").unwrap();
+    /// let zero = desc.proto3_zero();
+    /// // Every field of `Capability` is present at its proto3 zero.
+    /// assert!(zero.is_object());
+    /// ```
+    pub fn proto3_zero(&self) -> Value {
+        (self.proto3_zero_fn)()
     }
 }
 
@@ -330,7 +446,7 @@ mod descriptors {
     pub fn capability() -> TypeDescriptor {
         fn validate(value: &Value) -> ValidationResult<()> {
             let msg = crate::capability::v1::Capability::deserialize(value).map_err(|e| {
-                ValidationError::InvalidValue(format!("could not deserialise as Capability: {e}"))
+                ValidationError::InvalidValue(format!("{DESERIALISE_ERROR_PREFIX}Capability: {e}"))
             })?;
             crate::validation::validate_capability(&msg)
         }
@@ -344,12 +460,20 @@ mod descriptors {
             "Payload",
             "Emergent",
         ];
+        fn proto3_zero() -> Value {
+            // peat#953: prost-generated `Default` + serde::Serialize
+            // (both wired by build.rs) produce the canonical proto3
+            // wire-zero JSON for this message type.
+            serde_json::to_value(crate::capability::v1::Capability::default())
+                .expect("proto3 message serialises to JSON cleanly")
+        }
         TypeDescriptor {
             id: TypeId::new("peat.capability.v1.Capability"),
             name: "Capability".to_string(),
             version: "v1".to_string(),
             canonical_collection: Some("capabilities".to_string()),
             validate_json: validate,
+            proto3_zero_fn: proto3_zero,
             fields: vec![
                 FieldDescriptor {
                     name: "id",
@@ -391,9 +515,14 @@ mod descriptors {
     pub fn node_config() -> TypeDescriptor {
         fn validate(value: &Value) -> ValidationResult<()> {
             let msg = crate::node::v1::NodeConfig::deserialize(value).map_err(|e| {
-                ValidationError::InvalidValue(format!("could not deserialise as NodeConfig: {e}"))
+                ValidationError::InvalidValue(format!("{DESERIALISE_ERROR_PREFIX}NodeConfig: {e}"))
             })?;
             crate::validation::validate_node_config(&msg)
+        }
+        fn proto3_zero() -> Value {
+            // peat#953: prost Default + serde Serialize → canonical proto3 zero JSON.
+            serde_json::to_value(crate::node::v1::NodeConfig::default())
+                .expect("proto3 message serialises to JSON cleanly")
         }
         TypeDescriptor {
             id: TypeId::new("peat.node.v1.NodeConfig"),
@@ -401,6 +530,7 @@ mod descriptors {
             version: "v1".to_string(),
             canonical_collection: Some("node-configs".to_string()),
             validate_json: validate,
+            proto3_zero_fn: proto3_zero,
             fields: vec![
                 FieldDescriptor {
                     name: "id",
@@ -454,7 +584,7 @@ mod descriptors {
     pub fn node_state() -> TypeDescriptor {
         fn validate(value: &Value) -> ValidationResult<()> {
             let msg = crate::node::v1::NodeState::deserialize(value).map_err(|e| {
-                ValidationError::InvalidValue(format!("could not deserialise as NodeState: {e}"))
+                ValidationError::InvalidValue(format!("{DESERIALISE_ERROR_PREFIX}NodeState: {e}"))
             })?;
             crate::validation::validate_node_state(&msg)
         }
@@ -462,12 +592,18 @@ mod descriptors {
         const HEALTH_STATUS_VARIANTS: &[&str] =
             &["Unspecified", "Nominal", "Degraded", "Critical", "Failed"];
         const PHASE_VARIANTS: &[&str] = &["Unspecified", "Discovery", "Cell", "Hierarchy"];
+        fn proto3_zero() -> Value {
+            // peat#953: prost Default + serde Serialize → canonical proto3 zero JSON.
+            serde_json::to_value(crate::node::v1::NodeState::default())
+                .expect("proto3 message serialises to JSON cleanly")
+        }
         TypeDescriptor {
             id: TypeId::new("peat.node.v1.NodeState"),
             name: "NodeState".to_string(),
             version: "v1".to_string(),
             canonical_collection: Some("node-states".to_string()),
             validate_json: validate,
+            proto3_zero_fn: proto3_zero,
             fields: vec![
                 FieldDescriptor {
                     name: "position",
@@ -516,9 +652,14 @@ mod descriptors {
     pub fn cell_config() -> TypeDescriptor {
         fn validate(value: &Value) -> ValidationResult<()> {
             let msg = crate::cell::v1::CellConfig::deserialize(value).map_err(|e| {
-                ValidationError::InvalidValue(format!("could not deserialise as CellConfig: {e}"))
+                ValidationError::InvalidValue(format!("{DESERIALISE_ERROR_PREFIX}CellConfig: {e}"))
             })?;
             crate::validation::validate_cell_config(&msg)
+        }
+        fn proto3_zero() -> Value {
+            // peat#953: prost Default + serde Serialize → canonical proto3 zero JSON.
+            serde_json::to_value(crate::cell::v1::CellConfig::default())
+                .expect("proto3 message serialises to JSON cleanly")
         }
         TypeDescriptor {
             id: TypeId::new("peat.cell.v1.CellConfig"),
@@ -526,6 +667,7 @@ mod descriptors {
             version: "v1".to_string(),
             canonical_collection: Some("cell-configs".to_string()),
             validate_json: validate,
+            proto3_zero_fn: proto3_zero,
             fields: vec![
                 FieldDescriptor {
                     name: "id",
@@ -555,9 +697,14 @@ mod descriptors {
     pub fn cell_state() -> TypeDescriptor {
         fn validate(value: &Value) -> ValidationResult<()> {
             let msg = crate::cell::v1::CellState::deserialize(value).map_err(|e| {
-                ValidationError::InvalidValue(format!("could not deserialise as CellState: {e}"))
+                ValidationError::InvalidValue(format!("{DESERIALISE_ERROR_PREFIX}CellState: {e}"))
             })?;
             crate::validation::validate_cell_state(&msg)
+        }
+        fn proto3_zero() -> Value {
+            // peat#953: prost Default + serde Serialize → canonical proto3 zero JSON.
+            serde_json::to_value(crate::cell::v1::CellState::default())
+                .expect("proto3 message serialises to JSON cleanly")
         }
         TypeDescriptor {
             id: TypeId::new("peat.cell.v1.CellState"),
@@ -565,6 +712,7 @@ mod descriptors {
             version: "v1".to_string(),
             canonical_collection: Some("cell-states".to_string()),
             validate_json: validate,
+            proto3_zero_fn: proto3_zero,
             fields: vec![
                 FieldDescriptor {
                     name: "config",
@@ -989,5 +1137,142 @@ mod tests {
         assert_send_sync::<BuiltinRegistry>();
         // Dyn-trait obj as well, to confirm consumers can hand it across threads.
         fn _accepts(_: &dyn TypeRegistry) {}
+    }
+
+    /// peat#953: `TypeDescriptor::proto3_zero()` must return a JSON
+    /// Object (the proto3 wire-zero shape, never `null` or a scalar)
+    /// for every type the builtin registry ships with.
+    ///
+    /// Per-type spot-check is in
+    /// `proto3_zero_capability_matches_default_serialised`; this
+    /// test pins the universal shape invariant across the whole
+    /// registry so a future descriptor added without a
+    /// `proto3_zero_fn` (which would fall back to the no-op
+    /// returning `{}`) still satisfies the contract by accident
+    /// of the fallback — but a descriptor whose underlying type
+    /// somehow serialises to a non-object would surface here
+    /// rather than only at the first consumer call site.
+    #[test]
+    fn proto3_zero_is_object_for_every_registered_type() {
+        let r = BuiltinRegistry::with_peat_schema_types();
+        for desc in r.iter() {
+            let zero = desc.proto3_zero();
+            assert!(
+                zero.is_object(),
+                "{}::proto3_zero() returned non-object value: {zero}",
+                desc.id
+            );
+        }
+    }
+
+    /// peat#953: the round-trip property the API exists to provide.
+    /// For every registered type, `desc.proto3_zero()` must
+    /// deserialise cleanly through the type's strict prost-derived
+    /// `Deserialize` impl — proven by feeding the output back into
+    /// the descriptor's own `validate_json` adapter, which
+    /// internally calls `<T>::deserialize(value)` before the
+    /// business-rule validators.
+    ///
+    /// Note: the business-rule validators (e.g. "id must not be
+    /// empty") MAY reject a proto3 zero, since "" is the proto3
+    /// default for `string`. That's fine — we accept any error
+    /// shape OTHER than a deserialise failure. The contract we're
+    /// pinning is "the zero JSON is a valid wire-form for the
+    /// type"; the business-rule layer is a separate concern.
+    ///
+    /// The deserialise-failure-detection guard matches on
+    /// [`DESERIALISE_ERROR_PREFIX`] — the same `const` the five
+    /// `validate_json` closures in [`mod@super::descriptors`]
+    /// produce. Coupling producer and detector through a single
+    /// `const` (rather than duplicating the string literal) means a
+    /// future prefix rename surfaces as a compile error rather than
+    /// as a silent test-coverage gap where the catch-all `_other`
+    /// arm starts swallowing real deserialise failures.
+    #[test]
+    fn proto3_zero_deserialises_cleanly_for_every_registered_type() {
+        let r = BuiltinRegistry::with_peat_schema_types();
+        for desc in r.iter() {
+            let zero = desc.proto3_zero();
+            match (desc.validate_json)(&zero) {
+                Ok(()) => {} // type-valid and business-valid (rare for zero values)
+                Err(ValidationError::InvalidValue(msg))
+                    if msg.starts_with(DESERIALISE_ERROR_PREFIX) =>
+                {
+                    panic!(
+                        "{}::proto3_zero() produced a value that fails strict prost-derived \
+                         deserialise — the round-trip-by-construction property is broken: {msg}",
+                        desc.id
+                    );
+                }
+                Err(_other) => {
+                    // Business-rule validation rejected a zero-valued field
+                    // (e.g. empty required ID string). That's expected and
+                    // out of scope for this test.
+                }
+            }
+        }
+    }
+
+    /// peat#953: spot-check the shape of one descriptor's proto3
+    /// zero to catch any future refactor that detaches the
+    /// `proto3_zero_fn` from the prost-generated `Default`
+    /// (e.g. somebody manually constructs a `serde_json::json!({})`
+    /// in a descriptor and the field list silently goes stale).
+    ///
+    /// For `Capability`, the proto3 zero must contain at least one
+    /// known field name with its proto3 default value:
+    /// `id` → `""`, `confidence` → `0.0`, `metadata_json` → `""`.
+    /// If any of these go missing, the descriptor likely isn't
+    /// wired to prost's `Default` anymore.
+    #[test]
+    fn proto3_zero_capability_matches_default_serialised() {
+        let r = BuiltinRegistry::with_peat_schema_types();
+        let desc = r.for_collection("capabilities").expect("registered");
+        let zero = desc.proto3_zero();
+        let obj = zero.as_object().expect("object");
+
+        // Spot-check: these three fields must be present with their
+        // proto3 zero values. If the descriptor stops being driven
+        // by prost::Default, this test surfaces the drift.
+        assert_eq!(
+            obj.get("id"),
+            Some(&Value::String(String::new())),
+            "Capability::proto3_zero must contain id = \"\" (proto3 string default)"
+        );
+        assert_eq!(
+            obj.get("confidence"),
+            Some(&Value::Number(serde_json::Number::from_f64(0.0).unwrap())),
+            "Capability::proto3_zero must contain confidence = 0.0 (proto3 float default)"
+        );
+        assert_eq!(
+            obj.get("metadata_json"),
+            Some(&Value::String(String::new())),
+            "Capability::proto3_zero must contain metadata_json = \"\" (real string field, not optional)"
+        );
+    }
+
+    /// peat#953 fallback: `TypeDescriptor::new(…)` without explicit
+    /// `proto3_zero_fn` produces the no-op default that returns
+    /// `{}`. Consumers that build their own descriptors via the
+    /// public `new` API get the empty-object fallback (safe under
+    /// the merge-on-top-of-defaults pattern) rather than a null
+    /// or scalar that would break consumers.
+    #[test]
+    fn proto3_zero_fallback_for_descriptor_built_via_new_is_empty_object() {
+        fn no_op_validate(_: &Value) -> ValidationResult<()> {
+            Ok(())
+        }
+        let desc = TypeDescriptor::new(
+            TypeId::new("test.fallback.v1.Anon"),
+            "Anon",
+            "v1",
+            no_op_validate,
+        );
+        let zero = desc.proto3_zero();
+        assert_eq!(
+            zero,
+            Value::Object(serde_json::Map::new()),
+            "descriptor built via new(…) without proto3_zero_fn must fall back to {{}}"
+        );
     }
 }
