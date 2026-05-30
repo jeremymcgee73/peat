@@ -104,7 +104,10 @@ pub use audit::{
     AuditEventType, AuditLogEntry, AuditLogger, FileAuditLogger, MemoryAuditLogger,
     NullAuditLogger, SecurityViolation,
 };
-pub use authenticator::{DeviceAuthenticator, VerifiedPeer};
+pub use authenticator::{
+    DeviceAuthenticator, VerifiedPeer, CURRENT_PROTOCOL_VERSION,
+    INCOMPATIBLE_PROTOCOL_VERSION_PREFIX,
+};
 pub use authorization::{
     AuthenticatedEntity, AuthorizationContext, AuthorizationController, AuthorizationPolicy,
     CellMembershipContext, DeviceIdentityInfo, DeviceType, HierarchyLevel, Permission, Role,

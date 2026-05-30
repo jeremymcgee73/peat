@@ -68,6 +68,25 @@ message Challenge {
 
   // Challenge expiration timestamp
   cap.common.v1.Timestamp expires_at = 4;
+
+  // Protocol version the challenger speaks (ADR-065).
+  // `0` = pre-rc.21+1 peer (no version field on the wire, prost
+  // default). The responder negotiates by picking
+  // `min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)` and
+  // signs the byte construction associated with that version. See
+  // `SignedChallengeResponse.signature` for the per-version byte
+  // string and ADR-065 for the full negotiation rule.
+  uint32 protocol_version = 5;
+
+  // Capability strings the challenger advertises (ADR-065).
+  // Sorted, opaque ASCII identifiers. At protocol version 1 this is
+  // **advertised-but-not-signed** — consumers driving feature-flagged
+  // behaviour (e.g. "this peer supports the new cell-formation flow")
+  // can read this field and adjust soft policy, but the field is not
+  // part of the signed-message byte construction. A future v2
+  // revision may extend the signed bytes to cover capabilities; see
+  // ADR-065 "Capabilities (v1 semantics)" for the rationale.
+  repeated string capabilities = 6;
 }
 
 // Signed response to authentication challenge
@@ -78,10 +97,47 @@ message SignedChallengeResponse {
   // Responder's Ed25519 public key (32 bytes)
   bytes public_key = 2;
 
-  // Ed25519 signature (64 bytes) over: nonce || challenger_id || timestamp
+  // Ed25519 signature (64 bytes). The signed byte string depends on
+  // the negotiated protocol version (ADR-065):
+  //
+  // **Version 0** (pre-rc.21+1 peers; `protocol_version` absent on
+  // the wire and reads as `0` via the prost default):
+  //
+  //   signed = challenge.nonce
+  //         || challenge.challenger_id
+  //         || response.timestamp.seconds  (u64 little-endian, 8 bytes)
+  //
+  // **Version 1** (rc.21+1+; `CURRENT_PROTOCOL_VERSION` at this release):
+  //
+  //   signed = challenge.nonce
+  //         || challenge.challenger_id
+  //         || response.timestamp.seconds  (u64 little-endian, 8 bytes)
+  //         || response.protocol_version   (u32 little-endian, 4 bytes)
+  //
+  // The `response.timestamp.seconds` value is the seconds-precision
+  // wall-clock time the responder captured at sign time, the same
+  // value carried in the `timestamp` field below — NOT the
+  // challenger's `Challenge.timestamp`. Both signer and verifier
+  // reconstruct the byte string from `response.timestamp.seconds`
+  // (and, from v1 onward, `response.protocol_version`), so the
+  // signature verifies independent of how long the auth flow takes
+  // or whether it spans a wall-clock second boundary.
+  //
+  // Negotiation: the responder picks
+  //   negotiated = min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)
+  // sets `response.protocol_version = negotiated`, and uses the
+  // negotiated version's byte construction. The verifier reads
+  // `response.protocol_version` to know which construction to use.
+  // A `response.protocol_version` value greater than the verifier's
+  // `CURRENT_PROTOCOL_VERSION` surfaces as
+  // `SecurityError::IncompatibleProtocolVersion`, distinct from
+  // `InvalidSignature`. Full negotiation rules and rollout
+  // semantics: ADR-065.
   bytes signature = 3;
 
-  // Response creation timestamp
+  // Response creation timestamp. The `seconds` field is included
+  // verbatim in the signed-message construction above; the `nanos`
+  // field is informational only and is NOT covered by the signature.
   cap.common.v1.Timestamp timestamp = 4;
 
   // Responder's device type
@@ -89,6 +145,23 @@ message SignedChallengeResponse {
 
   // X.509 certificate chain (DER-encoded) - optional for MVP
   repeated bytes certificates = 6;
+
+  // Negotiated protocol version covered by the signature (ADR-065).
+  // Set by the responder to
+  //   min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION).
+  // From version 1 onward this value is included in the signed
+  // byte string (u32 little-endian, 4 bytes), so a MITM cannot
+  // strip the field or change its value without invalidating the
+  // signature. A `0` here means the responder negotiated down to
+  // the pre-version-token construction (the peer didn't advertise
+  // a version, defaulting to 0).
+  uint32 protocol_version = 7;
+
+  // Capability strings the responder advertises (ADR-065). Same
+  // v1 semantics as `Challenge.capabilities` —
+  // advertised-but-not-signed, available to consumers for soft-
+  // policy feature flagging.
+  repeated string capabilities = 8;
 }
 
 // Signed beacon wrapper for discovery phase security

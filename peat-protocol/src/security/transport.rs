@@ -307,6 +307,7 @@ impl MeshConnection for AuthenticatedConnection {
 
 #[cfg(test)]
 mod tests {
+    use super::super::authenticator::CURRENT_PROTOCOL_VERSION;
     use super::*;
     use crate::transport::{
         MeshConnection, MeshTransport, NodeId, Result as TransportResult, TransportError,
@@ -497,6 +498,13 @@ mod tests {
                     seconds: u64::MAX,
                     nanos: 0,
                 }),
+                // ADR-065: advertise the live build's current version so
+                // SecureTransport integration tests exercise whichever
+                // negotiation path the running code speaks (future bumps
+                // of CURRENT_PROTOCOL_VERSION must not silently keep
+                // these tests pinned to a stale version).
+                protocol_version: CURRENT_PROTOCOL_VERSION,
+                capabilities: Vec::new(),
             })
         }
     }

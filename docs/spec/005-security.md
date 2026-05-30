@@ -212,11 +212,33 @@ pub fn generate_challenge() -> Challenge {
 
 ### 5.3 Challenge Response
 
-The prover signs:
+The signed-message byte construction depends on the negotiated protocol version (ADR-065). The responder picks `negotiated = min(challenge.protocol_version, CURRENT_PROTOCOL_VERSION)`, signs the byte string for that version, and writes `negotiated` into `response.protocol_version` so the verifier knows which construction to reconstruct.
+
+**Version 0** (pre-rc.21+1 peers; `challenge.protocol_version == 0`):
+
 ```
-message = nonce || challenger_id || timestamp
+message = challenge.nonce || challenge.challenger_id || response.timestamp.seconds
 signature = Ed25519_Sign(signing_key, message)
 ```
+
+**Version 1** (rc.21+1+; `CURRENT_PROTOCOL_VERSION` at this release):
+
+```
+message = challenge.nonce || challenge.challenger_id || response.timestamp.seconds || response.protocol_version
+signature = Ed25519_Sign(signing_key, message)
+```
+
+Where:
+- `challenge.nonce` — the 32-byte random nonce the challenger sent (echoed verbatim into `response.challenge_nonce` on the wire).
+- `challenge.challenger_id` — the challenger's hex-encoded device ID, taken from the inbound `Challenge` message.
+- `response.timestamp.seconds` — the responder's own `SystemTime::now()` seconds-since-epoch value, captured once at sign time and embedded verbatim in the response's `timestamp` field. Encoded as 8 bytes little-endian. **Not** the challenger's `Challenge.timestamp` (which is informational and is not part of the signed payload).
+- `response.protocol_version` — the negotiated version (u32 little-endian, 4 bytes), included in the signed bytes from v1 onward so a MITM cannot strip or modify the field without invalidating the signature.
+
+The single-capture rule on `response.timestamp.seconds` matters for interoperability: signer and verifier must reconstruct identical bytes regardless of how long the auth flow takes. Pre-fix implementations that used `challenge.timestamp.seconds` in the signed message but `response.timestamp.seconds` on the wire (or vice-versa) failed verification any time the auth flow spanned a wall-clock second boundary.
+
+The version-negotiation min() rule means a v1 peer talking to a v0 peer falls through to the v0 construction (which doesn't bind the version), preserving wire-compat with pre-version-token peers. A v1 peer talking to a v1 peer uses the v1 construction. A peer claiming `response.protocol_version > CURRENT_PROTOCOL_VERSION` on the verifier surfaces as `SecurityError::AuthenticationFailed` with the `INCOMPATIBLE_PROTOCOL_VERSION_PREFIX` documented in `peat_protocol::security`, distinct from `InvalidSignature`. See ADR-065 for the full negotiation rule, rollout semantics, and the v2 path for binding `response.capabilities` into the signed bytes.
+
+`Challenge.capabilities` and `SignedChallengeResponse.capabilities` carry advertise-only string sets at v1 — consumers can read them for soft-policy feature flagging, but neither field is covered by the signature. v2's signed-capability extension is tracked in ADR-065.
 
 ### 5.4 Verification
 
