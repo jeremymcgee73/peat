@@ -365,7 +365,7 @@ mod tests {
                 nanos: 0,
             }),
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: EventClass::Product as i32,
             event_type: event_type.to_string(),

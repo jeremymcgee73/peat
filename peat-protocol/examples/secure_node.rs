@@ -143,10 +143,10 @@ fn demo_rbac_authorization() {
     cell_members.insert(member_id.to_hex());
 
     let membership = CellMembershipContext::new(Some(leader_id.to_hex()), cell_members);
-    let context = AuthorizationContext::for_cell("alpha-squad").with_membership(membership);
+    let context = AuthorizationContext::for_cell("alpha-cell").with_membership(membership);
 
     println!("\nCell context:");
-    println!("  Cell ID: alpha-squad");
+    println!("  Cell ID: alpha-cell");
     println!("  Leader: {}", leader_id.to_hex());
 
     // Test permissions for Leader (cell leader has elevated permissions)
@@ -206,7 +206,7 @@ fn demo_rbac_authorization() {
 
     // Test permissions for Observer (read-only)
     // Create context without observer in cell members
-    let observer_context = AuthorizationContext::for_cell("alpha-squad").with_membership(
+    let observer_context = AuthorizationContext::for_cell("alpha-cell").with_membership(
         CellMembershipContext::new(Some(leader_id.to_hex()), HashSet::new()),
     );
 
@@ -292,7 +292,7 @@ fn demo_integrated_flow() {
 
     // Context: cell exists but new device not yet a member
     let membership = CellMembershipContext::new(Some(leader_id.to_hex()), HashSet::new());
-    let context = AuthorizationContext::for_cell("alpha-squad").with_membership(membership);
+    let context = AuthorizationContext::for_cell("alpha-cell").with_membership(membership);
 
     let can_read = controller.check_permission(&entity, Permission::ReadCellState, &context);
     let can_write = controller.check_permission(&entity, Permission::WriteCellState, &context);
@@ -321,7 +321,7 @@ fn demo_integrated_flow() {
     members.insert(new_device_id.to_hex());
 
     let membership = CellMembershipContext::new(Some(leader_id.to_hex()), members);
-    let context = AuthorizationContext::for_cell("alpha-squad").with_membership(membership);
+    let context = AuthorizationContext::for_cell("alpha-cell").with_membership(membership);
 
     let can_read = controller.check_permission(&entity, Permission::ReadCellState, &context);
     let can_write = controller.check_permission(&entity, Permission::WriteCellState, &context);

@@ -30,7 +30,7 @@
 //! // Distribute AI model to all nodes in a formation
 //! let handle = distribution.distribute(
 //!     &model_token,
-//!     DistributionScope::Formation { formation_id: "alpha-squad".into() },
+//!     DistributionScope::Formation { formation_id: "alpha-cell".into() },
 //!     TransferPriority::High,
 //! ).await?;
 //!
@@ -100,9 +100,9 @@ pub enum DistributionScope {
     #[default]
     AllNodes,
 
-    /// Specific formation (cell, platoon, company)
+    /// Specific formation (cell, cohort, federation, coalition)
     Formation {
-        /// Formation identifier (e.g., "alpha-squad", "1st-platoon")
+        /// Formation identifier (e.g., "alpha-cell", "1st-cohort")
         formation_id: String,
     },
 

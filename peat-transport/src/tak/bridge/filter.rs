@@ -97,15 +97,9 @@ impl BridgeFilter {
 
     /// Evaluate whether a message should be published
     pub fn should_publish(&self, message: &PeatMessage) -> FilterDecision {
-        // Check echelon filtering
-        if !self
-            .aggregation_policy
-            .should_publish_echelon(message.echelon())
-        {
-            return FilterDecision::Drop(format!(
-                "Echelon {:?} filtered by policy",
-                message.echelon()
-            ));
+        // Check tier filtering
+        if !self.aggregation_policy.should_publish_tier(message.tier()) {
+            return FilterDecision::Drop(format!("Tier {:?} filtered by policy", message.tier()));
         }
 
         // Check geographic filter
@@ -130,7 +124,7 @@ impl BridgeFilter {
                     let cot_type = track.classification.as_str();
                     if !cot_type.starts_with("a-h") && !cot_type.starts_with("a-u") {
                         return FilterDecision::Drop(
-                            "TracksOnly: filtering friendly platform".to_string(),
+                            "TracksOnly: filtering friendly node".to_string(),
                         );
                     }
                 }
@@ -196,19 +190,19 @@ mod tests {
     }
 
     #[test]
-    fn test_bridge_filter_echelon() {
-        let config = BridgeConfig::new("test").with_aggregation(AggregationPolicy::SquadLeaderOnly);
+    fn test_bridge_filter_tier() {
+        let config = BridgeConfig::new("test").with_aggregation(AggregationPolicy::CellLeaderOnly);
         let filter = BridgeFilter::from_config(&config);
 
         use peat_protocol::cot::{Position, TrackUpdate};
 
-        // Platform-level message should be filtered
+        // Node-level message should be filtered
         let track = TrackUpdate {
             track_id: "t1".to_string(),
             source_platform: "platform-1".to_string(),
             source_model: "test-model".to_string(),
             model_version: "1.0".to_string(),
-            cell_id: None, // No cell = platform level
+            cell_id: None, // No cell = node level
             formation_id: None,
             timestamp: chrono::Utc::now(),
             position: Position::new(34.0, -118.0),

@@ -1,13 +1,13 @@
 //! Cell Capability Aggregation
 //!
-//! This module implements capability aggregation across squad members following ADR-004
+//! This module implements capability aggregation across cell members following ADR-004
 //! human-machine teaming principles. It collects individual platform capabilities and
 //! composes them into emergent cell-level capabilities with human authority integration.
 //!
 //! # Key Concepts
 //!
-//! - **Capability Collection**: Gathers capabilities from all squad members
-//! - **Emergent Capabilities**: Squad-level capabilities that emerge from member composition
+//! - **Capability Collection**: Gathers capabilities from all cell members
+//! - **Emergent Capabilities**: Cell-level capabilities that emerge from member composition
 //! - **Human Authority**: Integrates operator authority levels into capability confidence
 //! - **Confidence Aggregation**: Combines individual confidence scores with authority weights
 //!
@@ -116,10 +116,10 @@ impl AggregatedCapability {
 pub struct CapabilityAggregator;
 
 impl CapabilityAggregator {
-    /// Aggregate capabilities from a list of squad members
+    /// Aggregate capabilities from a list of cell members
     ///
     /// # Arguments
-    /// * `members` - List of (NodeConfig, NodeState) tuples for each squad member
+    /// * `members` - List of (NodeConfig, NodeState) tuples for each cell member
     ///
     /// # Returns
     /// HashMap of CapabilityType to AggregatedCapability
@@ -219,9 +219,9 @@ impl CapabilityAggregator {
         binding.max_authority()
     }
 
-    /// Calculate squad readiness score based on aggregated capabilities
+    /// Calculate cell readiness score based on aggregated capabilities
     ///
-    /// Returns a score from 0.0-1.0 indicating overall squad capability readiness
+    /// Returns a score from 0.0-1.0 indicating overall cell capability readiness
     pub fn calculate_readiness_score(
         capabilities: &HashMap<CapabilityType, AggregatedCapability>,
     ) -> f32 {
@@ -257,7 +257,7 @@ impl CapabilityAggregator {
         }
     }
 
-    /// Identify capability gaps in the squad
+    /// Identify capability gaps in the cell
     ///
     /// Returns a list of missing or weak capability types
     pub fn identify_gaps(
@@ -536,12 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_squad_aggregation() {
-        // Edge case: Empty squad should return empty capabilities
+    fn test_empty_cell_aggregation() {
+        // Edge case: Empty cell should return empty capabilities
         let result = CapabilityAggregator::aggregate_capabilities(&[]).unwrap();
         assert_eq!(result.len(), 0);
 
-        // Readiness score for empty squad should be 0
+        // Readiness score for empty cell should be 0
         let readiness = CapabilityAggregator::calculate_readiness_score(&result);
         assert_eq!(readiness, 0.0);
 

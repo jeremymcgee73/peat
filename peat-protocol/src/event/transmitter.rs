@@ -493,7 +493,7 @@ mod tests {
             event_id: id.to_string(),
             timestamp: None,
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: peat_schema::event::v1::EventClass::Product as i32,
             event_type: "test".to_string(),

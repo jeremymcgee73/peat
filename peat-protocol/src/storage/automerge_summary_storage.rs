@@ -4,11 +4,11 @@
 //! SummaryStorage trait, enabling hierarchical aggregation with Automerge's CRDT engine.
 
 #[cfg(feature = "automerge-backend")]
-use crate::hierarchy::deltas::{CompanyDelta, PlatoonDelta, SquadDelta};
+use crate::hierarchy::deltas::{CellDelta, CoalitionDelta, CohortDelta, FederationDelta};
 #[cfg(feature = "automerge-backend")]
 use crate::hierarchy::storage_trait::{DocumentMetrics, SummaryStorage};
 #[cfg(feature = "automerge-backend")]
-use crate::hierarchy::SquadFieldUpdate;
+use crate::hierarchy::CellFieldUpdate;
 #[cfg(feature = "automerge-backend")]
 use crate::storage::automerge_conversion::{
     automerge_to_message, automerge_to_message_if_complete, message_to_automerge,
@@ -21,7 +21,7 @@ use crate::Result;
 #[cfg(feature = "automerge-backend")]
 use async_trait::async_trait;
 #[cfg(feature = "automerge-backend")]
-use peat_schema::hierarchy::v1::{CompanySummary, PlatoonSummary, SquadSummary};
+use peat_schema::hierarchy::v1::{CellSummary, CoalitionSummary, CohortSummary, FederationSummary};
 #[cfg(feature = "automerge-backend")]
 use std::collections::HashMap;
 #[cfg(feature = "automerge-backend")]
@@ -45,9 +45,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// # Key Naming Convention
 ///
 /// Documents are stored with prefixed keys to separate namespaces:
-/// - Squad summaries: `squad-summary:{squad_id}`
-/// - Platoon summaries: `platoon-summary:{platoon_id}`
-/// - Company summaries: `company-summary:{company_id}`
+/// - Cell summaries: `cell-summary:{cell_id}`
+/// - Cohort summaries: `cohort-summary:{cohort_id}`
+/// - Federation summaries: `federation-summary:{federation_id}`
+/// - Coalition summaries: `coalition-summary:{coalition_id}`
+///
+/// # Wire-format break (ADR-066, peat#904 Phases 1+2)
+///
+/// Prior releases used `squad-summary:*`, `platoon-summary:*`, and
+/// `company-summary:*` prefixes. Per ADR-066's "discard old state, replay
+/// from peers" decision, **no on-disk migration is performed**: any
+/// pre-rename documents stored under the old prefixes are silently
+/// orphaned by post-rename code (`get_cell_summary` returns `None` for a
+/// pre-existing `squad-summary:` document).
+///
+/// Operators upgrading deployments must provision stores clean before
+/// joining a post-rename mesh, then let peer state replay populate the
+/// new keys. Phase 3 (peat-mesh) integration tests are responsible for
+/// exercising this against fresh stores — running against a store with
+/// pre-rename keys present will surface as missing summaries, not as a
+/// decode error.
+///
+/// If a future deployment requires preserving pre-rename state, a
+/// one-time migration step can be added to `AutomergeSummaryStorage::new()`
+/// using the `cell_key`/`cohort_key`/`federation_key`/`coalition_key`
+/// helpers below as the rewrite target. That path is intentionally not
+/// shipped now per the ADR.
 #[cfg(feature = "automerge-backend")]
 pub struct AutomergeSummaryStorage {
     store: Arc<AutomergeStore>,
@@ -79,16 +102,20 @@ impl AutomergeSummaryStorage {
         &self.store
     }
 
-    fn squad_key(squad_id: &str) -> String {
-        format!("squad-summary:{}", squad_id)
+    pub(crate) fn cell_key(cell_id: &str) -> String {
+        format!("cell-summary:{}", cell_id)
     }
 
-    fn platoon_key(platoon_id: &str) -> String {
-        format!("platoon-summary:{}", platoon_id)
+    pub(crate) fn cohort_key(cohort_id: &str) -> String {
+        format!("cohort-summary:{}", cohort_id)
     }
 
-    fn company_key(company_id: &str) -> String {
-        format!("company-summary:{}", company_id)
+    pub(crate) fn federation_key(federation_id: &str) -> String {
+        format!("federation-summary:{}", federation_id)
+    }
+
+    pub(crate) fn coalition_key(coalition_id: &str) -> String {
+        format!("coalition-summary:{}", coalition_id)
     }
 
     fn now_us() -> u64 {
@@ -127,21 +154,21 @@ impl AutomergeSummaryStorage {
 #[async_trait]
 impl SummaryStorage for AutomergeSummaryStorage {
     // ========================================================================
-    // Squad Summary Operations
+    // Cell Summary Operations
     // ========================================================================
 
-    async fn create_squad_summary(
+    async fn create_cell_summary(
         &self,
-        squad_id: &str,
-        initial_state: &SquadSummary,
+        cell_id: &str,
+        initial_state: &CellSummary,
     ) -> Result<String> {
-        let key = Self::squad_key(squad_id);
+        let key = Self::cell_key(cell_id);
 
         // Check if already exists (enforce create-once)
         if self.store.get(&key).ok().flatten().is_some() {
             return Err(crate::Error::storage_error(
-                format!("Squad summary {} already exists", squad_id),
-                "create_squad_summary",
+                format!("Cell summary {} already exists", cell_id),
+                "create_cell_summary",
                 Some(key.clone()),
             ));
         }
@@ -149,16 +176,16 @@ impl SummaryStorage for AutomergeSummaryStorage {
         // Convert to Automerge document and store
         let doc = message_to_automerge(initial_state).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to convert SquadSummary to Automerge: {}", e),
-                "create_squad_summary",
+                format!("Failed to convert CellSummary to Automerge: {}", e),
+                "create_cell_summary",
                 Some(key.clone()),
             )
         })?;
 
         self.store.put(&key, &doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to store squad summary: {}", e),
-                "create_squad_summary",
+                format!("Failed to store cell summary: {}", e),
+                "create_cell_summary",
                 Some(key.clone()),
             )
         })?;
@@ -167,37 +194,37 @@ impl SummaryStorage for AutomergeSummaryStorage {
         Ok(key)
     }
 
-    async fn update_squad_summary(&self, squad_id: &str, delta: SquadDelta) -> Result<()> {
-        let key = Self::squad_key(squad_id);
+    async fn update_cell_summary(&self, cell_id: &str, delta: CellDelta) -> Result<()> {
+        let key = Self::cell_key(cell_id);
 
         // Get existing document
         let doc = self.store.get(&key).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to get squad summary: {}", e),
-                "update_squad_summary",
+                format!("Failed to get cell summary: {}", e),
+                "update_cell_summary",
                 Some(key.clone()),
             )
         })?;
 
         let Some(doc) = doc else {
             return Err(crate::Error::storage_error(
-                format!("Squad summary {} not found", squad_id),
-                "update_squad_summary",
+                format!("Cell summary {} not found", cell_id),
+                "update_cell_summary",
                 Some(key.clone()),
             ));
         };
 
         // Convert to mutable summary, apply delta, convert back
-        let mut summary: SquadSummary = automerge_to_message(&doc).map_err(|e| {
+        let mut summary: CellSummary = automerge_to_message(&doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to deserialize SquadSummary: {}", e),
-                "update_squad_summary",
+                format!("Failed to deserialize CellSummary: {}", e),
+                "update_cell_summary",
                 Some(key.clone()),
             )
         })?;
 
         // Apply delta fields
-        let delta_bytes = apply_squad_delta(&mut summary, delta);
+        let delta_bytes = apply_cell_delta(&mut summary, delta);
 
         // Convert back to Automerge and store
         // peat#903 / peat#896: pass the existing `doc` so the new write
@@ -207,16 +234,16 @@ impl SummaryStorage for AutomergeSummaryStorage {
         // value deterministically.
         let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to convert updated SquadSummary to Automerge: {}", e),
-                "update_squad_summary",
+                format!("Failed to convert updated CellSummary to Automerge: {}", e),
+                "update_cell_summary",
                 Some(key.clone()),
             )
         })?;
 
         self.store.put(&key, &updated_doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to store updated squad summary: {}", e),
-                "update_squad_summary",
+                format!("Failed to store updated cell summary: {}", e),
+                "update_cell_summary",
                 Some(key.clone()),
             )
         })?;
@@ -225,17 +252,17 @@ impl SummaryStorage for AutomergeSummaryStorage {
         Ok(())
     }
 
-    async fn get_squad_summary(&self, squad_id: &str) -> Result<Option<SquadSummary>> {
-        let key = Self::squad_key(squad_id);
+    async fn get_cell_summary(&self, cell_id: &str) -> Result<Option<CellSummary>> {
+        let key = Self::cell_key(cell_id);
 
         match self.store.get(&key) {
             Ok(Some(doc)) => {
                 // Use automerge_to_message_if_complete to handle partial sync gracefully.
-                // If "squad_id" field is missing, the document is incomplete - return None.
-                let summary = automerge_to_message_if_complete(&doc, "squad_id").map_err(|e| {
+                // If "cell_id" field is missing, the document is incomplete - return None.
+                let summary = automerge_to_message_if_complete(&doc, "cell_id").map_err(|e| {
                     crate::Error::storage_error(
-                        format!("Failed to deserialize SquadSummary: {}", e),
-                        "get_squad_summary",
+                        format!("Failed to deserialize CellSummary: {}", e),
+                        "get_cell_summary",
                         Some(key.clone()),
                     )
                 })?;
@@ -243,19 +270,19 @@ impl SummaryStorage for AutomergeSummaryStorage {
             }
             Ok(None) => Ok(None),
             Err(e) => Err(crate::Error::storage_error(
-                format!("Failed to get squad summary: {}", e),
-                "get_squad_summary",
+                format!("Failed to get cell summary: {}", e),
+                "get_cell_summary",
                 Some(key),
             )),
         }
     }
 
-    async fn delete_squad_summary(&self, squad_id: &str) -> Result<()> {
-        let key = Self::squad_key(squad_id);
+    async fn delete_cell_summary(&self, cell_id: &str) -> Result<()> {
+        let key = Self::cell_key(cell_id);
         self.store.delete(&key).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to delete squad summary: {}", e),
-                "delete_squad_summary",
+                format!("Failed to delete cell summary: {}", e),
+                "delete_cell_summary",
                 Some(key.clone()),
             )
         })?;
@@ -266,36 +293,36 @@ impl SummaryStorage for AutomergeSummaryStorage {
     }
 
     // ========================================================================
-    // Platoon Summary Operations
+    // Cohort Summary Operations
     // ========================================================================
 
-    async fn create_platoon_summary(
+    async fn create_cohort_summary(
         &self,
-        platoon_id: &str,
-        initial_state: &PlatoonSummary,
+        cohort_id: &str,
+        initial_state: &CohortSummary,
     ) -> Result<String> {
-        let key = Self::platoon_key(platoon_id);
+        let key = Self::cohort_key(cohort_id);
 
         if self.store.get(&key).ok().flatten().is_some() {
             return Err(crate::Error::storage_error(
-                format!("Platoon summary {} already exists", platoon_id),
-                "create_platoon_summary",
+                format!("Cohort summary {} already exists", cohort_id),
+                "create_cohort_summary",
                 Some(key.clone()),
             ));
         }
 
         let doc = message_to_automerge(initial_state).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to convert PlatoonSummary to Automerge: {}", e),
-                "create_platoon_summary",
+                format!("Failed to convert CohortSummary to Automerge: {}", e),
+                "create_cohort_summary",
                 Some(key.clone()),
             )
         })?;
 
         self.store.put(&key, &doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to store platoon summary: {}", e),
-                "create_platoon_summary",
+                format!("Failed to store cohort summary: {}", e),
+                "create_cohort_summary",
                 Some(key.clone()),
             )
         })?;
@@ -304,51 +331,51 @@ impl SummaryStorage for AutomergeSummaryStorage {
         Ok(key)
     }
 
-    async fn update_platoon_summary(&self, platoon_id: &str, delta: PlatoonDelta) -> Result<()> {
-        let key = Self::platoon_key(platoon_id);
+    async fn update_cohort_summary(&self, cohort_id: &str, delta: CohortDelta) -> Result<()> {
+        let key = Self::cohort_key(cohort_id);
 
         let doc = self.store.get(&key).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to get platoon summary: {}", e),
-                "update_platoon_summary",
+                format!("Failed to get cohort summary: {}", e),
+                "update_cohort_summary",
                 Some(key.clone()),
             )
         })?;
 
         let Some(doc) = doc else {
             return Err(crate::Error::storage_error(
-                format!("Platoon summary {} not found", platoon_id),
-                "update_platoon_summary",
+                format!("Cohort summary {} not found", cohort_id),
+                "update_cohort_summary",
                 Some(key.clone()),
             ));
         };
 
-        let mut summary: PlatoonSummary = automerge_to_message(&doc).map_err(|e| {
+        let mut summary: CohortSummary = automerge_to_message(&doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to deserialize PlatoonSummary: {}", e),
-                "update_platoon_summary",
+                format!("Failed to deserialize CohortSummary: {}", e),
+                "update_cohort_summary",
                 Some(key.clone()),
             )
         })?;
 
-        let delta_bytes = apply_platoon_delta(&mut summary, delta);
+        let delta_bytes = apply_cohort_delta(&mut summary, delta);
 
         // peat#903 / peat#896: preserve CRDT history via existing-doc fork.
         let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
             crate::Error::storage_error(
                 format!(
-                    "Failed to convert updated PlatoonSummary to Automerge: {}",
+                    "Failed to convert updated CohortSummary to Automerge: {}",
                     e
                 ),
-                "update_platoon_summary",
+                "update_cohort_summary",
                 Some(key.clone()),
             )
         })?;
 
         self.store.put(&key, &updated_doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to store updated platoon summary: {}", e),
-                "update_platoon_summary",
+                format!("Failed to store updated cohort summary: {}", e),
+                "update_cohort_summary",
                 Some(key.clone()),
             )
         })?;
@@ -357,39 +384,38 @@ impl SummaryStorage for AutomergeSummaryStorage {
         Ok(())
     }
 
-    async fn get_platoon_summary(&self, platoon_id: &str) -> Result<Option<PlatoonSummary>> {
-        let key = Self::platoon_key(platoon_id);
+    async fn get_cohort_summary(&self, cohort_id: &str) -> Result<Option<CohortSummary>> {
+        let key = Self::cohort_key(cohort_id);
 
         match self.store.get(&key) {
             Ok(Some(doc)) => {
                 // Use automerge_to_message_if_complete to handle partial sync gracefully.
-                // If "platoon_id" field is missing, the document is incomplete - return None.
+                // If "cohort_id" field is missing, the document is incomplete - return None.
                 // This fixes issue #509: Automerge partial sync causes deserialization errors.
-                let summary =
-                    automerge_to_message_if_complete(&doc, "platoon_id").map_err(|e| {
-                        crate::Error::storage_error(
-                            format!("Failed to deserialize PlatoonSummary: {}", e),
-                            "get_platoon_summary",
-                            Some(key.clone()),
-                        )
-                    })?;
+                let summary = automerge_to_message_if_complete(&doc, "cohort_id").map_err(|e| {
+                    crate::Error::storage_error(
+                        format!("Failed to deserialize CohortSummary: {}", e),
+                        "get_cohort_summary",
+                        Some(key.clone()),
+                    )
+                })?;
                 Ok(summary)
             }
             Ok(None) => Ok(None),
             Err(e) => Err(crate::Error::storage_error(
-                format!("Failed to get platoon summary: {}", e),
-                "get_platoon_summary",
+                format!("Failed to get cohort summary: {}", e),
+                "get_cohort_summary",
                 Some(key),
             )),
         }
     }
 
-    async fn delete_platoon_summary(&self, platoon_id: &str) -> Result<()> {
-        let key = Self::platoon_key(platoon_id);
+    async fn delete_cohort_summary(&self, cohort_id: &str) -> Result<()> {
+        let key = Self::cohort_key(cohort_id);
         self.store.delete(&key).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to delete platoon summary: {}", e),
-                "delete_platoon_summary",
+                format!("Failed to delete cohort summary: {}", e),
+                "delete_cohort_summary",
                 Some(key.clone()),
             )
         })?;
@@ -399,36 +425,36 @@ impl SummaryStorage for AutomergeSummaryStorage {
     }
 
     // ========================================================================
-    // Company Summary Operations
+    // Federation Summary Operations
     // ========================================================================
 
-    async fn create_company_summary(
+    async fn create_federation_summary(
         &self,
-        company_id: &str,
-        initial_state: &CompanySummary,
+        federation_id: &str,
+        initial_state: &FederationSummary,
     ) -> Result<String> {
-        let key = Self::company_key(company_id);
+        let key = Self::federation_key(federation_id);
 
         if self.store.get(&key).ok().flatten().is_some() {
             return Err(crate::Error::storage_error(
-                format!("Company summary {} already exists", company_id),
-                "create_company_summary",
+                format!("Federation summary {} already exists", federation_id),
+                "create_federation_summary",
                 Some(key.clone()),
             ));
         }
 
         let doc = message_to_automerge(initial_state).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to convert CompanySummary to Automerge: {}", e),
-                "create_company_summary",
+                format!("Failed to convert FederationSummary to Automerge: {}", e),
+                "create_federation_summary",
                 Some(key.clone()),
             )
         })?;
 
         self.store.put(&key, &doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to store company summary: {}", e),
-                "create_company_summary",
+                format!("Failed to store federation summary: {}", e),
+                "create_federation_summary",
                 Some(key.clone()),
             )
         })?;
@@ -437,51 +463,55 @@ impl SummaryStorage for AutomergeSummaryStorage {
         Ok(key)
     }
 
-    async fn update_company_summary(&self, company_id: &str, delta: CompanyDelta) -> Result<()> {
-        let key = Self::company_key(company_id);
+    async fn update_federation_summary(
+        &self,
+        federation_id: &str,
+        delta: FederationDelta,
+    ) -> Result<()> {
+        let key = Self::federation_key(federation_id);
 
         let doc = self.store.get(&key).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to get company summary: {}", e),
-                "update_company_summary",
+                format!("Failed to get federation summary: {}", e),
+                "update_federation_summary",
                 Some(key.clone()),
             )
         })?;
 
         let Some(doc) = doc else {
             return Err(crate::Error::storage_error(
-                format!("Company summary {} not found", company_id),
-                "update_company_summary",
+                format!("Federation summary {} not found", federation_id),
+                "update_federation_summary",
                 Some(key.clone()),
             ));
         };
 
-        let mut summary: CompanySummary = automerge_to_message(&doc).map_err(|e| {
+        let mut summary: FederationSummary = automerge_to_message(&doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to deserialize CompanySummary: {}", e),
-                "update_company_summary",
+                format!("Failed to deserialize FederationSummary: {}", e),
+                "update_federation_summary",
                 Some(key.clone()),
             )
         })?;
 
-        let delta_bytes = apply_company_delta(&mut summary, delta);
+        let delta_bytes = apply_federation_delta(&mut summary, delta);
 
         // peat#903 / peat#896: preserve CRDT history via existing-doc fork.
         let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
             crate::Error::storage_error(
                 format!(
-                    "Failed to convert updated CompanySummary to Automerge: {}",
+                    "Failed to convert updated FederationSummary to Automerge: {}",
                     e
                 ),
-                "update_company_summary",
+                "update_federation_summary",
                 Some(key.clone()),
             )
         })?;
 
         self.store.put(&key, &updated_doc).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to store updated company summary: {}", e),
-                "update_company_summary",
+                format!("Failed to store updated federation summary: {}", e),
+                "update_federation_summary",
                 Some(key.clone()),
             )
         })?;
@@ -490,18 +520,21 @@ impl SummaryStorage for AutomergeSummaryStorage {
         Ok(())
     }
 
-    async fn get_company_summary(&self, company_id: &str) -> Result<Option<CompanySummary>> {
-        let key = Self::company_key(company_id);
+    async fn get_federation_summary(
+        &self,
+        federation_id: &str,
+    ) -> Result<Option<FederationSummary>> {
+        let key = Self::federation_key(federation_id);
 
         match self.store.get(&key) {
             Ok(Some(doc)) => {
                 // Use automerge_to_message_if_complete to handle partial sync gracefully.
-                // If "company_id" field is missing, the document is incomplete - return None.
+                // If "federation_id" field is missing, the document is incomplete - return None.
                 let summary =
-                    automerge_to_message_if_complete(&doc, "company_id").map_err(|e| {
+                    automerge_to_message_if_complete(&doc, "federation_id").map_err(|e| {
                         crate::Error::storage_error(
-                            format!("Failed to deserialize CompanySummary: {}", e),
-                            "get_company_summary",
+                            format!("Failed to deserialize FederationSummary: {}", e),
+                            "get_federation_summary",
                             Some(key.clone()),
                         )
                     })?;
@@ -509,19 +542,153 @@ impl SummaryStorage for AutomergeSummaryStorage {
             }
             Ok(None) => Ok(None),
             Err(e) => Err(crate::Error::storage_error(
-                format!("Failed to get company summary: {}", e),
-                "get_company_summary",
+                format!("Failed to get federation summary: {}", e),
+                "get_federation_summary",
                 Some(key),
             )),
         }
     }
 
-    async fn delete_company_summary(&self, company_id: &str) -> Result<()> {
-        let key = Self::company_key(company_id);
+    async fn delete_federation_summary(&self, federation_id: &str) -> Result<()> {
+        let key = Self::federation_key(federation_id);
         self.store.delete(&key).map_err(|e| {
             crate::Error::storage_error(
-                format!("Failed to delete company summary: {}", e),
-                "delete_company_summary",
+                format!("Failed to delete federation summary: {}", e),
+                "delete_federation_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        self.metrics.write().unwrap().remove(&key);
+        Ok(())
+    }
+
+    // ========================================================================
+    // Coalition Summary Operations (ADR-066 — top-tier aggregation)
+    // ========================================================================
+
+    async fn create_coalition_summary(
+        &self,
+        coalition_id: &str,
+        initial_state: &CoalitionSummary,
+    ) -> Result<String> {
+        let key = Self::coalition_key(coalition_id);
+
+        if self.store.get(&key).ok().flatten().is_some() {
+            return Err(crate::Error::storage_error(
+                format!("Coalition summary {} already exists", coalition_id),
+                "create_coalition_summary",
+                Some(key.clone()),
+            ));
+        }
+
+        let doc = message_to_automerge(initial_state).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to convert CoalitionSummary to Automerge: {}", e),
+                "create_coalition_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        self.store.put(&key, &doc).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to store coalition summary: {}", e),
+                "create_coalition_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        self.record_create(&key);
+        Ok(key)
+    }
+
+    async fn update_coalition_summary(
+        &self,
+        coalition_id: &str,
+        delta: CoalitionDelta,
+    ) -> Result<()> {
+        let key = Self::coalition_key(coalition_id);
+
+        let doc = self.store.get(&key).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to get coalition summary: {}", e),
+                "update_coalition_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        let Some(doc) = doc else {
+            return Err(crate::Error::storage_error(
+                format!("Coalition summary {} not found", coalition_id),
+                "update_coalition_summary",
+                Some(key.clone()),
+            ));
+        };
+
+        let mut summary: CoalitionSummary = automerge_to_message(&doc).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to deserialize CoalitionSummary: {}", e),
+                "update_coalition_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        let delta_bytes = apply_coalition_delta(&mut summary, delta);
+
+        // peat#903 / peat#896: preserve CRDT history via existing-doc fork.
+        let updated_doc = message_to_automerge_into(&summary, Some(&doc)).map_err(|e| {
+            crate::Error::storage_error(
+                format!(
+                    "Failed to convert updated CoalitionSummary to Automerge: {}",
+                    e
+                ),
+                "update_coalition_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        self.store.put(&key, &updated_doc).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to store updated coalition summary: {}", e),
+                "update_coalition_summary",
+                Some(key.clone()),
+            )
+        })?;
+
+        self.record_update(&key, delta_bytes);
+        Ok(())
+    }
+
+    async fn get_coalition_summary(&self, coalition_id: &str) -> Result<Option<CoalitionSummary>> {
+        let key = Self::coalition_key(coalition_id);
+
+        match self.store.get(&key) {
+            Ok(Some(doc)) => {
+                let summary =
+                    automerge_to_message_if_complete(&doc, "coalition_id").map_err(|e| {
+                        crate::Error::storage_error(
+                            format!("Failed to deserialize CoalitionSummary: {}", e),
+                            "get_coalition_summary",
+                            Some(key.clone()),
+                        )
+                    })?;
+                Ok(summary)
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(crate::Error::storage_error(
+                format!("Failed to get coalition summary: {}", e),
+                "get_coalition_summary",
+                Some(key),
+            )),
+        }
+    }
+
+    async fn delete_coalition_summary(&self, coalition_id: &str) -> Result<()> {
+        let key = Self::coalition_key(coalition_id);
+        self.store.delete(&key).map_err(|e| {
+            crate::Error::storage_error(
+                format!("Failed to delete coalition summary: {}", e),
+                "delete_coalition_summary",
                 Some(key.clone()),
             )
         })?;
@@ -585,66 +752,66 @@ impl SummaryStorage for AutomergeSummaryStorage {
 // ============================================================================
 
 #[cfg(feature = "automerge-backend")]
-use crate::hierarchy::deltas::{CompanyFieldUpdate, PlatoonFieldUpdate};
+use crate::hierarchy::deltas::{CoalitionFieldUpdate, CohortFieldUpdate, FederationFieldUpdate};
 
-/// Apply squad delta to summary, returns approximate delta size in bytes
+/// Apply cell delta to summary, returns approximate delta size in bytes
 #[cfg(feature = "automerge-backend")]
-fn apply_squad_delta(summary: &mut SquadSummary, delta: SquadDelta) -> usize {
+fn apply_cell_delta(summary: &mut CellSummary, delta: CellDelta) -> usize {
     let mut bytes = 0;
 
     for update in delta.updates {
         match update {
-            SquadFieldUpdate::SetLeaderId(id) => {
+            CellFieldUpdate::SetLeaderId(id) => {
                 summary.leader_id = id;
                 bytes += 16;
             }
-            SquadFieldUpdate::SetMemberCount(count) => {
+            CellFieldUpdate::SetMemberCount(count) => {
                 summary.member_count = count;
                 bytes += 4;
             }
-            SquadFieldUpdate::SetOperationalCount(count) => {
+            CellFieldUpdate::SetOperationalCount(count) => {
                 summary.operational_count = count;
                 bytes += 4;
             }
-            SquadFieldUpdate::SetAvgFuelMinutes(fuel) => {
+            CellFieldUpdate::SetAvgFuelMinutes(fuel) => {
                 summary.avg_fuel_minutes = fuel;
                 bytes += 4;
             }
-            SquadFieldUpdate::SetWorstHealth(health) => {
+            CellFieldUpdate::SetWorstHealth(health) => {
                 summary.worst_health = health;
                 bytes += 4;
             }
-            SquadFieldUpdate::SetReadinessScore(score) => {
+            CellFieldUpdate::SetReadinessScore(score) => {
                 summary.readiness_score = score;
                 bytes += 4;
             }
-            SquadFieldUpdate::UpdatePositionCentroid(pos) => {
+            CellFieldUpdate::UpdatePositionCentroid(pos) => {
                 summary.position_centroid = Some(pos);
                 bytes += 24;
             }
-            SquadFieldUpdate::AddMemberId(id) => {
+            CellFieldUpdate::AddMemberId(id) => {
                 if !summary.member_ids.contains(&id) {
                     summary.member_ids.push(id);
                 }
                 bytes += 16;
             }
-            SquadFieldUpdate::RemoveMemberId(id) => {
+            CellFieldUpdate::RemoveMemberId(id) => {
                 summary.member_ids.retain(|m| m != &id);
                 bytes += 8;
             }
-            SquadFieldUpdate::AddCapability(cap) => {
+            CellFieldUpdate::AddCapability(cap) => {
                 summary.aggregated_capabilities.push(cap);
                 bytes += 100;
             }
-            SquadFieldUpdate::RemoveCapability(cap_id) => {
+            CellFieldUpdate::RemoveCapability(cap_id) => {
                 summary.aggregated_capabilities.retain(|c| c.id != cap_id);
                 bytes += 8;
             }
-            SquadFieldUpdate::UpdateBoundingBox(bbox) => {
+            CellFieldUpdate::UpdateBoundingBox(bbox) => {
                 summary.bounding_box = Some(bbox);
                 bytes += 40;
             }
-            SquadFieldUpdate::UpdateAggregatedAt(ts) => {
+            CellFieldUpdate::UpdateAggregatedAt(ts) => {
                 summary.aggregated_at = Some(ts);
                 bytes += 16;
             }
@@ -654,68 +821,68 @@ fn apply_squad_delta(summary: &mut SquadSummary, delta: SquadDelta) -> usize {
     bytes
 }
 
-/// Apply platoon delta to summary, returns approximate delta size in bytes
+/// Apply cohort delta to summary, returns approximate delta size in bytes
 #[cfg(feature = "automerge-backend")]
-fn apply_platoon_delta(summary: &mut PlatoonSummary, delta: PlatoonDelta) -> usize {
+fn apply_cohort_delta(summary: &mut CohortSummary, delta: CohortDelta) -> usize {
     let mut bytes = 0;
 
     for update in delta.updates {
         match update {
-            PlatoonFieldUpdate::SetLeaderId(id) => {
+            CohortFieldUpdate::SetLeaderId(id) => {
                 summary.leader_id = id;
                 bytes += 16;
             }
-            PlatoonFieldUpdate::SetSquadCount(count) => {
-                summary.squad_count = count;
+            CohortFieldUpdate::SetCellCount(count) => {
+                summary.cell_count = count;
                 bytes += 4;
             }
-            PlatoonFieldUpdate::SetTotalMemberCount(count) => {
+            CohortFieldUpdate::SetTotalMemberCount(count) => {
                 summary.total_member_count = count;
                 bytes += 4;
             }
-            PlatoonFieldUpdate::SetOperationalCount(count) => {
+            CohortFieldUpdate::SetOperationalCount(count) => {
                 summary.operational_count = count;
                 bytes += 4;
             }
-            PlatoonFieldUpdate::SetAvgFuelMinutes(fuel) => {
+            CohortFieldUpdate::SetAvgFuelMinutes(fuel) => {
                 summary.avg_fuel_minutes = fuel;
                 bytes += 4;
             }
-            PlatoonFieldUpdate::SetWorstHealth(health) => {
+            CohortFieldUpdate::SetWorstHealth(health) => {
                 summary.worst_health = health;
                 bytes += 4;
             }
-            PlatoonFieldUpdate::SetReadinessScore(score) => {
+            CohortFieldUpdate::SetReadinessScore(score) => {
                 summary.readiness_score = score;
                 bytes += 4;
             }
-            PlatoonFieldUpdate::UpdatePositionCentroid(pos) => {
+            CohortFieldUpdate::UpdatePositionCentroid(pos) => {
                 summary.position_centroid = Some(pos);
                 bytes += 24;
             }
-            PlatoonFieldUpdate::AddSquadId(id) => {
-                if !summary.squad_ids.contains(&id) {
-                    summary.squad_ids.push(id);
+            CohortFieldUpdate::AddCellId(id) => {
+                if !summary.cell_ids.contains(&id) {
+                    summary.cell_ids.push(id);
                 }
                 bytes += 16;
             }
-            PlatoonFieldUpdate::RemoveSquadId(id) => {
-                summary.squad_ids.retain(|s| s != &id);
+            CohortFieldUpdate::RemoveCellId(id) => {
+                summary.cell_ids.retain(|s| s != &id);
                 bytes += 8;
             }
-            PlatoonFieldUpdate::AddCapability(cap) => {
+            CohortFieldUpdate::AddCapability(cap) => {
                 summary.aggregated_capabilities.push(cap);
                 bytes += 100;
             }
-            PlatoonFieldUpdate::RemoveCapability(cap_id) => {
+            CohortFieldUpdate::RemoveCapability(cap_id) => {
                 summary.aggregated_capabilities.retain(|c| c.id != cap_id);
                 bytes += 8;
             }
-            PlatoonFieldUpdate::UpdateBoundingBox(bbox) => {
+            CohortFieldUpdate::UpdateBoundingBox(bbox) => {
                 summary.bounding_box = Some(bbox);
                 bytes += 40;
             }
-            PlatoonFieldUpdate::UpdateAggregatedAt(ts) => {
+            CohortFieldUpdate::UpdateAggregatedAt(ts) => {
                 summary.aggregated_at = Some(ts);
                 bytes += 16;
             }
@@ -725,68 +892,141 @@ fn apply_platoon_delta(summary: &mut PlatoonSummary, delta: PlatoonDelta) -> usi
     bytes
 }
 
-/// Apply company delta to summary, returns approximate delta size in bytes
+/// Apply federation delta to summary, returns approximate delta size in bytes
 #[cfg(feature = "automerge-backend")]
-fn apply_company_delta(summary: &mut CompanySummary, delta: CompanyDelta) -> usize {
+fn apply_federation_delta(summary: &mut FederationSummary, delta: FederationDelta) -> usize {
     let mut bytes = 0;
 
     for update in delta.updates {
         match update {
-            CompanyFieldUpdate::SetLeaderId(id) => {
+            FederationFieldUpdate::SetLeaderId(id) => {
                 summary.leader_id = id;
                 bytes += 16;
             }
-            CompanyFieldUpdate::SetPlatoonCount(count) => {
-                summary.platoon_count = count;
+            FederationFieldUpdate::SetCohortCount(count) => {
+                summary.cohort_count = count;
                 bytes += 4;
             }
-            CompanyFieldUpdate::SetTotalMemberCount(count) => {
+            FederationFieldUpdate::SetTotalMemberCount(count) => {
                 summary.total_member_count = count;
                 bytes += 4;
             }
-            CompanyFieldUpdate::SetOperationalCount(count) => {
+            FederationFieldUpdate::SetOperationalCount(count) => {
                 summary.operational_count = count;
                 bytes += 4;
             }
-            CompanyFieldUpdate::SetAvgFuelMinutes(fuel) => {
+            FederationFieldUpdate::SetAvgFuelMinutes(fuel) => {
                 summary.avg_fuel_minutes = fuel;
                 bytes += 4;
             }
-            CompanyFieldUpdate::SetWorstHealth(health) => {
+            FederationFieldUpdate::SetWorstHealth(health) => {
                 summary.worst_health = health;
                 bytes += 4;
             }
-            CompanyFieldUpdate::SetReadinessScore(score) => {
+            FederationFieldUpdate::SetReadinessScore(score) => {
                 summary.readiness_score = score;
                 bytes += 4;
             }
-            CompanyFieldUpdate::UpdatePositionCentroid(pos) => {
+            FederationFieldUpdate::UpdatePositionCentroid(pos) => {
                 summary.position_centroid = Some(pos);
                 bytes += 24;
             }
-            CompanyFieldUpdate::AddPlatoonId(id) => {
-                if !summary.platoon_ids.contains(&id) {
-                    summary.platoon_ids.push(id);
+            FederationFieldUpdate::AddCohortId(id) => {
+                if !summary.cohort_ids.contains(&id) {
+                    summary.cohort_ids.push(id);
                 }
                 bytes += 16;
             }
-            CompanyFieldUpdate::RemovePlatoonId(id) => {
-                summary.platoon_ids.retain(|p| p != &id);
+            FederationFieldUpdate::RemoveCohortId(id) => {
+                summary.cohort_ids.retain(|p| p != &id);
                 bytes += 8;
             }
-            CompanyFieldUpdate::AddCapability(cap) => {
+            FederationFieldUpdate::AddCapability(cap) => {
                 summary.aggregated_capabilities.push(cap);
                 bytes += 100;
             }
-            CompanyFieldUpdate::RemoveCapability(cap_id) => {
+            FederationFieldUpdate::RemoveCapability(cap_id) => {
                 summary.aggregated_capabilities.retain(|c| c.id != cap_id);
                 bytes += 8;
             }
-            CompanyFieldUpdate::UpdateBoundingBox(bbox) => {
+            FederationFieldUpdate::UpdateBoundingBox(bbox) => {
                 summary.bounding_box = Some(bbox);
                 bytes += 40;
             }
-            CompanyFieldUpdate::UpdateAggregatedAt(ts) => {
+            FederationFieldUpdate::UpdateAggregatedAt(ts) => {
+                summary.aggregated_at = Some(ts);
+                bytes += 16;
+            }
+        }
+    }
+
+    bytes
+}
+
+/// Apply coalition delta to summary, returns approximate delta size in bytes
+///
+/// Mirrors `apply_federation_delta` for the top tier introduced by ADR-066.
+#[cfg(feature = "automerge-backend")]
+fn apply_coalition_delta(summary: &mut CoalitionSummary, delta: CoalitionDelta) -> usize {
+    let mut bytes = 0;
+
+    for update in delta.updates {
+        match update {
+            CoalitionFieldUpdate::SetLeaderId(id) => {
+                summary.leader_id = id;
+                bytes += 16;
+            }
+            CoalitionFieldUpdate::SetFederationCount(count) => {
+                summary.federation_count = count;
+                bytes += 4;
+            }
+            CoalitionFieldUpdate::SetTotalMemberCount(count) => {
+                summary.total_member_count = count;
+                bytes += 4;
+            }
+            CoalitionFieldUpdate::SetOperationalCount(count) => {
+                summary.operational_count = count;
+                bytes += 4;
+            }
+            CoalitionFieldUpdate::SetAvgFuelMinutes(fuel) => {
+                summary.avg_fuel_minutes = fuel;
+                bytes += 4;
+            }
+            CoalitionFieldUpdate::SetWorstHealth(health) => {
+                summary.worst_health = health;
+                bytes += 4;
+            }
+            CoalitionFieldUpdate::SetReadinessScore(score) => {
+                summary.readiness_score = score;
+                bytes += 4;
+            }
+            CoalitionFieldUpdate::UpdatePositionCentroid(pos) => {
+                summary.position_centroid = Some(pos);
+                bytes += 24;
+            }
+            CoalitionFieldUpdate::AddFederationId(id) => {
+                if !summary.federation_ids.contains(&id) {
+                    summary.federation_ids.push(id);
+                }
+                bytes += 16;
+            }
+            CoalitionFieldUpdate::RemoveFederationId(id) => {
+                summary.federation_ids.retain(|p| p != &id);
+                bytes += 8;
+            }
+            CoalitionFieldUpdate::AddCapability(cap) => {
+                summary.aggregated_capabilities.push(cap);
+                bytes += 100;
+            }
+            CoalitionFieldUpdate::RemoveCapability(cap_id) => {
+                summary.aggregated_capabilities.retain(|c| c.id != cap_id);
+                bytes += 8;
+            }
+            CoalitionFieldUpdate::UpdateBoundingBox(bbox) => {
+                summary.bounding_box = Some(bbox);
+                bytes += 40;
+            }
+            CoalitionFieldUpdate::UpdateAggregatedAt(ts) => {
                 summary.aggregated_at = Some(ts);
                 bytes += 16;
             }
@@ -809,12 +1049,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_squad_summary_crud() {
+    async fn test_cell_summary_crud() {
         let (storage, _temp) = create_test_storage();
 
         // Create
-        let summary = SquadSummary {
-            squad_id: "squad-1".to_string(),
+        let summary = CellSummary {
+            cell_id: "cell-1".to_string(),
             leader_id: "leader-1".to_string(),
             member_ids: vec!["m1".to_string(), "m2".to_string()],
             member_count: 2,
@@ -836,74 +1076,70 @@ mod tests {
         };
 
         let doc_id = storage
-            .create_squad_summary("squad-1", &summary)
+            .create_cell_summary("cell-1", &summary)
             .await
             .expect("create should succeed");
-        assert!(doc_id.contains("squad-1"));
+        assert!(doc_id.contains("cell-1"));
 
         // Read
         let retrieved = storage
-            .get_squad_summary("squad-1")
+            .get_cell_summary("cell-1")
             .await
             .expect("get should succeed")
             .expect("summary should exist");
-        assert_eq!(retrieved.squad_id, "squad-1");
+        assert_eq!(retrieved.cell_id, "cell-1");
         assert_eq!(retrieved.member_count, 2);
 
         // Update
-        let delta = SquadDelta {
-            squad_id: "squad-1".to_string(),
+        let delta = CellDelta {
+            cell_id: "cell-1".to_string(),
             timestamp_us: 0,
             sequence: 1,
             updates: vec![
-                SquadFieldUpdate::SetAvgFuelMinutes(50.0),
-                SquadFieldUpdate::SetOperationalCount(1),
+                CellFieldUpdate::SetAvgFuelMinutes(50.0),
+                CellFieldUpdate::SetOperationalCount(1),
             ],
         };
         storage
-            .update_squad_summary("squad-1", delta)
+            .update_cell_summary("cell-1", delta)
             .await
             .expect("update should succeed");
 
-        let updated = storage.get_squad_summary("squad-1").await.unwrap().unwrap();
+        let updated = storage.get_cell_summary("cell-1").await.unwrap().unwrap();
         assert_eq!(updated.avg_fuel_minutes, 50.0);
         assert_eq!(updated.operational_count, 1);
 
         // Delete
         storage
-            .delete_squad_summary("squad-1")
+            .delete_cell_summary("cell-1")
             .await
             .expect("delete should succeed");
-        assert!(storage
-            .get_squad_summary("squad-1")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(storage.get_cell_summary("cell-1").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_create_once_enforcement() {
         let (storage, _temp) = create_test_storage();
 
-        let summary = SquadSummary {
-            squad_id: "squad-1".to_string(),
+        let summary = CellSummary {
+            cell_id: "cell-1".to_string(),
             ..Default::default()
         };
 
         // First create should succeed
         storage
-            .create_squad_summary("squad-1", &summary)
+            .create_cell_summary("cell-1", &summary)
             .await
             .expect("first create should succeed");
 
         // Second create should fail (create-once enforcement)
-        let result = storage.create_squad_summary("squad-1", &summary).await;
+        let result = storage.create_cell_summary("cell-1", &summary).await;
         assert!(result.is_err());
     }
 
     /// Regression test for peat#903 (sibling of peat#896).
     ///
-    /// `update_squad_summary` previously called
+    /// `update_cell_summary` previously called
     /// `message_to_automerge(&summary)`, which returned a fresh
     /// `Automerge::new()` doc with a brand-new actor lineage on every
     /// call. The post-`save()` byte sequence stayed constant across
@@ -916,33 +1152,30 @@ mod tests {
     /// (with at least one distinct snapshot length) and the final
     /// read-back must equal the most recent write.
     #[tokio::test]
-    async fn test_update_squad_summary_preserves_history_peat903() {
+    async fn test_update_cell_summary_preserves_history_peat903() {
         let (storage, _temp) = create_test_storage();
         let store = storage.store().clone();
-        let key = AutomergeSummaryStorage::squad_key("squad-1");
+        let key = AutomergeSummaryStorage::cell_key("cell-1");
 
-        let initial = SquadSummary {
-            squad_id: "squad-1".to_string(),
+        let initial = CellSummary {
+            cell_id: "cell-1".to_string(),
             avg_fuel_minutes: 100.0,
             ..Default::default()
         };
         storage
-            .create_squad_summary("squad-1", &initial)
+            .create_cell_summary("cell-1", &initial)
             .await
             .expect("create should succeed");
 
         let mut saved_lens = vec![];
         for counter in (90u32..=100).rev() {
-            let delta = SquadDelta {
-                squad_id: "squad-1".to_string(),
+            let delta = CellDelta {
+                cell_id: "cell-1".to_string(),
                 timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
                 sequence: (100 - counter) as u64 + 1,
-                updates: vec![SquadFieldUpdate::SetOperationalCount(counter)],
+                updates: vec![CellFieldUpdate::SetOperationalCount(counter)],
             };
-            storage
-                .update_squad_summary("squad-1", delta)
-                .await
-                .unwrap();
+            storage.update_cell_summary("cell-1", delta).await.unwrap();
 
             let doc = store.get(&key).unwrap().expect("doc must exist");
             saved_lens.push(doc.save().len());
@@ -963,7 +1196,7 @@ mod tests {
             );
         }
 
-        let final_state = storage.get_squad_summary("squad-1").await.unwrap().unwrap();
+        let final_state = storage.get_cell_summary("cell-1").await.unwrap().unwrap();
         assert_eq!(
             final_state.operational_count, 90,
             "expected most recent write (90), got {}",
@@ -971,34 +1204,34 @@ mod tests {
         );
     }
 
-    /// peat#903 regression for `update_platoon_summary` — same shape as
-    /// the squad test above.
+    /// peat#903 regression for `update_cohort_summary` — same shape as
+    /// the cell test above.
     #[tokio::test]
-    async fn test_update_platoon_summary_preserves_history_peat903() {
+    async fn test_update_cohort_summary_preserves_history_peat903() {
         let (storage, _temp) = create_test_storage();
         let store = storage.store().clone();
-        let key = AutomergeSummaryStorage::platoon_key("platoon-1");
+        let key = AutomergeSummaryStorage::cohort_key("cohort-1");
 
-        let initial = PlatoonSummary {
-            platoon_id: "platoon-1".to_string(),
+        let initial = CohortSummary {
+            cohort_id: "cohort-1".to_string(),
             avg_fuel_minutes: 100.0,
             ..Default::default()
         };
         storage
-            .create_platoon_summary("platoon-1", &initial)
+            .create_cohort_summary("cohort-1", &initial)
             .await
             .expect("create should succeed");
 
         let mut saved_lens = vec![];
         for counter in (90u32..=100).rev() {
-            let delta = PlatoonDelta {
-                platoon_id: "platoon-1".to_string(),
+            let delta = CohortDelta {
+                cohort_id: "cohort-1".to_string(),
                 timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
                 sequence: (100 - counter) as u64 + 1,
-                updates: vec![PlatoonFieldUpdate::SetOperationalCount(counter)],
+                updates: vec![CohortFieldUpdate::SetOperationalCount(counter)],
             };
             storage
-                .update_platoon_summary("platoon-1", delta)
+                .update_cohort_summary("cohort-1", delta)
                 .await
                 .unwrap();
 
@@ -1009,49 +1242,49 @@ mod tests {
         let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
         assert!(
             unique.len() > 1,
-            "platoon summary upserts produced byte-identical snapshots \
+            "cohort summary upserts produced byte-identical snapshots \
              ({:?}); peat#903 history-dropping regression",
             saved_lens.first()
         );
         for w in saved_lens.windows(2) {
-            assert!(w[1] >= w[0], "platoon snapshot bytes shrunk: {w:?}");
+            assert!(w[1] >= w[0], "cohort snapshot bytes shrunk: {w:?}");
         }
 
         let final_state = storage
-            .get_platoon_summary("platoon-1")
+            .get_cohort_summary("cohort-1")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(final_state.operational_count, 90);
     }
 
-    /// peat#903 regression for `update_company_summary` — same shape.
+    /// peat#903 regression for `update_federation_summary` — same shape.
     #[tokio::test]
-    async fn test_update_company_summary_preserves_history_peat903() {
+    async fn test_update_federation_summary_preserves_history_peat903() {
         let (storage, _temp) = create_test_storage();
         let store = storage.store().clone();
-        let key = AutomergeSummaryStorage::company_key("company-1");
+        let key = AutomergeSummaryStorage::federation_key("federation-1");
 
-        let initial = CompanySummary {
-            company_id: "company-1".to_string(),
+        let initial = FederationSummary {
+            federation_id: "federation-1".to_string(),
             avg_fuel_minutes: 100.0,
             ..Default::default()
         };
         storage
-            .create_company_summary("company-1", &initial)
+            .create_federation_summary("federation-1", &initial)
             .await
             .expect("create should succeed");
 
         let mut saved_lens = vec![];
         for counter in (90u32..=100).rev() {
-            let delta = CompanyDelta {
-                company_id: "company-1".to_string(),
+            let delta = FederationDelta {
+                federation_id: "federation-1".to_string(),
                 timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
                 sequence: (100 - counter) as u64 + 1,
-                updates: vec![CompanyFieldUpdate::SetOperationalCount(counter)],
+                updates: vec![FederationFieldUpdate::SetOperationalCount(counter)],
             };
             storage
-                .update_company_summary("company-1", delta)
+                .update_federation_summary("federation-1", delta)
                 .await
                 .unwrap();
 
@@ -1062,16 +1295,70 @@ mod tests {
         let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
         assert!(
             unique.len() > 1,
-            "company summary upserts produced byte-identical snapshots \
+            "federation summary upserts produced byte-identical snapshots \
              ({:?}); peat#903 history-dropping regression",
             saved_lens.first()
         );
         for w in saved_lens.windows(2) {
-            assert!(w[1] >= w[0], "company snapshot bytes shrunk: {w:?}");
+            assert!(w[1] >= w[0], "federation snapshot bytes shrunk: {w:?}");
         }
 
         let final_state = storage
-            .get_company_summary("company-1")
+            .get_federation_summary("federation-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_state.operational_count, 90);
+    }
+
+    /// peat#903 regression for `update_coalition_summary` — same shape.
+    /// Coalition is the top-tier aggregation introduced by ADR-066.
+    #[tokio::test]
+    async fn test_update_coalition_summary_preserves_history_peat903() {
+        let (storage, _temp) = create_test_storage();
+        let store = storage.store().clone();
+        let key = AutomergeSummaryStorage::coalition_key("coalition-1");
+
+        let initial = CoalitionSummary {
+            coalition_id: "coalition-1".to_string(),
+            avg_fuel_minutes: 100.0,
+            ..Default::default()
+        };
+        storage
+            .create_coalition_summary("coalition-1", &initial)
+            .await
+            .expect("create should succeed");
+
+        let mut saved_lens = vec![];
+        for counter in (90u32..=100).rev() {
+            let delta = CoalitionDelta {
+                coalition_id: "coalition-1".to_string(),
+                timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
+                sequence: (100 - counter) as u64 + 1,
+                updates: vec![CoalitionFieldUpdate::SetOperationalCount(counter)],
+            };
+            storage
+                .update_coalition_summary("coalition-1", delta)
+                .await
+                .unwrap();
+
+            let doc = store.get(&key).unwrap().expect("doc must exist");
+            saved_lens.push(doc.save().len());
+        }
+
+        let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "coalition summary upserts produced byte-identical snapshots \
+             ({:?}); peat#903 history-dropping regression",
+            saved_lens.first()
+        );
+        for w in saved_lens.windows(2) {
+            assert!(w[1] >= w[0], "coalition snapshot bytes shrunk: {w:?}");
+        }
+
+        let final_state = storage
+            .get_coalition_summary("coalition-1")
             .await
             .unwrap()
             .unwrap();
@@ -1082,29 +1369,26 @@ mod tests {
     async fn test_document_metrics() {
         let (storage, _temp) = create_test_storage();
 
-        let summary = SquadSummary {
-            squad_id: "squad-1".to_string(),
+        let summary = CellSummary {
+            cell_id: "cell-1".to_string(),
             avg_fuel_minutes: 60.0,
             ..Default::default()
         };
 
         let doc_id = storage
-            .create_squad_summary("squad-1", &summary)
+            .create_cell_summary("cell-1", &summary)
             .await
             .unwrap();
 
         // Apply some updates
         for i in 0..5 {
-            let delta = SquadDelta {
-                squad_id: "squad-1".to_string(),
+            let delta = CellDelta {
+                cell_id: "cell-1".to_string(),
                 timestamp_us: crate::hierarchy::deltas::current_timestamp_us(),
                 sequence: i + 1,
-                updates: vec![SquadFieldUpdate::SetAvgFuelMinutes(55.0)],
+                updates: vec![CellFieldUpdate::SetAvgFuelMinutes(55.0)],
             };
-            storage
-                .update_squad_summary("squad-1", delta)
-                .await
-                .unwrap();
+            storage.update_cell_summary("cell-1", delta).await.unwrap();
         }
 
         let metrics = storage.get_document_metrics(&doc_id).await.unwrap();

@@ -77,9 +77,9 @@
 //! use peat_protocol::storage::{AutomergeIrohBackend, CrdtCapable};
 //!
 //! let backend = AutomergeIrohBackend::new(config);
-//! let squads: Arc<dyn TypedCollection<SquadSummary>> =
-//!     backend.typed_collection("squads");
-//! squads.upsert("squad-1", &summary)?;
+//! let cells: Arc<dyn TypedCollection<CellSummary>> =
+//!     backend.typed_collection("cells");
+//! cells.upsert("cell-1", &summary)?;
 //! // → Automerge stores as CRDT document, persists to RocksDB, syncs via Iroh
 //! ```
 //!
@@ -173,16 +173,16 @@ use std::sync::Arc;
 ///
 /// ```ignore
 /// use peat_protocol::storage::{CrdtCapable, TypedCollection};
-/// use peat_schema::hierarchy::v1::SquadSummary;
+/// use peat_schema::hierarchy::v1::CellSummary;
 ///
 /// let backend = AutomergeIrohBackend::new(config);
-/// let squads: Arc<dyn TypedCollection<SquadSummary>> =
-///     backend.typed_collection("squads");
+/// let cells: Arc<dyn TypedCollection<CellSummary>> =
+///     backend.typed_collection("cells");
 ///
 /// // Field-level updates
-/// let mut summary = squads.get("squad-1")?.unwrap();
+/// let mut summary = cells.get("cell-1")?.unwrap();
 /// summary.member_ids.push("node-4".to_string());  // OR-Set addition
-/// squads.upsert("squad-1", &summary)?;
+/// cells.upsert("cell-1", &summary)?;
 /// // → Only member_ids field is transmitted, not entire document
 /// ```
 pub trait TypedCollection<M>: Send + Sync
@@ -314,12 +314,12 @@ mod tests {
     // Verify TypedCollection is object-safe (can be used as trait object)
     #[test]
     fn test_typed_collection_is_object_safe() {
-        use peat_schema::hierarchy::v1::SquadSummary;
-        fn _assert_object_safe(_: &dyn TypedCollection<SquadSummary>) {}
+        use peat_schema::hierarchy::v1::CellSummary;
+        fn _assert_object_safe(_: &dyn TypedCollection<CellSummary>) {}
     }
 
     // Note: CrdtCapable is intentionally NOT object-safe due to generic method.
     // This is correct - use concrete backend types:
     //   let backend = AutomergeIrohBackend::new(config);
-    //   let collection = backend.typed_collection::<SquadSummary>("squads");
+    //   let collection = backend.typed_collection::<CellSummary>("cells");
 }

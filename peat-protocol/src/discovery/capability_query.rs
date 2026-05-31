@@ -1,6 +1,6 @@
-//! Capability-based queries for platform and squad discovery
+//! Capability-based queries for platform and cell discovery
 //!
-//! Implements the capability query system for finding nodes and squads
+//! Implements the capability query system for finding nodes and cells
 //! based on required capabilities during the bootstrap phase.
 //!
 //! # Architecture
@@ -39,7 +39,7 @@ use crate::models::{cell::CellState, node::NodeConfig, Capability, CapabilityExt
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Capability query for finding nodes or squads
+/// Capability query for finding nodes or cells
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityQuery {
     /// Required capability types (AND logic - all must be present)
@@ -212,13 +212,13 @@ impl CapabilityQueryBuilder {
 /// Result of a capability query with score
 #[derive(Debug, Clone)]
 pub struct QueryMatch<T> {
-    /// The matched entity (platform or squad)
+    /// The matched entity (platform or cell)
     pub entity: T,
     /// Relevance score (0.0 - 1.0)
     pub score: f32,
 }
 
-/// Capability query engine for finding nodes and squads
+/// Capability query engine for finding nodes and cells
 pub struct CapabilityQueryEngine;
 
 impl CapabilityQueryEngine {
@@ -254,17 +254,17 @@ impl CapabilityQueryEngine {
     }
 
     /// Query cells by capabilities
-    pub fn query_squads(
+    pub fn query_cells(
         &self,
         query: &CapabilityQuery,
-        squads: &[CellState],
+        cells: &[CellState],
     ) -> Vec<QueryMatch<CellState>> {
-        let mut matches: Vec<QueryMatch<CellState>> = squads
+        let mut matches: Vec<QueryMatch<CellState>> = cells
             .iter()
-            .filter(|squad| query.matches(&squad.capabilities))
-            .map(|squad| QueryMatch {
-                score: query.score(&squad.capabilities),
-                entity: squad.clone(),
+            .filter(|cell| query.matches(&cell.capabilities))
+            .map(|cell| QueryMatch {
+                score: query.score(&cell.capabilities),
+                entity: cell.clone(),
             })
             .collect();
 

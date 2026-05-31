@@ -12,8 +12,8 @@
 //! - Graceful degradation on node failure
 
 use peat_protocol::event::{
-    AggregationPolicy, BandwidthAllocation, EchelonAggregator, EchelonType, EventPriority,
-    EventTransmitter, OverflowPolicy, PeatEvent, PropagationMode,
+    AggregationPolicy, BandwidthAllocation, EventPriority, EventTransmitter, HierarchyAggregator,
+    HierarchyLevel, OverflowPolicy, PeatEvent, PropagationMode,
 };
 use peat_schema::event::v1::EventClass;
 use std::time::{Duration, Instant};
@@ -36,7 +36,7 @@ fn make_test_event(
             nanos: 0,
         }),
         source_node_id: format!("node-{}", id),
-        source_formation_id: "squad-1".to_string(),
+        source_formation_id: "cell-1".to_string(),
         source_instance_id: None,
         event_class: EventClass::Product as i32,
         event_type: event_type.to_string(),
@@ -58,16 +58,16 @@ fn make_test_event(
 /// With aggregation: ~7.5 events/sec (summaries + passthrough)
 #[test]
 fn test_bandwidth_reduction_through_aggregation() {
-    // Create squad-level aggregator (simulating one of 6 squads)
-    let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad)
+    // Create cell-level aggregator (simulating one of 6 cells)
+    let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
         .with_default_window_duration(Duration::from_millis(100)); // Short window for testing
 
-    let platforms_per_squad = 8;
+    let platforms_per_cell = 8;
     let detections_per_platform = 10; // Per second
     let test_seconds = 1;
 
     // Simulate detection events from all platforms (SUMMARY mode)
-    let total_detections = platforms_per_squad * detections_per_platform * test_seconds;
+    let total_detections = platforms_per_cell * detections_per_platform * test_seconds;
     for i in 0..total_detections {
         let event = make_test_event(
             &format!("det-{}", i),
@@ -81,7 +81,7 @@ fn test_bandwidth_reduction_through_aggregation() {
 
     // Simulate telemetry events (QUERY mode - stored locally, not propagated)
     let telemetry_per_platform = 1; // Per second
-    let total_telemetry = platforms_per_squad * telemetry_per_platform * test_seconds;
+    let total_telemetry = platforms_per_cell * telemetry_per_platform * test_seconds;
     for i in 0..total_telemetry {
         let event = make_test_event(
             &format!("tel-{}", i),
@@ -136,7 +136,7 @@ fn test_bandwidth_reduction_through_aggregation() {
         let reduction = (1.0 - (aggregated_events as f64 / raw_events as f64)) * 100.0;
         println!("Bandwidth reduction: {:.1}%", reduction);
 
-        // For this single-squad test, we expect high reduction
+        // For this single-cell test, we expect high reduction
         // 88 events -> 1 summary = 98.9% reduction
         assert!(
             reduction >= 90.0,
@@ -350,7 +350,7 @@ fn test_overflow_drops_lowest_priority() {
 /// Validates that events are properly summarized after window expiry.
 #[test]
 fn test_aggregation_window_summarization() {
-    let aggregator = EchelonAggregator::new("squad-alpha".to_string(), EchelonType::Squad)
+    let aggregator = HierarchyAggregator::new("cell-alpha".to_string(), HierarchyLevel::Cell)
         .with_default_window_duration(Duration::from_millis(50)); // Short window
 
     // Add events from multiple source nodes
@@ -384,7 +384,7 @@ fn test_aggregation_window_summarization() {
         "Event type should indicate summary"
     );
     assert_eq!(
-        summary_event.source_formation_id, "squad-alpha",
+        summary_event.source_formation_id, "cell-alpha",
         "Summary should be from the aggregator echelon"
     );
 }
@@ -394,7 +394,7 @@ fn test_aggregation_window_summarization() {
 /// Validates that Query mode events are stored locally and queryable.
 #[test]
 fn test_query_mode_local_storage() {
-    let aggregator = EchelonAggregator::new("squad-bravo".to_string(), EchelonType::Squad);
+    let aggregator = HierarchyAggregator::new("cell-bravo".to_string(), HierarchyLevel::Cell);
 
     // Add telemetry events in Query mode
     let telemetry_events = 50;
@@ -444,7 +444,7 @@ fn test_query_mode_local_storage() {
 /// Validates that Full propagation mode events pass through immediately.
 #[test]
 fn test_full_mode_passthrough() {
-    let aggregator = EchelonAggregator::new("squad-charlie".to_string(), EchelonType::Squad);
+    let aggregator = HierarchyAggregator::new("cell-charlie".to_string(), HierarchyLevel::Cell);
 
     // Add anomaly events in Full mode
     let anomaly_events = 10;
@@ -480,7 +480,7 @@ fn test_full_mode_passthrough() {
 /// Validates that different event types get separate aggregation windows.
 #[test]
 fn test_separate_aggregation_windows_per_event_type() {
-    let aggregator = EchelonAggregator::new("squad-delta".to_string(), EchelonType::Squad)
+    let aggregator = HierarchyAggregator::new("cell-delta".to_string(), HierarchyLevel::Cell)
         .with_default_window_duration(Duration::from_millis(50));
 
     // Add different event types
@@ -546,18 +546,19 @@ fn test_custom_bandwidth_allocation() {
 ///
 /// Validates that aggregators properly identify their echelon level.
 #[test]
-fn test_echelon_type_hierarchy() {
-    let squad_agg = EchelonAggregator::new("squad-echo".to_string(), EchelonType::Squad);
-    let platoon_agg = EchelonAggregator::new("platoon-1".to_string(), EchelonType::Platoon);
-    let company_agg = EchelonAggregator::new("company-alpha".to_string(), EchelonType::Company);
+fn test_tier_hierarchy() {
+    let cell_agg = HierarchyAggregator::new("cell-echo".to_string(), HierarchyLevel::Cell);
+    let cohort_agg = HierarchyAggregator::new("cohort-1".to_string(), HierarchyLevel::Cohort);
+    let federation_agg =
+        HierarchyAggregator::new("federation-alpha".to_string(), HierarchyLevel::Federation);
 
-    assert_eq!(squad_agg.echelon_type(), EchelonType::Squad);
-    assert_eq!(platoon_agg.echelon_type(), EchelonType::Platoon);
-    assert_eq!(company_agg.echelon_type(), EchelonType::Company);
+    assert_eq!(cell_agg.tier(), HierarchyLevel::Cell);
+    assert_eq!(cohort_agg.tier(), HierarchyLevel::Cohort);
+    assert_eq!(federation_agg.tier(), HierarchyLevel::Federation);
 
-    assert_eq!(squad_agg.echelon_id(), "squad-echo");
-    assert_eq!(platoon_agg.echelon_id(), "platoon-1");
-    assert_eq!(company_agg.echelon_id(), "company-alpha");
+    assert_eq!(cell_agg.tier_id(), "cell-echo");
+    assert_eq!(cohort_agg.tier_id(), "cohort-1");
+    assert_eq!(federation_agg.tier_id(), "federation-alpha");
 }
 
 /// Test 11: Transmitter Statistics Tracking

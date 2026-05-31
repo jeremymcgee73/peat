@@ -15,8 +15,8 @@ pub mod zone_coordinator;
 
 pub use aggregation_coordinator::HierarchicalAggregator;
 pub use deltas::{
-    current_timestamp_us, CompanyDelta, CompanyFieldUpdate, PlatoonDelta, PlatoonFieldUpdate,
-    SquadDelta, SquadFieldUpdate,
+    current_timestamp_us, CellDelta, CellFieldUpdate, CoalitionDelta, CoalitionFieldUpdate,
+    CohortDelta, CohortFieldUpdate, FederationDelta, FederationFieldUpdate,
 };
 pub use flow_control::{
     BandwidthLimit, CapacityInfo, FlowController, FlowMetrics, MessageDropPolicy, Permit,

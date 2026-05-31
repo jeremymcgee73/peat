@@ -39,8 +39,8 @@ pub const DEFAULT_GEOHASH_PRECISION: usize = 7;
 /// - DDIL tolerance: Account for intermittent connectivity
 pub const BEACON_TTL_SECONDS: u64 = 30;
 
-/// Minimum nodes required to form a squad
-pub const MIN_SQUAD_SIZE: usize = 2;
+/// Minimum nodes required to form a cell
+pub const MIN_CELL_SIZE: usize = 2;
 
 /// Node beacon for geographic discovery
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,8 +114,8 @@ impl GeographicCluster {
         self.platforms.retain(|b| !b.is_expired(current_time));
     }
 
-    /// Check if cluster has enough nodes to form a squad
-    pub fn can_form_squad(&self, min_size: usize) -> bool {
+    /// Check if cluster has enough nodes to form a cell
+    pub fn can_form_cell(&self, min_size: usize) -> bool {
         self.platforms.len() >= min_size
     }
 
@@ -139,7 +139,7 @@ pub fn decode_geohash(hash: &str) -> Result<GeoCoordinate, &'static str> {
     GeoCoordinate::new(lat, lon, 0.0)
 }
 
-/// Geographic discovery manager for organizing nodes into squads
+/// Geographic discovery manager for organizing nodes into cells
 ///
 /// # Architecture
 ///
@@ -209,11 +209,11 @@ impl GeographicDiscovery {
             .retain(|_, cluster| !cluster.platforms.is_empty());
     }
 
-    /// Find clusters that can form squads
-    pub fn find_formable_squads(&self, min_size: usize) -> Vec<&GeographicCluster> {
+    /// Find clusters that can form cells
+    pub fn find_formable_cells(&self, min_size: usize) -> Vec<&GeographicCluster> {
         self.clusters
             .values()
-            .filter(|c| c.can_form_squad(min_size))
+            .filter(|c| c.can_form_cell(min_size))
             .collect()
     }
 
@@ -228,9 +228,9 @@ impl GeographicDiscovery {
 
     /// Check if this platform should initiate cell formation
     /// Returns true if this platform is the "leader" (lowest ID) in its cluster
-    pub fn should_initiate_squad_formation(&self) -> bool {
+    pub fn should_initiate_cell_formation(&self) -> bool {
         if let Some(cluster) = self.my_cluster() {
-            if cluster.can_form_squad(MIN_SQUAD_SIZE) {
+            if cluster.can_form_cell(MIN_CELL_SIZE) {
                 // Check if we're the lowest platform ID (deterministic leader selection)
                 if let Some(min_id) = cluster.platforms.iter().map(|b| &b.platform_id).min() {
                     return min_id == &self.my_platform_id;
@@ -240,10 +240,10 @@ impl GeographicDiscovery {
         false
     }
 
-    /// Get proposed squad members from my cluster
-    pub fn get_squad_members(&self, max_size: usize) -> Option<Vec<String>> {
+    /// Get proposed cell members from my cluster
+    pub fn get_cell_members(&self, max_size: usize) -> Option<Vec<String>> {
         if let Some(cluster) = self.my_cluster() {
-            if cluster.can_form_squad(MIN_SQUAD_SIZE) {
+            if cluster.can_form_cell(MIN_CELL_SIZE) {
                 let mut members = cluster.platform_ids();
                 members.sort(); // Deterministic ordering
                 members.truncate(max_size);
@@ -332,7 +332,7 @@ mod tests {
         let cluster = GeographicCluster::new("9q8yyk8".to_string()).unwrap();
         assert_eq!(cluster.geohash_cell, "9q8yyk8");
         assert_eq!(cluster.platforms.len(), 0);
-        assert!(!cluster.can_form_squad(2));
+        assert!(!cluster.can_form_cell(2));
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         cluster.add_beacon(beacon2);
 
         assert_eq!(cluster.platforms.len(), 2);
-        assert!(cluster.can_form_squad(2));
+        assert!(cluster.can_form_cell(2));
 
         let ids = cluster.platform_ids();
         assert!(ids.contains(&"node_1".to_string()));
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn test_discovery_squad_formation() {
+    fn test_discovery_cell_formation() {
         let mut discovery = GeographicDiscovery::new("node_1".to_string());
         let pos = GeoCoordinate::new(37.7749, -122.4194, 100.0).unwrap();
 
@@ -385,14 +385,14 @@ mod tests {
         assert_eq!(discovery.total_platforms(), 2);
 
         // Should be able to form cells now
-        let formable = discovery.find_formable_squads(2);
+        let formable = discovery.find_formable_cells(2);
         assert_eq!(formable.len(), 1);
 
         // platform_1 should be leader (lowest ID)
-        assert!(discovery.should_initiate_squad_formation());
+        assert!(discovery.should_initiate_cell_formation());
 
-        // Get squad members
-        let members = discovery.get_squad_members(5).unwrap();
+        // Get cell members
+        let members = discovery.get_cell_members(5).unwrap();
         assert_eq!(members.len(), 2);
         assert!(members.contains(&"node_1".to_string()));
         assert!(members.contains(&"node_2".to_string()));
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(discovery.total_platforms(), 4);
         assert_eq!(discovery.cluster_count(), 2);
 
-        let formable = discovery.find_formable_squads(2);
+        let formable = discovery.find_formable_cells(2);
         assert_eq!(formable.len(), 2);
     }
 
@@ -457,8 +457,8 @@ mod tests {
         }
 
         // Only platform_a should be leader
-        assert!(discovery1.should_initiate_squad_formation());
-        assert!(!discovery2.should_initiate_squad_formation());
-        assert!(!discovery3.should_initiate_squad_formation());
+        assert!(discovery1.should_initiate_cell_formation());
+        assert!(!discovery2.should_initiate_cell_formation());
+        assert!(!discovery3.should_initiate_cell_formation());
     }
 }

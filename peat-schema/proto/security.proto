@@ -21,14 +21,48 @@ enum DeviceType {
 }
 
 // Hierarchy level for organizational units
+//
+// 4-tier rigid-schema model per ADR-066. Tier 5+ deferred to ADR-067
+// (parametric N-tier aggregation, planned).
+//
+// ============================================================================
+// WIRE-FORMAT BREAK (ADR-066, peat#904 Phases 1+2)
+// ============================================================================
+// This enum was previously named after military echelons. Value 4 has been
+// rebound from its prior meaning, and values 5–6 have been removed entirely.
+//
+// Old → New semantic mapping:
+//   1: SQUAD     → CELL        (renamed; meaning equivalent — squad and cell
+//                                  were the same concept under different names,
+//                                  see ADR-066 §"Internal inconsistency")
+//   2: PLATOON   → COHORT      (renamed; meaning equivalent)
+//   3: COMPANY   → FEDERATION  (renamed; meaning equivalent)
+//   4: BATTALION → COALITION   (REBOUND — value 4 retained but the tier name
+//                                  changed from a US Army echelon label to the
+//                                  abstract "coalition" tier. Pre-rename
+//                                  DeviceIdentity records carrying value 4 with
+//                                  battalion-equivalent membership are still
+//                                  semantically valid at the same tier.)
+//   5: BRIGADE   → REMOVED     (tier 5+ deferred to ADR-067; pre-rename records
+//                                  carrying value 5 decode as UNSPECIFIED on
+//                                  proto3 deserialization)
+//   6: DIVISION  → REMOVED     (same as 5)
+//
+// Wire compatibility: peat-schema bumps to a new major version (per ADR-066's
+// hard-rename + no-aliases policy). Mixed-version peers cannot mutually decode.
+// Pre-rename DeviceIdentity records persisted as binary protobuf will decode
+// with values 5–6 silently becoming UNSPECIFIED; operators with such records
+// must re-provision device identities before joining a post-rename mesh.
 enum HierarchyLevel {
   HIERARCHY_LEVEL_UNSPECIFIED = 0;
-  HIERARCHY_LEVEL_SQUAD = 1;
-  HIERARCHY_LEVEL_PLATOON = 2;
-  HIERARCHY_LEVEL_COMPANY = 3;
-  HIERARCHY_LEVEL_BATTALION = 4;
-  HIERARCHY_LEVEL_BRIGADE = 5;
-  HIERARCHY_LEVEL_DIVISION = 6;
+  HIERARCHY_LEVEL_CELL = 1;
+  HIERARCHY_LEVEL_COHORT = 2;
+  HIERARCHY_LEVEL_FEDERATION = 3;
+  HIERARCHY_LEVEL_COALITION = 4;
+  // Values 5 and 6 are intentionally reserved (formerly BRIGADE, DIVISION).
+  // Future tier-5+ support comes through ADR-067 parametric N-tier model,
+  // not by re-introducing values here.
+  reserved 5, 6;
 }
 
 // Device identity information
@@ -45,7 +79,7 @@ message DeviceIdentity {
   // Organization unit level
   HierarchyLevel organization_level = 4;
 
-  // Organization unit identifier (e.g., "1-502" for 1st Battalion, 502nd Regiment)
+  // Organization unit identifier (deployment-defined; opaque to peat)
   string organization_unit_id = 5;
 
   // Common name / call sign

@@ -16,7 +16,7 @@
 //!
 //! # Formation key for shared secret authentication (similar to Ditto SharedKey)
 //! [formation]
-//! id = "alpha-company"
+//! id = "alpha-federation"
 //! shared_key = "base64-encoded-32-byte-key"
 //!
 //! [[peers]]
@@ -66,7 +66,7 @@ pub struct PeerConfig {
 #[cfg(feature = "automerge-backend")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormationConfig {
-    /// Formation identifier (e.g., "alpha-company")
+    /// Formation identifier (e.g., "alpha-federation")
     pub id: String,
     /// Base64-encoded 32-byte shared secret
     pub shared_key: String,
@@ -272,7 +272,7 @@ mod tests {
         let toml = format!(
             r#"
             [formation]
-            id = "alpha-company"
+            id = "alpha-federation"
             shared_key = "{}"
 
             [local]
@@ -285,7 +285,7 @@ mod tests {
 
         assert!(config.formation.is_some());
         let formation = config.formation.as_ref().unwrap();
-        assert_eq!(formation.id, "alpha-company");
+        assert_eq!(formation.id, "alpha-federation");
         assert!(config.requires_formation_auth());
     }
 

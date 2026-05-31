@@ -200,8 +200,8 @@ async fn test_multiple_transports_with_discovery() {
 #[tokio::test]
 async fn test_containerlab_static_configuration() {
     // Simulate containerlab configuration
-    let formation = "alpha-company";
-    let nodes = ["squad-1", "squad-2", "squad-3"];
+    let formation = "alpha-federation";
+    let nodes = ["cell-1", "cell-2", "cell-3"];
 
     // Step 1: Pre-compute EndpointIds (done at deployment time)
     let mut endpoint_ids = Vec::new();
@@ -219,11 +219,11 @@ async fn test_containerlab_static_configuration() {
     }
 
     // Step 2: Create transports with deterministic keys
-    let transport1 = IrohTransport::from_seed(&format!("{}/squad-1", formation))
+    let transport1 = IrohTransport::from_seed(&format!("{}/cell-1", formation))
         .await
         .unwrap();
     let transport2 = Arc::new(
-        IrohTransport::from_seed(&format!("{}/squad-2", formation))
+        IrohTransport::from_seed(&format!("{}/cell-2", formation))
             .await
             .unwrap(),
     );

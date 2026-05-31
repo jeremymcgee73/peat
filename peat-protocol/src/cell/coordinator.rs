@@ -7,7 +7,7 @@
 //! # Formation Completion Criteria
 //!
 //! A cell formation is considered complete when:
-//! 1. Minimum squad size met (configurable, default 3)
+//! 1. Minimum cell size met (configurable, default 3)
 //! 2. Leader elected and confirmed
 //! 3. All members have assigned roles
 //! 4. Minimum capability coverage achieved (Communication + Sensor required)
@@ -16,9 +16,9 @@
 //!
 //! # Phase Transition Workflow
 //!
-//! SquadFormation -> OperationalReady (with human approval if needed):
+//! CellFormation -> OperationalReady (with human approval if needed):
 //! - Check formation completion criteria
-//! - Calculate squad readiness score
+//! - Calculate cell readiness score
 //! - Request human approval if any mission-critical capabilities lack DirectControl authority
 //! - Transition to OperationalReady once approved
 
@@ -46,8 +46,8 @@ pub enum FormationStatus {
 /// Cell formation coordinator
 pub struct CellCoordinator {
     /// Cell ID
-    pub squad_id: String,
-    /// Minimum squad size
+    pub cell_id: String,
+    /// Minimum cell size
     pub min_size: usize,
     /// Minimum readiness score (0.0-1.0)
     pub min_readiness: f32,
@@ -64,15 +64,15 @@ pub struct CellCoordinator {
 }
 
 impl CellCoordinator {
-    /// Create a new squad coordinator
-    pub fn new(squad_id: String) -> Self {
+    /// Create a new cell coordinator
+    pub fn new(cell_id: String) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
         Self {
-            squad_id,
+            cell_id,
             min_size: 3,
             min_readiness: 0.7,
             required_capabilities: vec![
@@ -229,7 +229,7 @@ impl CellCoordinator {
         end - self.formation_start
     }
 
-    /// Check if squad can transition to Hierarchical phase
+    /// Check if cell can transition to Hierarchical phase
     pub fn can_transition_to_hierarchical(&self) -> bool {
         self.status == FormationStatus::Ready
     }
@@ -238,7 +238,7 @@ impl CellCoordinator {
     pub fn get_hierarchical_phase(&self) -> Result<Phase> {
         if !self.can_transition_to_hierarchical() {
             return Err(Error::InvalidTransition {
-                from: "Squad".to_string(),
+                from: "Cell".to_string(),
                 to: "Hierarchical".to_string(),
                 reason: format!("Cannot transition with status: {:?}", self.status),
             });
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_coordinator_creation() {
         let coord = CellCoordinator::new("cell1".to_string());
-        assert_eq!(coord.squad_id, "cell1");
+        assert_eq!(coord.cell_id, "cell1");
         assert_eq!(coord.status, FormationStatus::Forming);
         assert_eq!(coord.min_size, 3);
         assert!(!coord.human_approved);
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_member_squad() {
+    fn test_single_member_cell() {
         // Edge case: Single member (< min_size)
         let mut coord = CellCoordinator::new("cell1".to_string());
 
@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn test_exact_minimum_size_squad() {
+    fn test_exact_minimum_size_cell() {
         // Boundary case: Exactly min_size (3) members
         let mut coord = CellCoordinator::new("cell1".to_string());
         assert_eq!(coord.min_size, 3);
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_squad_formation() {
+    fn test_empty_cell_formation() {
         // Edge case: Zero members
         let mut coord = CellCoordinator::new("cell1".to_string());
 

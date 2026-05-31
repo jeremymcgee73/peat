@@ -1,9 +1,9 @@
 //! E2E test for hierarchical document sync with Automerge+Iroh backend
 //!
 //! Tests the multi-tier topology that experiments team uses:
-//! - 1 platoon leader at the top
-//! - 4 soldiers connecting upward to the leader
-//! - Documents flow UP the hierarchy (soldier summaries → leader aggregation)
+//! - 1 cohort leader at the top
+//! - 4 members connecting upward to the leader
+//! - Documents flow UP the hierarchy (member summaries → leader aggregation)
 //!
 //! This validates Issue #346: documents must flow in hierarchical (non-mesh) topologies.
 
@@ -25,7 +25,7 @@ const SYNC_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// ```text
 ///                  ┌─────────────┐
 ///                  │   Leader    │
-///                  │  (Platoon)  │
+///                  │  (Cohort)   │
 ///                  └──────┬──────┘
 ///            ┌─────┬──────┼──────┬─────┐
 ///            ▼     ▼      ▼      ▼     ▼

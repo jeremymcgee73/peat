@@ -5,15 +5,16 @@
 //!
 //! ## Overview
 //!
-//! Events flow upward through the Peat hierarchy (platform → squad → platoon → company).
-//! Each echelon applies aggregation policies to reduce bandwidth while preserving
+//! Events flow upward through the Peat hierarchy
+//! (node → cell → cohort → federation → coalition).
+//! Each tier applies aggregation policies to reduce bandwidth while preserving
 //! critical information.
 //!
 //! ## Components
 //!
 //! - [`EventEmitter`]: Emits events with routing policies to priority queues (Phase 1)
 //! - [`PriorityEventQueue`]: 4-level priority queue for event transmission (Phase 1)
-//! - [`EchelonAggregator`]: Aggregates events at echelon boundaries (Phase 2)
+//! - [`HierarchyAggregator`]: Aggregates events at tier boundaries (Phase 2)
 //! - [`SummaryStrategy`]: Trait for type-specific summarization (Phase 2)
 //! - [`EventQueryHandler`]: Handles queries for locally stored events (Phase 3)
 //! - [`EventStore`]: Trait for event storage backends (Phase 3)
@@ -23,12 +24,12 @@
 //! ## Event Flow
 //!
 //! ```text
-//! Platform → EventEmitter → PriorityQueue → EchelonAggregator → Parent Echelon
+//! Node → EventEmitter → PriorityQueue → HierarchyAggregator → Parent Tier
 //!                               ↓                  ↓
 //!                         (CRITICAL preempts) (Summary/Full/Query)
 //!                         (HIGH/NORMAL/LOW weighted)
 //!
-//! Parent Echelon ──EventQuery──> EventQueryHandler ──> EventStore
+//! Parent Tier ──EventQuery──> EventQueryHandler ──> EventStore
 //!        ↑                                               ↓
 //!        └────────────EventQueryResponse────────────────┘
 //! ```
@@ -36,22 +37,23 @@
 //! ## Propagation Modes
 //!
 //! - `Full`: Forward complete event upward immediately
-//! - `Summary`: Aggregate events at echelon, forward summaries
-//! - `Query`: Store locally, respond to queries from higher echelons
+//! - `Summary`: Aggregate events at tier, forward summaries
+//! - `Query`: Store locally, respond to queries from higher tiers
 //! - `Local`: No propagation, local storage only
 //!
 //! ## Example
 //!
 //! ```ignore
-//! use peat_protocol::event::{EventEmitter, EchelonAggregator, EchelonType, EventQueryHandler};
+//! use peat_protocol::event::{EventEmitter, HierarchyAggregator, EventQueryHandler};
+//! use peat_protocol::security::HierarchyLevel;
 //!
-//! // Platform emits events
-//! let emitter = EventEmitter::new("platform-1".to_string(), "squad-1".to_string());
+//! // Node emits events
+//! let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 //! emitter.emit_product("detection", payload, PropagationMode::PropagationSummary, EventPriority::PriorityNormal)?;
 //!
-//! // Squad leader aggregates events from platforms
-//! let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad);
-//! for event in platform_events {
+//! // Cell leader aggregates events from nodes
+//! let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell);
+//! for event in node_events {
 //!     aggregator.receive(event)?;
 //! }
 //!
@@ -60,7 +62,7 @@
 //! let events_to_parent = aggregator.pop_all();
 //!
 //! // Query handler for locally stored events
-//! let query_handler = EventQueryHandler::with_memory_store("squad-1".to_string(), "squad-1".to_string());
+//! let query_handler = EventQueryHandler::with_memory_store("cell-1".to_string(), "cell-1".to_string());
 //! query_handler.store_event(event);
 //! let response = query_handler.query_local(&query);
 //! ```
@@ -72,7 +74,7 @@ mod query;
 mod summary;
 mod transmitter;
 
-pub use aggregator::{AggregationWindow, EchelonAggregator, EchelonType};
+pub use aggregator::{AggregationWindow, HierarchyAggregator, HierarchyLevel};
 pub use emitter::EventEmitter;
 pub use priority_queue::PriorityEventQueue;
 pub use query::{create_filters, EventQueryHandler, EventStore, InMemoryEventStore, QueryResult};

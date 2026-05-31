@@ -1,11 +1,11 @@
 //! Discovery Coordinator for Phase 1
 //!
-//! Orchestrates the bootstrap phase for nodes to discover and form initial squads.
+//! Orchestrates the bootstrap phase for nodes to discover and form initial cells.
 //!
 //! # Architecture
 //!
 //! The DiscoveryCoordinator manages:
-//! - Phase state transitions (Discovery → Squad)
+//! - Phase state transitions (Discovery → Cell)
 //! - Discovery timeout management (default 60s)
 //! - Tracking unassigned platforms
 //! - Discovery metrics collection
@@ -15,7 +15,7 @@
 //!
 //! Three strategies are supported:
 //! 1. **Geographic Self-Organization** (E3.1) - Platforms form cells based on proximity
-//! 2. **C2-Directed Assignment** (E3.2) - C2 explicitly assigns nodes to squads
+//! 2. **C2-Directed Assignment** (E3.2) - C2 explicitly assigns nodes to cells
 //! 3. **Capability-Based Queries** (E3.3) - Platforms query and form cells by capabilities
 //!
 //! ## State Machine
@@ -23,9 +23,9 @@
 //! ```text
 //! Discovery (initial)
 //!   │
-//!   ├─ timeout expired & assigned → Squad
+//!   ├─ timeout expired & assigned → Cell
 //!   ├─ timeout expired & unassigned → Failed (can retry)
-//!   └─ forced transition → Squad
+//!   └─ forced transition → Cell
 //! ```
 
 use crate::storage::CellStore;
@@ -44,7 +44,7 @@ pub const DEFAULT_BOOTSTRAP_TIMEOUT_SECS: u64 = 60;
 pub enum BootstrapStrategy {
     /// Geographic proximity-based cell formation
     Geographic,
-    /// C2-directed squad assignment
+    /// C2-directed cell assignment
     Directed,
     /// Capability-based query and formation
     CapabilityBased,
@@ -80,12 +80,12 @@ pub enum BootstrapStatus {
 pub struct DiscoveryMetrics {
     /// Total nodes participating
     pub total_platforms: usize,
-    /// Platforms successfully assigned to squads
+    /// Platforms successfully assigned to cells
     pub assigned_platforms: usize,
     /// Platforms still unassigned
     pub unassigned_platforms: usize,
     /// Number of cells formed
-    pub squads_formed: usize,
+    pub cells_formed: usize,
     /// Time elapsed since bootstrap start (seconds)
     pub elapsed_seconds: f64,
     /// Discovery strategy used
@@ -105,12 +105,12 @@ impl DiscoveryMetrics {
         self.assigned_platforms as f32 / self.total_platforms as f32
     }
 
-    /// Calculate average squad size
-    pub fn avg_squad_size(&self) -> f32 {
-        if self.squads_formed == 0 {
+    /// Calculate average cell size
+    pub fn avg_cell_size(&self) -> f32 {
+        if self.cells_formed == 0 {
             return 0.0;
         }
-        self.assigned_platforms as f32 / self.squads_formed as f32
+        self.assigned_platforms as f32 / self.cells_formed as f32
     }
 
     /// Check if bootstrap was successful (>90% assigned)
@@ -137,7 +137,7 @@ pub struct DiscoveryCoordinator<B: crate::sync::DataSyncBackend> {
     status: BootstrapStatus,
     /// Tracked platform IDs
     tracked_platforms: HashSet<String>,
-    /// Node to squad assignments
+    /// Node to cell assignments
     assignments: HashMap<String, String>,
     /// Message count (optional tracking)
     message_count: usize,
@@ -199,9 +199,9 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
         Ok(())
     }
 
-    /// Register a platform assignment to a squad
+    /// Register a platform assignment to a cell
     #[instrument(skip(self))]
-    pub fn register_assignment(&mut self, platform_id: String, squad_id: String) -> Result<()> {
+    pub fn register_assignment(&mut self, platform_id: String, cell_id: String) -> Result<()> {
         if self.status != BootstrapStatus::InProgress {
             return Err(Error::InvalidTransition {
                 from: format!("{:?}", self.status),
@@ -215,12 +215,9 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
             return Ok(());
         }
 
-        debug!(
-            "Registering assignment: {} → squad {}",
-            platform_id, squad_id
-        );
+        debug!("Registering assignment: {} → cell {}", platform_id, cell_id);
 
-        self.assignments.insert(platform_id, squad_id);
+        self.assignments.insert(platform_id, cell_id);
         Ok(())
     }
 
@@ -253,7 +250,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
     }
 
     /// Get number of unique cells formed
-    pub async fn squads_formed(&self) -> Result<usize> {
+    pub async fn cells_formed(&self) -> Result<usize> {
         let cells = self.store.get_valid_cells().await?;
         Ok(cells.len())
     }
@@ -311,11 +308,11 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
     ///
     /// Should be called after bootstrap completes successfully or times out.
     #[instrument(skip(self))]
-    pub async fn transition_to_squad_phase(&mut self) -> Result<()> {
+    pub async fn transition_to_cell_phase(&mut self) -> Result<()> {
         if self.current_phase != Phase::Discovery {
             return Err(Error::InvalidTransition {
                 from: format!("{:?}", self.current_phase),
-                to: "Squad".to_string(),
+                to: "Cell".to_string(),
                 reason: "Not in Discovery phase".to_string(),
             });
         }
@@ -323,7 +320,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
         if self.status == BootstrapStatus::InProgress {
             return Err(Error::InvalidTransition {
                 from: format!("{:?}", self.status),
-                to: "Squad".to_string(),
+                to: "Cell".to_string(),
                 reason: "Discovery still in progress".to_string(),
             });
         }
@@ -365,13 +362,13 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
             0.0
         };
 
-        let squads_formed = self.squads_formed().await?;
+        let cells_formed = self.cells_formed().await?;
 
         Ok(DiscoveryMetrics {
             total_platforms: self.tracked_platforms.len(),
             assigned_platforms: self.assignments.len(),
             unassigned_platforms: self.unassigned_platforms().len(),
-            squads_formed,
+            cells_formed,
             elapsed_seconds: elapsed,
             strategy: self.strategy,
             status: self.status,

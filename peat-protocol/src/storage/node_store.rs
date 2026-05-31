@@ -212,14 +212,14 @@ impl<B: DataSyncBackend> NodeStore<B> {
         Ok(states)
     }
 
-    /// Get all nodes in a specific squad
+    /// Get all nodes in a specific cell
     #[instrument(skip(self))]
-    pub async fn get_nodes_by_cell(&self, squad_id: &str) -> Result<Vec<NodeState>> {
-        debug!("Querying nodes by squad: {}", squad_id);
+    pub async fn get_nodes_by_cell(&self, cell_id: &str) -> Result<Vec<NodeState>> {
+        debug!("Querying nodes by cell: {}", cell_id);
 
         let query = Query::Eq {
-            field: "squad_id".to_string(),
-            value: Value::String(squad_id.to_string()),
+            field: "cell_id".to_string(),
+            value: Value::String(cell_id.to_string()),
         };
         let docs = self
             .backend

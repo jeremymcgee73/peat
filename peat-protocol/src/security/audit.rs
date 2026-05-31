@@ -35,7 +35,7 @@
 //! logger.log_denial(
 //!     "device:abc123",
 //!     "SetCellLeader",
-//!     "cell:squad-1",
+//!     "cell:cell-1",
 //!     "role=Member, required=Leader",
 //! );
 //! ```

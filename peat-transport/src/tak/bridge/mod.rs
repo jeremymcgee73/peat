@@ -31,7 +31,7 @@ mod config;
 mod filter;
 
 pub use aggregation::Aggregator;
-pub use config::{AggregationPolicy, BridgeConfig, EchelonLevel};
+pub use config::{AggregationPolicy, BridgeConfig, HierarchyLevel};
 pub use filter::{BridgeFilter, FilterDecision, GeoFilter};
 
 use async_trait::async_trait;
@@ -71,20 +71,21 @@ impl PeatMessage {
         }
     }
 
-    /// Get the echelon level for filtering decisions
-    pub fn echelon(&self) -> EchelonLevel {
+    /// Get the hierarchy tier for filtering decisions
+    pub fn tier(&self) -> HierarchyLevel {
         match self {
             PeatMessage::Track(t) => {
-                // Determine echelon from cell membership
+                // Determine tier from cell membership
                 if t.cell_id.is_some() {
-                    EchelonLevel::Squad
+                    HierarchyLevel::Cell
                 } else {
-                    EchelonLevel::Platform
+                    HierarchyLevel::Node
                 }
             }
-            PeatMessage::Capability(_) => EchelonLevel::Platform,
-            PeatMessage::Handoff(_) => EchelonLevel::Cell,
-            PeatMessage::FormationSummary(_) => EchelonLevel::Formation,
+            PeatMessage::Capability(_) => HierarchyLevel::Node,
+            PeatMessage::Handoff(_) => HierarchyLevel::Cell,
+            // Formation summaries map to the top tier (Coalition) per ADR-066.
+            PeatMessage::FormationSummary(_) => HierarchyLevel::Coalition,
         }
     }
 
@@ -163,7 +164,7 @@ pub enum PublishResult {
 /// Peat-TAK Bridge
 ///
 /// Connects Peat mesh network to TAK ecosystem with:
-/// - Hierarchical filtering based on echelon
+/// - Hierarchical filtering based on tier
 /// - Aggregation policies for bandwidth optimization
 /// - QoS-aware priority mapping
 /// - Bidirectional message flow
@@ -341,7 +342,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_peat_message_echelon() {
+    fn test_peat_message_tier() {
         use peat_protocol::cot::Position;
 
         let track = TrackUpdate {
@@ -360,7 +361,7 @@ mod tests {
         };
 
         let msg = PeatMessage::Track(track);
-        assert_eq!(msg.echelon(), EchelonLevel::Squad);
+        assert_eq!(msg.tier(), HierarchyLevel::Cell);
     }
 
     #[test]

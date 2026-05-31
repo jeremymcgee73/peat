@@ -13,7 +13,7 @@
 //! 1. **C2 Issues Assignment**: C2 broadcasts `CellAssignment` messages
 //! 2. **Node Receives**: Platforms observe assignments via the sync backend
 //! 3. **Validation**: Node validates assignment (exists, not full, authorized)
-//! 4. **Execution**: Node joins squad and updates state
+//! 4. **Execution**: Node joins cell and updates state
 //! 5. **Confirmation**: Assignment status tracked in distributed state
 //!
 //! ## Message Format
@@ -21,7 +21,7 @@
 //! ```json
 //! {
 //!   "assignment_id": "assign_123",
-//!   "squad_id": "squad_alpha",
+//!   "cell_id": "cell_alpha",
 //!   "platform_ids": ["node_1", "node_2", "node_3"],
 //!   "issued_by": "c2_controller_1",
 //!   "timestamp": 1698765432,
@@ -72,15 +72,15 @@ pub enum AssignmentStatus {
 
 /// Cell assignment message from C2
 ///
-/// This message is broadcast via the sync backend and contains explicit platform-to-squad
+/// This message is broadcast via the sync backend and contains explicit platform-to-cell
 /// assignments. Platforms observe these messages and execute them if valid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellAssignment {
     /// Unique identifier for this assignment
     pub assignment_id: String,
-    /// Target squad ID
-    pub squad_id: String,
-    /// List of platform IDs to assign to this squad
+    /// Target cell ID
+    pub cell_id: String,
+    /// List of platform IDs to assign to this cell
     pub platform_ids: Vec<String>,
     /// C2 authority issuing the assignment
     pub issued_by: String,
@@ -95,10 +95,10 @@ pub struct CellAssignment {
 }
 
 impl CellAssignment {
-    /// Create a new squad assignment
+    /// Create a new cell assignment
     pub fn new(
         assignment_id: String,
-        squad_id: String,
+        cell_id: String,
         platform_ids: Vec<String>,
         issued_by: String,
         priority: AssignmentPriority,
@@ -110,7 +110,7 @@ impl CellAssignment {
 
         Self {
             assignment_id,
-            squad_id,
+            cell_id,
             platform_ids,
             issued_by,
             timestamp,
@@ -161,11 +161,11 @@ pub enum ValidationResult {
     /// Assignment is valid and can be executed
     Valid,
     /// Cell does not exist
-    SquadNotFound,
+    CellNotFound,
     /// Cell is full and cannot accept more members
-    SquadFull,
-    /// Node is already in another squad
-    PlatformAlreadyAssigned { current_squad: String },
+    CellFull,
+    /// Node is already in another cell
+    PlatformAlreadyAssigned { current_cell: String },
     /// Assignment is from unauthorized source
     Unauthorized,
     /// Assignment has expired
@@ -176,7 +176,7 @@ pub enum ValidationResult {
 
 /// C2-Directed Assignment Manager
 ///
-/// Processes C2-issued squad assignments and manages assignment lifecycle.
+/// Processes C2-issued cell assignments and manages assignment lifecycle.
 pub struct DirectedAssignmentManager<B: crate::sync::DataSyncBackend> {
     /// Cell storage
     store: CellStore<B>,
@@ -205,12 +205,12 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
         self
     }
 
-    /// Process a received squad assignment
+    /// Process a received cell assignment
     #[instrument(skip(self, assignment))]
     pub async fn process_assignment(&mut self, assignment: CellAssignment) -> Result<()> {
         info!(
-            "Processing assignment {} for squad {}",
-            assignment.assignment_id, assignment.squad_id
+            "Processing assignment {} for cell {}",
+            assignment.assignment_id, assignment.cell_id
         );
 
         // Check if this assignment applies to us
@@ -246,7 +246,7 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
         Ok(())
     }
 
-    /// Validate a squad assignment
+    /// Validate a cell assignment
     #[instrument(skip(self, assignment))]
     async fn validate_assignment(&self, assignment: &CellAssignment) -> Result<ValidationResult> {
         debug!("Validating assignment {}", assignment.assignment_id);
@@ -261,24 +261,24 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
             return Ok(ValidationResult::Expired);
         }
 
-        // Check if squad exists
-        let squad = self.store.get_cell(&assignment.squad_id).await?;
-        if squad.is_none() {
-            return Ok(ValidationResult::SquadNotFound);
+        // Check if cell exists
+        let cell = self.store.get_cell(&assignment.cell_id).await?;
+        if cell.is_none() {
+            return Ok(ValidationResult::CellNotFound);
         }
 
-        let squad = squad.unwrap();
+        let cell = cell.unwrap();
 
-        // Check if squad can accept new members
-        if squad.is_full() {
-            return Ok(ValidationResult::SquadFull);
+        // Check if cell can accept new members
+        if cell.is_full() {
+            return Ok(ValidationResult::CellFull);
         }
 
-        // Check if platform is already in a squad
-        if let Some(current_squad) = self.get_current_squad(&self.my_platform_id).await? {
-            if current_squad != assignment.squad_id {
+        // Check if platform is already in a cell
+        if let Some(current_cell) = self.get_current_cell(&self.my_platform_id).await? {
+            if current_cell != assignment.cell_id {
                 return Ok(ValidationResult::PlatformAlreadyAssigned {
-                    current_squad: current_squad.clone(),
+                    current_cell: current_cell.clone(),
                 });
             }
         }
@@ -290,15 +290,15 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
     #[instrument(skip(self, assignment))]
     async fn execute_assignment(&mut self, mut assignment: CellAssignment) -> Result<()> {
         info!(
-            "Executing assignment {} - joining squad {}",
-            assignment.assignment_id, assignment.squad_id
+            "Executing assignment {} - joining cell {}",
+            assignment.assignment_id, assignment.cell_id
         );
 
         assignment.mark_in_progress();
 
-        // Add platform to squad
+        // Add platform to cell
         self.store
-            .add_member(&assignment.squad_id, self.my_platform_id.clone())
+            .add_member(&assignment.cell_id, self.my_platform_id.clone())
             .await?;
 
         assignment.mark_completed();
@@ -313,13 +313,13 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
         Ok(())
     }
 
-    /// Get the current squad for a platform
-    async fn get_current_squad(&self, platform_id: &str) -> Result<Option<String>> {
-        let valid_squads = self.store.get_valid_cells().await?;
+    /// Get the current cell for a platform
+    async fn get_current_cell(&self, platform_id: &str) -> Result<Option<String>> {
+        let valid_cells = self.store.get_valid_cells().await?;
 
-        for squad in valid_squads {
-            if squad.is_member(platform_id) {
-                return Ok(squad.config.as_ref().map(|c| c.id.clone()));
+        for cell in valid_cells {
+            if cell.is_member(platform_id) {
+                return Ok(cell.config.as_ref().map(|c| c.id.clone()));
             }
         }
 

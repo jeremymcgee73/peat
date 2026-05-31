@@ -409,7 +409,7 @@ mod tests {
                     nanos: 0,
                 }),
             }],
-            platoon_id: None,
+            cohort_id: None,
             timestamp: Some(Timestamp {
                 seconds: 1234567890,
                 nanos: 0,
@@ -522,20 +522,20 @@ mod tests {
         use crate::storage::automerge_conversion::{
             automerge_to_message_if_complete, message_to_automerge,
         };
-        use peat_schema::hierarchy::v1::PlatoonSummary;
+        use peat_schema::hierarchy::v1::CohortSummary;
 
         // Create an empty document (simulates partial sync)
         let empty_doc = Automerge::new();
 
         // Should return None for incomplete document
-        let result: Result<Option<PlatoonSummary>> =
-            automerge_to_message_if_complete(&empty_doc, "platoon_id");
+        let result: Result<Option<CohortSummary>> =
+            automerge_to_message_if_complete(&empty_doc, "cohort_id");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
 
         // Create a complete document
-        let summary = PlatoonSummary {
-            platoon_id: "platoon-1".to_string(),
+        let summary = CohortSummary {
+            cohort_id: "cohort-1".to_string(),
             leader_id: "leader-1".to_string(),
             ..Default::default()
         };
@@ -543,10 +543,10 @@ mod tests {
         let complete_doc = message_to_automerge(&summary).expect("Failed to create document");
 
         // Should return Some for complete document
-        let result: Result<Option<PlatoonSummary>> =
-            automerge_to_message_if_complete(&complete_doc, "platoon_id");
+        let result: Result<Option<CohortSummary>> =
+            automerge_to_message_if_complete(&complete_doc, "cohort_id");
         assert!(result.is_ok());
         let restored = result.unwrap().expect("Should have value");
-        assert_eq!(restored.platoon_id, "platoon-1");
+        assert_eq!(restored.cohort_id, "cohort-1");
     }
 }

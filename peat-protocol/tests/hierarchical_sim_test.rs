@@ -24,10 +24,10 @@ mod tests {
 
     /// Test: Verification should succeed with reasonable document counts
     #[test]
-    fn test_platoon_leader_with_reasonable_doc_count() {
-        // GIVEN: A platoon leader role
-        let _role = "platoon_leader";
-        let doc_count = 24; // All 24 nodes in platoon
+    fn test_cohort_leader_with_reasonable_doc_count() {
+        // GIVEN: A cohort leader role
+        let _role = "cohort_leader";
+        let doc_count = 24; // All 24 nodes in cohort
         let _cap_filter_enabled = true;
 
         // WHEN: We verify the document count
@@ -35,10 +35,10 @@ mod tests {
         let in_range = doc_count >= expected_range.0 && doc_count <= expected_range.1;
 
         // THEN: This test SHOULD FAIL with current logic
-        // Because platoon leader syncs ALL 24 documents, not just 2-6
+        // Because cohort leader syncs ALL 24 documents, not just 2-6
         assert!(
             !in_range,
-            "Test confirms current bug: platoon leader expects 1-6 docs but gets {} (all nodes)",
+            "Test confirms current bug: cohort leader expects 1-6 docs but gets {} (all nodes)",
             doc_count
         );
     }
@@ -48,10 +48,10 @@ mod tests {
     fn test_verification_should_accept_any_positive_count() {
         // GIVEN: Various roles with different document counts
         let test_cases = vec![
-            ("battalion_commander", 96, true), // All battalion docs
-            ("platoon_leader", 24, true),      // All platoon docs
-            ("squad_leader", 8, true),         // All squad docs
-            ("soldier", 1, true),              // At least own doc
+            ("coalition_commander", 96, true), // All coalition docs
+            ("cohort_leader", 24, true),       // All cohort docs
+            ("cell_leader", 8, true),          // All cell docs
+            ("member", 1, true),               // At least own doc
             ("any_role", 0, false),            // Zero docs = failure
         ];
 
@@ -100,8 +100,8 @@ mod tests {
     /// Test: The actual bug - verification returns true but should enforce ranges
     #[test]
     fn test_current_bug_verification_ignores_range_check() {
-        // GIVEN: A platoon leader with way more docs than expected
-        let _role = "platoon_leader";
+        // GIVEN: A cohort leader with way more docs than expected
+        let _role = "cohort_leader";
         let doc_count = 50; // Far outside expected range of (1, 6)
         let expected_range = (1, 6);
 

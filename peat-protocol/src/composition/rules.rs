@@ -17,7 +17,7 @@ pub struct CompositionContext {
     /// Node IDs contributing capabilities
     pub node_ids: Vec<String>,
 
-    /// Cell or squad ID if composing within a cell
+    /// Cell ID if composing within a cell
     pub cell_id: Option<String>,
 
     /// Timestamp of composition (for temporal analysis)

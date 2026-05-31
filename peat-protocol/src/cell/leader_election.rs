@@ -5,7 +5,7 @@
 //!
 //! # Architecture
 //!
-//! The leader election protocol ensures each squad converges to a single leader
+//! The leader election protocol ensures each cell converges to a single leader
 //! through a deterministic, capability-based selection process:
 //!
 //! ## Election Flow
@@ -185,13 +185,13 @@ impl LeaderHeartbeat {
 
 /// Leader Election Manager
 ///
-/// Manages the leader election process for a squad, including:
+/// Manages the leader election process for a cell, including:
 /// - Initial election convergence
 /// - Leader failure detection
 /// - Automatic re-election
 pub struct LeaderElectionManager {
     /// Cell ID
-    squad_id: String,
+    cell_id: String,
     /// Node ID
     platform_id: String,
     /// Message bus for election messages
@@ -218,7 +218,7 @@ pub struct LeaderElectionManager {
 impl LeaderElectionManager {
     /// Create a new leader election manager
     pub fn new(
-        squad_id: String,
+        cell_id: String,
         platform_id: String,
         message_bus: Arc<CellMessageBus>,
         capabilities: Vec<Capability>,
@@ -227,7 +227,7 @@ impl LeaderElectionManager {
         let current_round = ElectionRound::new(1);
 
         Self {
-            squad_id,
+            cell_id,
             platform_id,
             message_bus,
             state: Arc::new(Mutex::new(ElectionState::Candidate)),
@@ -244,7 +244,7 @@ impl LeaderElectionManager {
     /// Start election process
     #[instrument(skip(self))]
     pub fn start_election(&self) -> Result<()> {
-        info!("Starting leader election for squad {}", self.squad_id);
+        info!("Starting leader election for cell {}", self.cell_id);
 
         let score = self.my_score.lock().unwrap().clone();
         let round = {
@@ -385,7 +385,7 @@ impl LeaderElectionManager {
     /// Trigger re-election
     #[instrument(skip(self))]
     fn trigger_reelection(&self) -> Result<()> {
-        info!("Triggering re-election for squad {}", self.squad_id);
+        info!("Triggering re-election for cell {}", self.cell_id);
 
         // Reset state to candidate
         *self.state.lock().unwrap() = ElectionState::Candidate;
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn test_election_manager_creation() {
         let message_bus = Arc::new(CellMessageBus::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
         ));
 
@@ -586,7 +586,7 @@ mod tests {
         )];
 
         let manager = LeaderElectionManager::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
             message_bus,
             capabilities,
@@ -600,12 +600,12 @@ mod tests {
     #[test]
     fn test_set_as_leader() {
         let message_bus = Arc::new(CellMessageBus::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
         ));
 
         let manager = LeaderElectionManager::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
             message_bus,
             vec![],
@@ -620,12 +620,12 @@ mod tests {
     #[test]
     fn test_election_state_transitions() {
         let message_bus = Arc::new(CellMessageBus::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
         ));
 
         let manager = LeaderElectionManager::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
             message_bus,
             vec![],
@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn test_start_election() {
         let message_bus = Arc::new(CellMessageBus::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
         ));
 
@@ -693,7 +693,7 @@ mod tests {
         )];
 
         let manager = LeaderElectionManager::new(
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             "node_1".to_string(),
             message_bus,
             capabilities,

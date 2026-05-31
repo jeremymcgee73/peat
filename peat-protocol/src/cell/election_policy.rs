@@ -13,7 +13,7 @@ use std::env;
 pub struct ElectionPolicyConfig {
     /// Default policy to use
     pub default_policy: LeadershipPolicy,
-    /// Minimum rank required for squad leader (None = no minimum)
+    /// Minimum rank required for cell leader (None = no minimum)
     pub min_leader_rank: Option<OperatorRank>,
     /// Whether autonomous nodes can be leaders
     pub allow_autonomous_leaders: bool,
@@ -96,7 +96,7 @@ impl ElectionPolicyConfig {
         config
     }
 
-    /// Check if an operator is qualified to be squad leader
+    /// Check if an operator is qualified to be cell leader
     pub fn is_qualified_leader(&self, operator: &Operator) -> bool {
         // Check cognitive load
         if operator.cognitive_load() > self.max_cognitive_load {
@@ -390,7 +390,7 @@ mod tests {
 
         let (auth, _tech) = policy.get_weights(&context);
         // Should keep authority weight at phase level when required
-        assert_eq!(auth, 0.6); // Same as base squad weight (already high enough)
+        assert_eq!(auth, 0.6); // Same as base cell weight (already high enough)
     }
 
     #[test]
