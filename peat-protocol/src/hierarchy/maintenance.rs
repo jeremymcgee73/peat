@@ -221,11 +221,8 @@ impl HierarchyMaintainer {
             merged.timestamp = cell1.timestamp;
         }
 
-        // Inherit platoon from either cell (prefer non-None)
-        merged.platoon_id = cell1
-            .platoon_id
-            .clone()
-            .or_else(|| cell2.platoon_id.clone());
+        // Inherit cohort from either cell (prefer non-None)
+        merged.cohort_id = cell1.cohort_id.clone().or_else(|| cell2.cohort_id.clone());
 
         // Leader will be re-elected by the merged cell
         merged.leader_id = None;
@@ -304,9 +301,9 @@ impl HierarchyMaintainer {
         cell_a.capabilities = cell.capabilities.clone();
         cell_b.capabilities = cell.capabilities.clone();
 
-        // Inherit platoon
-        cell_a.platoon_id = cell.platoon_id.clone();
-        cell_b.platoon_id = cell.platoon_id.clone();
+        // Inherit cohort
+        cell_a.cohort_id = cell.cohort_id.clone();
+        cell_b.cohort_id = cell.cohort_id.clone();
 
         // Inherit timestamp
         cell_a.timestamp = cell.timestamp;
@@ -374,9 +371,9 @@ impl HierarchyMaintainer {
             let mut score = candidate_size; // Prefer smaller cells
 
             // Bonus for same zone
-            if cell.platoon_id.is_some()
-                && candidate.platoon_id.is_some()
-                && cell.platoon_id == candidate.platoon_id
+            if cell.cohort_id.is_some()
+                && candidate.cohort_id.is_some()
+                && cell.cohort_id == candidate.cohort_id
             {
                 score = score.saturating_sub(100); // Strong preference for same zone
             }
@@ -549,7 +546,7 @@ impl<B: crate::sync::DataSyncBackend> RebalancingCoordinator<B> {
 
                         // Perform merge in routing table
                         let mut routing = self.routing_table.lock().unwrap();
-                        let zone_id = cell.platoon_id.as_deref();
+                        let zone_id = cell.cohort_id.as_deref();
 
                         let merged_id = uuid::Uuid::new_v4().to_string();
                         routing.merge_cells(
@@ -576,7 +573,7 @@ impl<B: crate::sync::DataSyncBackend> RebalancingCoordinator<B> {
 
                     // Update routing table
                     let mut routing = self.routing_table.lock().unwrap();
-                    let zone_id = cell.platoon_id.as_deref();
+                    let zone_id = cell.cohort_id.as_deref();
 
                     // Collect member IDs for each new cell
                     let nodes_a: Vec<&str> = cell_a.members.iter().map(|s| s.as_str()).collect();
@@ -821,13 +818,13 @@ mod tests {
         let maintainer = HierarchyMaintainer::new(3, 10, 2, 8);
 
         let mut cell = create_test_cell("cell_1", 2, 10);
-        cell.platoon_id = Some("zone_north".to_string());
+        cell.cohort_id = Some("zone_north".to_string());
 
         let mut candidate1 = create_test_cell("cell_2", 4, 10);
-        candidate1.platoon_id = Some("zone_south".to_string()); // Different zone
+        candidate1.cohort_id = Some("zone_south".to_string()); // Different zone
 
         let mut candidate2 = create_test_cell("cell_3", 5, 10);
-        candidate2.platoon_id = Some("zone_north".to_string()); // Same zone
+        candidate2.cohort_id = Some("zone_north".to_string()); // Same zone
 
         let candidates = vec![candidate1, candidate2];
 
@@ -891,8 +888,8 @@ mod tests {
         let mut cell1 = create_test_cell("cell_1", 2, 10);
         let mut cell2 = create_test_cell("cell_2", 2, 10);
 
-        cell1.platoon_id = Some("zone_north".to_string());
-        cell2.platoon_id = Some("zone_north".to_string());
+        cell1.cohort_id = Some("zone_north".to_string());
+        cell2.cohort_id = Some("zone_north".to_string());
 
         // Add nodes to routing table
         routing_table.assign_node("cell_1_0", "cell_1", 100);
@@ -933,7 +930,7 @@ mod tests {
 
         // Create oversized cell
         let mut cell = create_test_cell("cell_oversized", 12, 15);
-        cell.platoon_id = Some("zone_south".to_string());
+        cell.cohort_id = Some("zone_south".to_string());
 
         // Add nodes to routing table
         for i in 0..12 {
@@ -998,7 +995,7 @@ mod tests {
 
         // 1. Create oversized cell with 12 members
         let mut cell = create_test_cell("cell_1", 12, 15);
-        cell.platoon_id = Some("zone_alpha".to_string());
+        cell.cohort_id = Some("zone_alpha".to_string());
 
         for i in 0..12 {
             routing_table.assign_node(&format!("cell_1_{}", i), "cell_1", 100 + i);
@@ -1024,7 +1021,7 @@ mod tests {
 
         // 3. Create a small cell to merge with cell_a
         let mut cell_small = create_test_cell("cell_small", 2, 10);
-        cell_small.platoon_id = Some("zone_alpha".to_string());
+        cell_small.cohort_id = Some("zone_alpha".to_string());
 
         routing_table.assign_node("cell_small_0", "cell_small", 300);
         routing_table.assign_node("cell_small_1", "cell_small", 301);
@@ -1076,17 +1073,17 @@ mod tests {
 
         // Create undersized cell needing merge
         let mut cell_small = create_test_cell("cell_small", 2, 10);
-        cell_small.platoon_id = Some("zone_north".to_string());
+        cell_small.cohort_id = Some("zone_north".to_string());
 
         // Create candidates with different characteristics
         let mut cell_large = create_test_cell("cell_large", 8, 10);
-        cell_large.platoon_id = Some("zone_south".to_string()); // Different zone
+        cell_large.cohort_id = Some("zone_south".to_string()); // Different zone
 
         let mut cell_medium = create_test_cell("cell_medium", 5, 10);
-        cell_medium.platoon_id = Some("zone_south".to_string()); // Different zone
+        cell_medium.cohort_id = Some("zone_south".to_string()); // Different zone
 
         let mut cell_small_same_zone = create_test_cell("cell_same_zone", 4, 10);
-        cell_small_same_zone.platoon_id = Some("zone_north".to_string()); // Same zone
+        cell_small_same_zone.cohort_id = Some("zone_north".to_string()); // Same zone
 
         let candidates = vec![
             cell_large.clone(),
@@ -1100,7 +1097,7 @@ mod tests {
 
         // If same zone candidate doesn't fit, should pick smallest that fits
         let mut cell_same_zone_full = create_test_cell("cell_same_full", 9, 10);
-        cell_same_zone_full.platoon_id = Some("zone_north".to_string());
+        cell_same_zone_full.cohort_id = Some("zone_north".to_string());
 
         let candidates2 = vec![cell_large.clone(), cell_medium.clone(), cell_same_zone_full];
 

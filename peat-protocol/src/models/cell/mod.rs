@@ -1,6 +1,6 @@
 //! Cell state data structures
 //!
-//! This module defines squad data models with CRDT operations:
+//! This module defines cell data models with CRDT operations:
 //! - Member list: OR-Set (observed-remove set) - members can be added and removed
 //! - Leader election: LWW-Register (last-write-wins) - leader updates with timestamps
 //! - Aggregated capabilities: G-Set (grow-only set) - capabilities accumulate
@@ -99,11 +99,11 @@ pub trait CellStateExt {
     /// Check if cell has a specific capability type
     fn has_capability_type(&self, capability_type: crate::models::CapabilityType) -> bool;
 
-    /// Assign cell to a platoon (LWW-Register operation)
-    fn assign_platoon(&mut self, platoon_id: String);
+    /// Assign cell to a cohort (LWW-Register operation)
+    fn assign_cohort(&mut self, cohort_id: String);
 
-    /// Remove cell from platoon
-    fn leave_platoon(&mut self);
+    /// Remove cell from cohort
+    fn leave_cohort(&mut self);
 
     /// Merge with another cell state (CRDT merge)
     ///
@@ -133,7 +133,7 @@ impl CellStateExt for CellState {
             leader_id: None,
             members: Vec::new(),
             capabilities: Vec::new(),
-            platoon_id: None,
+            cohort_id: None,
             timestamp: Some(peat_schema::common::v1::Timestamp {
                 seconds: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -201,7 +201,7 @@ impl CellStateExt for CellState {
 
     fn set_leader(&mut self, node_id: String) -> Result<(), &'static str> {
         if !self.members.contains(&node_id) {
-            return Err("Leader must be a squad member");
+            return Err("Leader must be a cell member");
         }
         self.leader_id = Some(node_id);
         self.update_timestamp();
@@ -237,13 +237,13 @@ impl CellStateExt for CellState {
             .any(|c| c.get_capability_type() == capability_type)
     }
 
-    fn assign_platoon(&mut self, platoon_id: String) {
-        self.platoon_id = Some(platoon_id);
+    fn assign_cohort(&mut self, cohort_id: String) {
+        self.cohort_id = Some(cohort_id);
         self.update_timestamp();
     }
 
-    fn leave_platoon(&mut self) {
-        self.platoon_id = None;
+    fn leave_cohort(&mut self) {
+        self.cohort_id = None;
         self.update_timestamp();
     }
 
@@ -262,13 +262,13 @@ impl CellStateExt for CellState {
             }
         }
 
-        // Merge leader and platoon (LWW-Register - take newer)
+        // Merge leader and cohort (LWW-Register - take newer)
         let self_ts = self.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
         let other_ts = other.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
 
         if other_ts > self_ts {
             self.leader_id = other.leader_id.clone();
-            self.platoon_id = other.platoon_id.clone();
+            self.cohort_id = other.cohort_id.clone();
             self.timestamp = other.timestamp;
         }
     }

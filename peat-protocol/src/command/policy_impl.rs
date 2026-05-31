@@ -75,13 +75,13 @@ impl Conflictable for HierarchicalCommand {
 ///
 /// Simple heuristic based on naming convention:
 /// - "zone-*" = level 3 (highest)
-/// - "platoon-*" = level 2
-/// - "squad-*" = level 2
+/// - "cohort-*" = level 2
+/// - "cell-*" = level 2
 /// - other = level 1
 fn derive_authority_level(node_id: &str) -> i64 {
     if node_id.starts_with("zone-") {
         3
-    } else if node_id.starts_with("platoon-") || node_id.starts_with("squad-") {
+    } else if node_id.starts_with("cohort-") || node_id.starts_with("cell-") {
         2
     } else {
         1
@@ -138,8 +138,8 @@ mod tests {
     #[test]
     fn test_authority_level_derivation() {
         assert_eq!(derive_authority_level("zone-alpha"), 3);
-        assert_eq!(derive_authority_level("platoon-1"), 2);
-        assert_eq!(derive_authority_level("squad-bravo"), 2);
+        assert_eq!(derive_authority_level("cohort-1"), 2);
+        assert_eq!(derive_authority_level("cell-bravo"), 2);
         assert_eq!(derive_authority_level("node-123"), 1);
         assert_eq!(derive_authority_level("unknown"), 1);
     }

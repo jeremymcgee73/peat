@@ -74,7 +74,7 @@ mod tests {
             command_id: "CMD-001".to_string(),
             originator_id: "HQ-1".to_string(),
             target: Some(CommandTarget {
-                scope: Scope::Squad as i32,
+                scope: Scope::Cell as i32,
                 target_ids: vec!["Alpha".to_string()],
             }),
             command_type: Some(

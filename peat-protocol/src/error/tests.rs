@@ -68,7 +68,7 @@ fn test_error_context_storage() {
     assert_eq!(ctx.key, Some("collection".to_string()));
     assert_eq!(ctx.operation, Some("query".to_string()));
     assert_eq!(ctx.peer_id, None);
-    assert_eq!(ctx.squad_id, None);
+    assert_eq!(ctx.cell_id, None);
 }
 
 #[test]

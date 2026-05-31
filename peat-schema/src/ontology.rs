@@ -7,8 +7,8 @@
 //! - Ontology-based reasoning utilities
 //!
 //! The ontology is based on:
-//! - Military domain knowledge (doctrine, tactics)
 //! - Autonomous systems concepts
+//! - Hierarchical aggregation patterns (per ADR-066)
 //! - CRDT theory and distributed systems
 
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 pub enum ConceptCategory {
     /// Physical entities (nodes, platforms)
     Entity,
-    /// Organizational structures (cells, platoons)
+    /// Organizational structures (cells, cohorts, federations, coalitions)
     Organization,
     /// Capabilities and skills
     Capability,
@@ -179,21 +179,27 @@ pub fn build_cap_ontology() -> Ontology {
     // Organization concepts
     ont.add_concept(
         Concept::new("cell", "Cell", ConceptCategory::Organization)
-            .with_description("A tactical cell (squad-level formation)")
+            .with_description("Smallest aggregation unit: a coordinated group of platforms")
             .with_property("min_size", "2")
             .with_property("max_size", "8"),
     );
 
     ont.add_concept(
-        Concept::new("platoon", "Platoon", ConceptCategory::Organization)
-            .with_description("A platoon-level formation of multiple cells")
+        Concept::new("cohort", "Cohort", ConceptCategory::Organization)
+            .with_description("A set of cells sharing a mission, role, region, or time window")
             .with_property("min_size", "3")
             .with_property("max_size", "4"),
     );
 
     ont.add_concept(
-        Concept::new("company", "Company", ConceptCategory::Organization)
-            .with_description("A company-level formation of multiple platoons"),
+        Concept::new("federation", "Federation", ConceptCategory::Organization).with_description(
+            "Autonomous alliance of cohorts coordinating without central authority",
+        ),
+    );
+
+    ont.add_concept(
+        Concept::new("coalition", "Coalition", ConceptCategory::Organization)
+            .with_description("Top-tier alliance of federations for combined action (tier 4 of 4)"),
     );
 
     // Capability concepts
@@ -263,7 +269,7 @@ pub fn build_cap_ontology() -> Ontology {
             "Hierarchical Operations",
             ConceptCategory::Process,
         )
-        .with_description("Hierarchical operations phase (platoon/company)"),
+        .with_description("Hierarchical operations phase (cohort/federation/coalition)"),
     );
 
     ont.add_concept(
@@ -305,7 +311,9 @@ mod tests {
 
         // Check organization concepts exist
         assert!(ont.get_concept("cell").is_some());
-        assert!(ont.get_concept("platoon").is_some());
+        assert!(ont.get_concept("cohort").is_some());
+        assert!(ont.get_concept("federation").is_some());
+        assert!(ont.get_concept("coalition").is_some());
     }
 
     #[test]

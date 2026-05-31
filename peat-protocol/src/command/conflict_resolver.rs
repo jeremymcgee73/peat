@@ -173,7 +173,7 @@ impl ConflictResolver {
     /// Derive authority from originator's hierarchy level.
     /// For now, we use a simple heuristic based on node ID naming convention:
     /// - "zone-*" prefix = authority level 3
-    /// - "squad-*" prefix = authority level 2
+    /// - "cell-*" prefix = authority level 2
     /// - other = authority level 1
     fn resolve_highest_authority_wins(
         &self,
@@ -212,13 +212,13 @@ impl ConflictResolver {
     ///
     /// Simple heuristic based on naming convention:
     /// - "zone-*" = level 3 (highest)
-    /// - "platoon-*" = level 2
-    /// - "squad-*" = level 2
+    /// - "cohort-*" = level 2
+    /// - "cell-*" = level 2
     /// - other = level 1
     fn derive_authority_level(&self, node_id: &str) -> u32 {
         if node_id.starts_with("zone-") {
             3
-        } else if node_id.starts_with("platoon-") || node_id.starts_with("squad-") {
+        } else if node_id.starts_with("cohort-") || node_id.starts_with("cell-") {
             2
         } else {
             1
@@ -347,7 +347,7 @@ mod tests {
         let resolver = ConflictResolver::new();
 
         let cmd1 = create_test_command("cmd-1", "node-1", "target-1", 3, 1000);
-        let cmd2 = create_test_command("cmd-2", "squad-alpha", "target-1", 3, 1001);
+        let cmd2 = create_test_command("cmd-2", "cell-alpha", "target-1", 3, 1001);
         let cmd3 = create_test_command("cmd-3", "zone-leader", "target-1", 3, 999);
 
         let winner = resolver
@@ -395,8 +395,8 @@ mod tests {
         let resolver = ConflictResolver::new();
 
         assert_eq!(resolver.derive_authority_level("zone-leader"), 3);
-        assert_eq!(resolver.derive_authority_level("platoon-alpha"), 2);
-        assert_eq!(resolver.derive_authority_level("squad-bravo"), 2);
+        assert_eq!(resolver.derive_authority_level("cohort-alpha"), 2);
+        assert_eq!(resolver.derive_authority_level("cell-bravo"), 2);
         assert_eq!(resolver.derive_authority_level("node-1"), 1);
     }
 }

@@ -184,10 +184,10 @@ impl std::fmt::Display for SecurityClearance {
 /// Organizational unit information.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrganizationUnit {
-    /// Primary unit (e.g., "1st Platoon", "Alpha Company")
+    /// Primary unit (e.g., "1st Cohort", "Alpha Federation")
     pub name: String,
 
-    /// Parent organization (e.g., "2nd Battalion", "1st Brigade")
+    /// Parent organization (e.g., "2nd Coalition", "1st Federation")
     pub parent: Option<String>,
 
     /// Unit identifier code (UIC)
@@ -1179,11 +1179,11 @@ mod tests {
 
     #[test]
     fn test_organization_unit() {
-        let unit = OrganizationUnit::new("1st Platoon", "Alpha Company");
-        assert_eq!(unit.to_string(), "1st Platoon, Alpha Company");
+        let unit = OrganizationUnit::new("1st Cohort", "Alpha Federation");
+        assert_eq!(unit.to_string(), "1st Cohort, Alpha Federation");
 
-        let top = OrganizationUnit::top_level("Battalion HQ");
-        assert_eq!(top.to_string(), "Battalion HQ");
+        let top = OrganizationUnit::top_level("Coalition HQ");
+        assert_eq!(top.to_string(), "Coalition HQ");
     }
 
     #[test]

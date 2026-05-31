@@ -21,9 +21,9 @@ pub enum Error {
 
     /// Cell formation errors
     #[error("Cell formation error: {message}")]
-    SquadFormation {
+    CellFormation {
         message: String,
-        squad_id: Option<String>,
+        cell_id: Option<String>,
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
@@ -167,8 +167,8 @@ impl Error {
                 peer_id: peer_id.clone(),
                 ..Default::default()
             },
-            Error::SquadFormation { squad_id, .. } => ErrorContext {
-                squad_id: squad_id.clone(),
+            Error::CellFormation { cell_id, .. } => ErrorContext {
+                cell_id: cell_id.clone(),
                 ..Default::default()
             },
             Error::Composition { capability, .. } => ErrorContext {
@@ -207,7 +207,7 @@ pub struct ErrorContext {
     pub key: Option<String>,
     pub operation: Option<String>,
     pub peer_id: Option<String>,
-    pub squad_id: Option<String>,
+    pub cell_id: Option<String>,
     pub capability: Option<String>,
     pub duration_ms: Option<u64>,
 }

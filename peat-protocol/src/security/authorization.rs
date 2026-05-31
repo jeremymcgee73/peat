@@ -10,8 +10,8 @@
 //!
 //! # Roles
 //!
-//! - **Leader**: Squad/cell leader - can command cell, set objectives
-//! - **Member**: Squad/cell member - participates in missions
+//! - **Leader**: Cell leader - can command cell, set objectives
+//! - **Member**: Cell member - participates in missions
 //! - **Observer**: Read-only access to cell state
 //! - **Commander**: Mission commander - can direct multiple cells
 //! - **Admin**: System configuration access
@@ -48,10 +48,10 @@ use std::time::SystemTime;
 /// Roles determine what permissions an entity has for various operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Role {
-    /// Squad/cell leader - can command cell, set objectives
+    /// Cell leader - can command cell, set objectives
     Leader,
 
-    /// Squad/cell member - participates in missions
+    /// Cell member - participates in missions
     Member,
 
     /// Observer - can view but not command
@@ -114,10 +114,12 @@ pub enum Permission {
     ReadTelemetry,
 
     // Hierarchical operations
-    /// Permission to form a platoon from cells
-    FormPlatoon,
-    /// Permission to aggregate data to company level
-    AggregateToCompany,
+    /// Permission to form a cohort from cells
+    FormCohort,
+    /// Permission to aggregate data to federation level
+    AggregateToFederation,
+    /// Permission to aggregate data to coalition level (ADR-066 top tier)
+    AggregateToCoalition,
 
     // Human-in-the-loop operations
     /// Permission to approve cell formation
@@ -150,8 +152,9 @@ impl fmt::Display for Permission {
             Permission::ReadNodeState => write!(f, "ReadNodeState"),
             Permission::WriteNodeState => write!(f, "WriteNodeState"),
             Permission::ReadTelemetry => write!(f, "ReadTelemetry"),
-            Permission::FormPlatoon => write!(f, "FormPlatoon"),
-            Permission::AggregateToCompany => write!(f, "AggregateToCompany"),
+            Permission::FormCohort => write!(f, "FormCohort"),
+            Permission::AggregateToFederation => write!(f, "AggregateToFederation"),
+            Permission::AggregateToCoalition => write!(f, "AggregateToCoalition"),
             Permission::ApproveFormation => write!(f, "ApproveFormation"),
             Permission::VetoCommand => write!(f, "VetoCommand"),
             Permission::ConfigureNetwork => write!(f, "ConfigureNetwork"),
@@ -253,7 +256,7 @@ impl AuthorizationContext {
         Self {
             cell_id: Some(cell_id.to_string()),
             node_id: None,
-            hierarchy_level: Some(HierarchyLevel::Squad),
+            hierarchy_level: Some(HierarchyLevel::Cell),
             timestamp: SystemTime::now(),
             cell_membership: None,
         }
@@ -319,18 +322,24 @@ impl CellMembershipContext {
 }
 
 /// Organizational hierarchy levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Per ADR-066 the rigid-schema model is four tiers above the node level:
+/// `Node < Cell < Cohort < Federation < Coalition`. Comparison/order helpers
+/// elsewhere assume `Coalition` is the highest tier; the derived `PartialOrd`/`Ord`
+/// reflects that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum HierarchyLevel {
     /// Individual node
+    #[default]
     Node,
-    /// Squad level (cell)
-    Squad,
-    /// Platoon level (aggregated squads)
-    Platoon,
-    /// Company level (aggregated platoons)
-    Company,
-    /// Battalion level
-    Battalion,
+    /// Cell (smallest aggregation; was previously "squad")
+    Cell,
+    /// Cohort (aggregated cells; was previously "platoon")
+    Cohort,
+    /// Federation (aggregated cohorts; was previously "company")
+    Federation,
+    /// Coalition (top tier per ADR-066; aggregated federations)
+    Coalition,
 }
 
 /// Authorization policy defining role-to-permission mappings.
@@ -380,8 +389,9 @@ impl AuthorizationPolicy {
         policy.grant_role(Role::Observer, Permission::ReadTelemetry);
 
         // Commander permissions - hierarchical operations
-        policy.grant_role(Role::Commander, Permission::FormPlatoon);
-        policy.grant_role(Role::Commander, Permission::AggregateToCompany);
+        policy.grant_role(Role::Commander, Permission::FormCohort);
+        policy.grant_role(Role::Commander, Permission::AggregateToFederation);
+        policy.grant_role(Role::Commander, Permission::AggregateToCoalition);
         policy.grant_role(Role::Commander, Permission::ApproveFormation);
         policy.grant_role(Role::Commander, Permission::VetoCommand);
         policy.grant_role(Role::Commander, Permission::CreateCell);
@@ -721,9 +731,9 @@ mod tests {
             .check_permission(&entity, Permission::ApproveFormation, &context)
             .is_ok());
 
-        // Commander should be able to form platoon
+        // Commander should be able to form cohort
         assert!(controller
-            .check_permission(&entity, Permission::FormPlatoon, &context)
+            .check_permission(&entity, Permission::FormCohort, &context)
             .is_ok());
 
         // Commander should NOT be able to manage keys (admin only)

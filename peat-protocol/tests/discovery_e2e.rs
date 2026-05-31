@@ -8,7 +8,7 @@
 //! These tests validate that discovery works correctly in a multi-peer mesh environment.
 
 use peat_protocol::discovery::capability_query::{CapabilityQuery, CapabilityQueryEngine};
-use peat_protocol::discovery::geographic::{GeographicBeacon, GeographicDiscovery, MIN_SQUAD_SIZE};
+use peat_protocol::discovery::geographic::{GeographicBeacon, GeographicDiscovery, MIN_CELL_SIZE};
 use peat_protocol::discovery::GeoCoordinate;
 use peat_protocol::models::capability::{Capability, CapabilityType};
 use peat_protocol::models::node::NodeConfig;
@@ -19,14 +19,14 @@ use tokio::time::sleep;
 
 /// Test 1: Geographic Discovery Sync
 ///
-/// Validates that geographic beacons sync across peers and enable squad formation
+/// Validates that geographic beacons sync across peers and enable cell formation
 /// based on geohash proximity clustering.
 ///
 /// Test Flow:
 /// 1. Create 3 peers in same geographic location (SF Bay Area)
 /// 2. Each peer broadcasts geographic beacon
 /// 3. Validate beacons are received by all peers
-/// 4. Verify squad formation logic triggers on sufficient peers
+/// 4. Verify cell formation logic triggers on sufficient peers
 #[tokio::test]
 async fn test_e2e_geographic_discovery_sync() {
     // Create E2E test harness
@@ -88,35 +88,35 @@ async fn test_e2e_geographic_discovery_sync() {
     assert_eq!(discovery2.cluster_count(), 1);
     assert_eq!(discovery3.cluster_count(), 1);
 
-    // Validate: Squad formation possible
-    let formable1 = discovery1.find_formable_squads(MIN_SQUAD_SIZE);
-    assert_eq!(formable1.len(), 1, "Should have 1 formable squad");
+    // Validate: Cell formation possible
+    let formable1 = discovery1.find_formable_cells(MIN_CELL_SIZE);
+    assert_eq!(formable1.len(), 1, "Should have 1 formable cell");
     assert!(
-        formable1[0].can_form_squad(MIN_SQUAD_SIZE),
-        "Cluster should meet minimum squad size"
+        formable1[0].can_form_cell(MIN_CELL_SIZE),
+        "Cluster should meet minimum cell size"
     );
 
     // Validate: Deterministic leader selection (lowest ID)
     assert!(
-        discovery1.should_initiate_squad_formation(),
+        discovery1.should_initiate_cell_formation(),
         "peer_1 should be leader (lowest ID)"
     );
     assert!(
-        !discovery2.should_initiate_squad_formation(),
+        !discovery2.should_initiate_cell_formation(),
         "peer_2 should not be leader"
     );
     assert!(
-        !discovery3.should_initiate_squad_formation(),
+        !discovery3.should_initiate_cell_formation(),
         "peer_3 should not be leader"
     );
 
-    // Validate: Squad members list consistent
-    let members1 = discovery1.get_squad_members(5).unwrap();
-    let members2 = discovery2.get_squad_members(5).unwrap();
-    let members3 = discovery3.get_squad_members(5).unwrap();
+    // Validate: Cell members list consistent
+    let members1 = discovery1.get_cell_members(5).unwrap();
+    let members2 = discovery2.get_cell_members(5).unwrap();
+    let members3 = discovery3.get_cell_members(5).unwrap();
 
-    assert_eq!(members1, members2, "Squad members should be consistent");
-    assert_eq!(members2, members3, "Squad members should be consistent");
+    assert_eq!(members1, members2, "Cell members should be consistent");
+    assert_eq!(members2, members3, "Cell members should be consistent");
     assert_eq!(members1.len(), 3, "Should have all 3 members");
 
     // Harness cleanup happens automatically on drop
@@ -268,12 +268,12 @@ async fn test_e2e_capability_based_discovery() {
 ///
 /// Validates that geographic discovery correctly handles multiple
 /// geographic regions (different geohash cells) and forms separate
-/// squads per region.
+/// cells per region.
 ///
 /// Test Flow:
 /// 1. Create nodes in 2 different geographic regions (SF and LA)
 /// 2. Validate separate geohash clusters form
-/// 3. Verify squad formation logic per region
+/// 3. Verify cell formation logic per region
 /// 4. Confirm cross-region isolation
 #[tokio::test]
 async fn test_e2e_multi_region_discovery() {
@@ -318,16 +318,16 @@ async fn test_e2e_multi_region_discovery() {
         "Should form 2 geographic clusters (SF and LA)"
     );
 
-    // Validate: Both regions can form squads
-    let formable_squads = discovery.find_formable_squads(MIN_SQUAD_SIZE);
+    // Validate: Both regions can form cells
+    let formable_cells = discovery.find_formable_cells(MIN_CELL_SIZE);
     assert_eq!(
-        formable_squads.len(),
+        formable_cells.len(),
         2,
-        "Both regions should be able to form squads"
+        "Both regions should be able to form cells"
     );
 
     // Validate: Each cluster has correct member count
-    for cluster in formable_squads {
+    for cluster in formable_cells {
         assert_eq!(
             cluster.platforms.len(),
             2,
@@ -341,13 +341,13 @@ async fn test_e2e_multi_region_discovery() {
 /// Test 4: Geographic Beacon Expiration
 ///
 /// Validates that expired geographic beacons are properly cleaned up
-/// and squads can't form with stale data.
+/// and cells can't form with stale data.
 ///
 /// Test Flow:
 /// 1. Create beacons with old timestamps
 /// 2. Process cleanup operation
 /// 3. Verify expired beacons removed
-/// 4. Confirm squad formation fails with insufficient fresh beacons
+/// 4. Confirm cell formation fails with insufficient fresh beacons
 #[tokio::test]
 async fn test_e2e_beacon_expiration_cleanup() {
     // Create E2E test harness
@@ -384,9 +384,9 @@ async fn test_e2e_beacon_expiration_cleanup() {
         "Should have 1 platform after cleanup"
     );
 
-    // Validate: Can't form squad with insufficient fresh beacons
-    let formable = discovery.find_formable_squads(MIN_SQUAD_SIZE);
-    assert_eq!(formable.len(), 0, "Should not be able to form squad");
+    // Validate: Can't form cell with insufficient fresh beacons
+    let formable = discovery.find_formable_cells(MIN_CELL_SIZE);
+    assert_eq!(formable.len(), 0, "Should not be able to form cell");
 
     // Harness cleanup happens automatically on drop
 }

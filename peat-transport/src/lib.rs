@@ -1,10 +1,10 @@
-//! # CAP Transport
+//! # Peat Transport
 //!
-//! External API transport layer for the Capability Aggregation Protocol (CAP).
+//! External API transport layer for the Peat Protocol.
 //!
-//! This crate provides HTTP/REST API access to CAP node state, enabling external
+//! This crate provides HTTP/REST API access to Peat node state, enabling external
 //! systems (C2 dashboards, legacy systems, monitoring tools) to query and interact
-//! with the CAP mesh network.
+//! with the Peat mesh network.
 //!
 //! ## Architecture
 //!
@@ -12,12 +12,12 @@
 //! External System (C2 Dashboard, ROS2, etc.)
 //!           ↓ HTTP/REST
 //!   ┌──────────────────────┐
-//!   │  cap-transport       │
+//!   │  peat-transport      │
 //!   │  (HTTP Server)       │
 //!   └──────────────────────┘
 //!           ↓ queries
 //!   ┌──────────────────────┐
-//!   │  cap-protocol        │
+//!   │  peat-protocol       │
 //!   │  (DataSyncBackend)   │
 //!   └──────────────────────┘
 //!           ↓ stores in
@@ -32,23 +32,26 @@
 //! - **HTTP/REST API**: Query nodes, cells, and beacons via REST endpoints
 //! - **Read-only**: External systems can query state but not mutate (safety)
 //! - **Backend agnostic**: Works with Ditto or Automerge+Iroh sync backends
-//! - **JSON responses**: Uses cap-schema protobuf → JSON encoding
+//! - **JSON responses**: Uses peat-schema protobuf → JSON encoding
 //! - **Extensible**: Trait-based design for future WebSocket/gRPC support
 //!
 //! ## Usage
 //!
 //! ```rust,no_run
-//! use peat_transport::http::Server;
-//! use peat_protocol::sync::{automerge::AutomergeIrohBackend, DataSyncBackend};
-//! use std::sync::Arc;
+//! # use std::sync::Arc;
+//! # use peat_transport::http::Server;
+//! # use peat_protocol::sync::automerge::AutomergeIrohBackend;
+//! #
+//! # async fn example(
+//! #     backend: Arc<peat_protocol::storage::AutomergeBackend>,
+//! #     transport: Arc<peat_protocol::network::IrohTransport>,
+//! # ) -> Result<(), Box<dyn std::error::Error>> {
+//! // Wrap the sync backend (caller is responsible for AutomergeBackend +
+//! // IrohTransport construction — see peat-protocol docs).
+//! let sync_backend = Arc::new(AutomergeIrohBackend::new(backend, transport));
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Initialize sync backend (Automerge + Iroh)
-//! let backend = Arc::new(AutomergeIrohBackend::new());
-//! // backend.initialize(config).await?;
-//!
-//! // Start HTTP server
-//! let server = Server::new(backend)
+//! // Start HTTP server bound to the sync backend.
+//! let server = Server::new(sync_backend)
 //!     .bind("0.0.0.0:8080")
 //!     .await?;
 //!

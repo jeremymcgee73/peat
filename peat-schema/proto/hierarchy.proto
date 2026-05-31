@@ -1,8 +1,9 @@
-// Hierarchical aggregation summaries for CAP Protocol
-// Version: 1.0.0
+// Hierarchical aggregation summaries for Peat Protocol
+// Version: 2.0.0 — abstract hierarchy vocabulary per ADR-066
 //
-// This schema defines aggregated state summaries for hierarchical formations.
-// Supports multi-tier military hierarchy (squad → platoon → company).
+// Defines aggregated state summaries for hierarchical formations.
+// Four-tier model: Platform → Cell → Cohort → Federation → Coalition.
+// Tier 5+ is reserved for a future parametric N-tier ADR (see ADR-066).
 
 syntax = "proto3";
 
@@ -12,20 +13,19 @@ import "common.proto";
 import "capability.proto";
 import "node.proto";
 
-// Squad-level aggregated state summary
+// Cell-level aggregated state summary
 //
-// Represents the aggregated state of a squad (typically 8 nodes):
-// - 1 Squad Leader
-// - 5-7 Squad Members (soldiers/platforms)
-// - 0-2 Robotic assets (UAV/UGV)
+// Represents the aggregated state of a cell (smallest aggregation unit):
+// - 1 cell leader
+// - 1..N cell members
 //
-// This summary is published by squad leaders for consumption by platoon leaders.
-// It reduces 8 individual NodeState messages to 1 aggregated summary.
-message SquadSummary {
-  // Squad identifier (matches cell_id in NodeState)
-  string squad_id = 1;
+// Published by cell leaders for consumption by cohort coordinators.
+// Reduces N individual NodeState messages to 1 aggregated summary.
+message CellSummary {
+  // Cell identifier (matches cell_id in NodeState)
+  string cell_id = 1;
 
-  // Squad leader node ID
+  // Cell leader node ID
   string leader_id = 2;
 
   // Member node IDs (for reference, not full state)
@@ -37,11 +37,11 @@ message SquadSummary {
   // Aggregated Position (centroid of member positions)
   common.v1.Position position_centroid = 5;
 
-  // Average fuel remaining across squad (minutes)
+  // Average fuel remaining across cell (minutes)
   float avg_fuel_minutes = 6;
 
-  // Worst health status in squad (min of all members)
-  // Uses LWW semantics - worst health wins for tactical awareness
+  // Worst health status in cell (min of all members)
+  // Uses LWW semantics - worst health wins for situational awareness
   node.v1.HealthStatus worst_health = 7;
 
   // Operational member count (health >= DEGRADED)
@@ -51,111 +51,159 @@ message SquadSummary {
   // These are cell-level emergent capabilities, not individual platform capabilities
   repeated capability.v1.Capability aggregated_capabilities = 9;
 
-  // Squad readiness score (0.0-1.0)
+  // Cell readiness score (0.0-1.0)
   // Computed by CapabilityAggregator.calculate_readiness_score()
   float readiness_score = 10;
 
-  // Squad bounding box (for spatial queries)
+  // Cell bounding box (for spatial queries)
   BoundingBox bounding_box = 11;
 
   // Last aggregation timestamp
   common.v1.Timestamp aggregated_at = 12;
 }
 
-// Platoon-level aggregated state summary
+// Cohort-level aggregated state summary
 //
-// Represents the aggregated state of a platoon (typically 24 nodes organized as 3 squads):
-// - 1 Platoon Leader
-// - 3 Squad Leaders (each with SquadSummary)
+// Represents the aggregated state of a cohort (a set of cells sharing a
+// mission, role, region, or time window).
 //
-// This summary is published by platoon leaders for consumption by company commanders.
-// It reduces 3 SquadSummary messages to 1 platoon-level summary.
-message PlatoonSummary {
-  // Platoon identifier
-  string platoon_id = 1;
+// Published by cohort coordinators for consumption by federation coordinators.
+// Reduces N CellSummary messages to 1 cohort-level summary.
+message CohortSummary {
+  // Cohort identifier
+  string cohort_id = 1;
 
-  // Platoon leader node ID
+  // Cohort coordinator node ID
   string leader_id = 2;
 
-  // Squad IDs in this platoon
-  repeated string squad_ids = 3;
+  // Cell IDs in this cohort
+  repeated string cell_ids = 3;
 
-  // Total squad count
-  uint32 squad_count = 4;
+  // Total cell count
+  uint32 cell_count = 4;
 
-  // Total member count across all squads
+  // Total member count across all cells
   uint32 total_member_count = 5;
 
-  // Aggregated position (centroid of squad centroids)
+  // Aggregated position (centroid of cell centroids)
   common.v1.Position position_centroid = 6;
 
-  // Average fuel across all squads (minutes)
+  // Average fuel across all cells (minutes)
   float avg_fuel_minutes = 7;
 
-  // Worst health status across all squads
+  // Worst health status across all cells
   node.v1.HealthStatus worst_health = 8;
 
   // Total operational member count
   uint32 operational_count = 9;
 
-  // Platoon-level aggregated capabilities
-  // Composition of squad-level capabilities
+  // Cohort-level aggregated capabilities
+  // Composition of cell-level capabilities
   repeated capability.v1.Capability aggregated_capabilities = 10;
 
-  // Platoon readiness score (0.0-1.0)
-  // Weighted average of squad readiness scores
+  // Cohort readiness score (0.0-1.0)
+  // Weighted average of cell readiness scores
   float readiness_score = 11;
 
-  // Platoon bounding box
+  // Cohort bounding box
   BoundingBox bounding_box = 12;
 
   // Last aggregation timestamp
   common.v1.Timestamp aggregated_at = 13;
 }
 
-// Company-level aggregated state summary
+// Federation-level aggregated state summary
 //
-// Represents the aggregated state of a company (typically 96 nodes organized as 4 platoons):
-// - 1 Company Commander
-// - 4 Platoon Leaders (each with PlatoonSummary)
+// Represents the aggregated state of a federation — an autonomous alliance
+// of cohorts coordinating without a central authority.
 //
-// This enables battalion-level commanders to see company-level summaries without
-// processing 96 individual node states or 12 squad summaries.
-message CompanySummary {
-  // Company identifier
-  string company_id = 1;
+// Enables higher-level coordinators to see federation-level summaries without
+// processing N individual node states or N cohort summaries.
+message FederationSummary {
+  // Federation identifier
+  string federation_id = 1;
 
-  // Company commander node ID
+  // Federation coordinator node ID
   string leader_id = 2;
 
-  // Platoon IDs in this company
-  repeated string platoon_ids = 3;
+  // Cohort IDs in this federation
+  repeated string cohort_ids = 3;
 
-  // Total platoon count
-  uint32 platoon_count = 4;
+  // Total cohort count
+  uint32 cohort_count = 4;
 
-  // Total member count across all platoons
+  // Total member count across all cohorts
   uint32 total_member_count = 5;
 
-  // Aggregated position (centroid of platoon centroids)
+  // Aggregated position (centroid of cohort centroids)
   common.v1.Position position_centroid = 6;
 
-  // Average fuel across all platoons (minutes)
+  // Average fuel across all cohorts (minutes)
   float avg_fuel_minutes = 7;
 
-  // Worst health status across all platoons
+  // Worst health status across all cohorts
   node.v1.HealthStatus worst_health = 8;
 
   // Total operational member count
   uint32 operational_count = 9;
 
-  // Company-level aggregated capabilities
+  // Federation-level aggregated capabilities
   repeated capability.v1.Capability aggregated_capabilities = 10;
 
-  // Company readiness score (0.0-1.0)
+  // Federation readiness score (0.0-1.0)
   float readiness_score = 11;
 
-  // Company bounding box
+  // Federation bounding box
+  BoundingBox bounding_box = 12;
+
+  // Last aggregation timestamp
+  common.v1.Timestamp aggregated_at = 13;
+}
+
+// Coalition-level aggregated state summary
+//
+// Top-tier aggregation under the four-tier rigid-schema model (ADR-066).
+// Represents a coalition — an alliance of federations for combined action.
+// Targets deployments at ~1000+ peer scale where federation-only aggregation
+// would saturate higher-level coordinators.
+//
+// Tier 5+ requires a future parametric N-tier model (see ADR-066 §Tier-count
+// extensibility).
+message CoalitionSummary {
+  // Coalition identifier
+  string coalition_id = 1;
+
+  // Coalition coordinator node ID
+  string leader_id = 2;
+
+  // Federation IDs in this coalition
+  repeated string federation_ids = 3;
+
+  // Total federation count
+  uint32 federation_count = 4;
+
+  // Total member count across all federations
+  uint32 total_member_count = 5;
+
+  // Aggregated position (centroid of federation centroids)
+  common.v1.Position position_centroid = 6;
+
+  // Average fuel across all federations (minutes)
+  float avg_fuel_minutes = 7;
+
+  // Worst health status across all federations
+  node.v1.HealthStatus worst_health = 8;
+
+  // Total operational member count
+  uint32 operational_count = 9;
+
+  // Coalition-level aggregated capabilities
+  repeated capability.v1.Capability aggregated_capabilities = 10;
+
+  // Coalition readiness score (0.0-1.0)
+  float readiness_score = 11;
+
+  // Coalition bounding box
   BoundingBox bounding_box = 12;
 
   // Last aggregation timestamp
@@ -164,8 +212,8 @@ message CompanySummary {
 
 // Spatial bounding box for formation
 //
-// Defines the geographic extent of a formation (squad/platoon/company).
-// Useful for spatial queries and tactical situational awareness.
+// Defines the geographic extent of any tier (cell/cohort/federation/coalition).
+// Useful for spatial queries and situational awareness.
 message BoundingBox {
   // Southwest corner (minimum lat/lon)
   common.v1.Position southwest = 1;

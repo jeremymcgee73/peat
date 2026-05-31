@@ -4,79 +4,79 @@ use super::*;
 use crate::models::{Capability, CapabilityType};
 
 #[test]
-fn test_squad_add_remove_member() {
+fn test_cell_add_remove_member() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
     // Add members
-    assert!(squad.add_member("node_1".to_string()));
-    assert!(squad.add_member("node_2".to_string()));
-    assert_eq!(squad.member_count(), 2);
+    assert!(cell.add_member("node_1".to_string()));
+    assert!(cell.add_member("node_2".to_string()));
+    assert_eq!(cell.member_count(), 2);
 
     // Try to add duplicate
-    assert!(!squad.add_member("node_1".to_string()));
-    assert_eq!(squad.member_count(), 2);
+    assert!(!cell.add_member("node_1".to_string()));
+    assert_eq!(cell.member_count(), 2);
 
     // Remove member
-    assert!(squad.remove_member("node_1"));
-    assert_eq!(squad.member_count(), 1);
+    assert!(cell.remove_member("node_1"));
+    assert_eq!(cell.member_count(), 1);
 
     // Try to remove non-existent member
-    assert!(!squad.remove_member("node_3"));
+    assert!(!cell.remove_member("node_3"));
 }
 
 #[test]
-fn test_squad_capacity() {
+fn test_cell_capacity() {
     let config = CellConfig::new(2);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    assert!(squad.add_member("node_1".to_string()));
-    assert!(squad.add_member("node_2".to_string()));
-    assert!(squad.is_full());
+    assert!(cell.add_member("node_1".to_string()));
+    assert!(cell.add_member("node_2".to_string()));
+    assert!(cell.is_full());
 
     // Can't add more when full
-    assert!(!squad.add_member("node_3".to_string()));
+    assert!(!cell.add_member("node_3".to_string()));
 }
 
 #[test]
-fn test_squad_leader_election() {
+fn test_cell_leader_election() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.add_member("node_1".to_string());
-    squad.add_member("node_2".to_string());
+    cell.add_member("node_1".to_string());
+    cell.add_member("node_2".to_string());
 
     // Set leader
-    assert!(squad.set_leader("node_1".to_string()).is_ok());
-    assert_eq!(squad.leader_id, Some("node_1".to_string()));
-    assert!(squad.is_leader("node_1"));
-    assert!(!squad.is_leader("node_2"));
+    assert!(cell.set_leader("node_1".to_string()).is_ok());
+    assert_eq!(cell.leader_id, Some("node_1".to_string()));
+    assert!(cell.is_leader("node_1"));
+    assert!(!cell.is_leader("node_2"));
 
     // Try to set non-member as leader
-    assert!(squad.set_leader("node_3".to_string()).is_err());
+    assert!(cell.set_leader("node_3".to_string()).is_err());
 
     // Clear leader
-    squad.clear_leader();
-    assert_eq!(squad.leader_id, None);
+    cell.clear_leader();
+    assert_eq!(cell.leader_id, None);
 }
 
 #[test]
-fn test_squad_leader_removal() {
+fn test_cell_leader_removal() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.add_member("node_1".to_string());
-    squad.set_leader("node_1".to_string()).unwrap();
+    cell.add_member("node_1".to_string());
+    cell.set_leader("node_1".to_string()).unwrap();
 
     // Remove leader - should clear leader_id
-    squad.remove_member("node_1");
-    assert_eq!(squad.leader_id, None);
+    cell.remove_member("node_1");
+    assert_eq!(cell.leader_id, None);
 }
 
 #[test]
-fn test_squad_capabilities() {
+fn test_cell_capabilities() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
     let cap1 = Capability::new(
         "camera_1".to_string(),
@@ -97,90 +97,90 @@ fn test_squad_capabilities() {
         0.8,
     );
 
-    squad.add_capability(cap1.clone());
-    squad.add_capability(cap2);
-    squad.add_capability(cap3);
+    cell.add_capability(cap1.clone());
+    cell.add_capability(cap2);
+    cell.add_capability(cap3);
 
-    assert_eq!(squad.capabilities.len(), 3);
+    assert_eq!(cell.capabilities.len(), 3);
 
     // Try to add duplicate
-    squad.add_capability(cap1);
-    assert_eq!(squad.capabilities.len(), 3);
+    cell.add_capability(cap1);
+    assert_eq!(cell.capabilities.len(), 3);
 
     // Check capability types
-    assert!(squad.has_capability_type(CapabilityType::Sensor));
-    assert!(squad.has_capability_type(CapabilityType::Compute));
-    assert!(!squad.has_capability_type(CapabilityType::Mobility));
+    assert!(cell.has_capability_type(CapabilityType::Sensor));
+    assert!(cell.has_capability_type(CapabilityType::Compute));
+    assert!(!cell.has_capability_type(CapabilityType::Mobility));
 
     // Get by type
-    let sensors = squad.get_capabilities_by_type(CapabilityType::Sensor);
+    let sensors = cell.get_capabilities_by_type(CapabilityType::Sensor);
     assert_eq!(sensors.len(), 2);
 }
 
 #[test]
-fn test_squad_platoon_assignment() {
+fn test_cell_cohort_assignment() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    assert_eq!(squad.platoon_id, None);
+    assert_eq!(cell.cohort_id, None);
 
-    squad.assign_platoon("platoon_1".to_string());
-    assert_eq!(squad.platoon_id, Some("platoon_1".to_string()));
+    cell.assign_cohort("cohort_1".to_string());
+    assert_eq!(cell.cohort_id, Some("cohort_1".to_string()));
 
-    squad.leave_platoon();
-    assert_eq!(squad.platoon_id, None);
+    cell.leave_cohort();
+    assert_eq!(cell.cohort_id, None);
 }
 
 #[test]
-fn test_squad_merge() {
+fn test_cell_merge() {
     let config = CellConfig::new(5);
-    let mut squad1 = CellState::new(config.clone());
-    let squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let cell2 = CellState::new(config);
 
-    // Squad1 has some members
-    squad1.add_member("node_1".to_string());
-    squad1.add_member("node_2".to_string());
+    // Cell1 has some members
+    cell1.add_member("node_1".to_string());
+    cell1.add_member("node_2".to_string());
 
-    // Squad2 has different members
-    let mut squad2_temp = squad2.clone();
-    squad2_temp.add_member("node_2".to_string());
-    squad2_temp.add_member("node_3".to_string());
+    // Cell2 has different members
+    let mut cell2_temp = cell2.clone();
+    cell2_temp.add_member("node_2".to_string());
+    cell2_temp.add_member("node_3".to_string());
 
-    // Merge squad2 into squad1
-    squad1.merge(&squad2_temp);
+    // Merge cell2 into cell1
+    cell1.merge(&cell2_temp);
 
     // Should have union of members
-    assert_eq!(squad1.member_count(), 3);
-    assert!(squad1.is_member("node_1"));
-    assert!(squad1.is_member("node_2"));
-    assert!(squad1.is_member("node_3"));
+    assert_eq!(cell1.member_count(), 3);
+    assert!(cell1.is_member("node_1"));
+    assert!(cell1.is_member("node_2"));
+    assert!(cell1.is_member("node_3"));
 }
 
 #[test]
-fn test_squad_merge_leader() {
+fn test_cell_merge_leader() {
     let config = CellConfig::new(5);
-    let mut squad1 = CellState::new(config.clone());
-    let mut squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let mut cell2 = CellState::new(config);
 
-    squad1.add_member("node_1".to_string());
-    squad2.add_member("node_2".to_string());
+    cell1.add_member("node_1".to_string());
+    cell2.add_member("node_2".to_string());
 
-    squad1.set_leader("node_1".to_string()).unwrap();
+    cell1.set_leader("node_1".to_string()).unwrap();
 
-    // Squad2 has a later leader update
+    // Cell2 has a later leader update
     std::thread::sleep(std::time::Duration::from_secs(1));
-    squad2.set_leader("node_2".to_string()).unwrap();
+    cell2.set_leader("node_2".to_string()).unwrap();
 
-    // Merge - squad2's leader should win (newer timestamp)
-    squad1.merge(&squad2);
-    assert_eq!(squad1.leader_id, Some("node_2".to_string()));
+    // Merge - cell2's leader should win (newer timestamp)
+    cell1.merge(&cell2);
+    assert_eq!(cell1.leader_id, Some("node_2".to_string()));
 }
 
 #[test]
-fn test_squad_merge_capabilities() {
+fn test_cell_merge_capabilities() {
     let config = CellConfig::new(5);
-    let mut squad1 = CellState::new(config.clone());
-    let mut squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let mut cell2 = CellState::new(config);
 
     let cap1 = Capability::new(
         "camera".to_string(),
@@ -195,28 +195,28 @@ fn test_squad_merge_capabilities() {
         1.0,
     );
 
-    squad1.add_capability(cap1);
-    squad2.add_capability(cap2);
+    cell1.add_capability(cap1);
+    cell2.add_capability(cap2);
 
-    squad1.merge(&squad2);
+    cell1.merge(&cell2);
 
     // Should have union of capabilities
-    assert_eq!(squad1.capabilities.len(), 2);
+    assert_eq!(cell1.capabilities.len(), 2);
 }
 
 #[test]
-fn test_squad_is_valid() {
+fn test_cell_is_valid() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
     // Not valid with 0 members (min_size is 2)
-    assert!(!squad.is_valid());
+    assert!(!cell.is_valid());
 
-    squad.add_member("node_1".to_string());
-    assert!(!squad.is_valid());
+    cell.add_member("node_1".to_string());
+    assert!(!cell.is_valid());
 
-    squad.add_member("node_2".to_string());
-    assert!(squad.is_valid());
+    cell.add_member("node_2".to_string());
+    assert!(cell.is_valid());
 }
 
 #[test]
@@ -242,91 +242,91 @@ fn test_cell_config_new_generates_uuid() {
 #[test]
 fn test_cell_state_get_id() {
     let config = CellConfig::with_id("test_id".to_string(), 5);
-    let squad = CellState::new(config);
+    let cell = CellState::new(config);
 
-    assert_eq!(squad.get_id(), Some("test_id"));
+    assert_eq!(cell.get_id(), Some("test_id"));
 }
 
 #[test]
 fn test_cell_state_get_id_no_config() {
-    let mut squad = CellState::new(CellConfig::new(5));
-    squad.config = None;
+    let mut cell = CellState::new(CellConfig::new(5));
+    cell.config = None;
 
-    assert_eq!(squad.get_id(), None);
+    assert_eq!(cell.get_id(), None);
 }
 
 #[test]
-fn test_squad_add_member_when_full() {
+fn test_cell_add_member_when_full() {
     let config = CellConfig::new(2);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    assert!(squad.add_member("node_1".to_string()));
-    assert!(squad.add_member("node_2".to_string()));
-    assert!(squad.is_full());
+    assert!(cell.add_member("node_1".to_string()));
+    assert!(cell.add_member("node_2".to_string()));
+    assert!(cell.is_full());
 
     // Try to add when full - should fail
-    assert!(!squad.add_member("node_3".to_string()));
-    assert_eq!(squad.member_count(), 2);
+    assert!(!cell.add_member("node_3".to_string()));
+    assert_eq!(cell.member_count(), 2);
 }
 
 #[test]
-fn test_squad_remove_non_existent_member() {
+fn test_cell_remove_non_existent_member() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.add_member("node_1".to_string());
+    cell.add_member("node_1".to_string());
 
     // Try to remove member that doesn't exist
-    assert!(!squad.remove_member("node_2"));
-    assert!(!squad.remove_member(""));
-    assert_eq!(squad.member_count(), 1);
+    assert!(!cell.remove_member("node_2"));
+    assert!(!cell.remove_member(""));
+    assert_eq!(cell.member_count(), 1);
 }
 
 #[test]
-fn test_squad_set_leader_not_member() {
+fn test_cell_set_leader_not_member() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.add_member("node_1".to_string());
+    cell.add_member("node_1".to_string());
 
     // Try to set leader who isn't a member
-    let result = squad.set_leader("node_2".to_string());
+    let result = cell.set_leader("node_2".to_string());
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "Leader must be a squad member");
+    assert_eq!(result.unwrap_err(), "Leader must be a cell member");
 }
 
 #[test]
-fn test_squad_clear_leader() {
+fn test_cell_clear_leader() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.add_member("node_1".to_string());
-    squad.set_leader("node_1".to_string()).unwrap();
-    assert!(squad.is_leader("node_1"));
+    cell.add_member("node_1".to_string());
+    cell.set_leader("node_1".to_string()).unwrap();
+    assert!(cell.is_leader("node_1"));
 
-    squad.clear_leader();
-    assert!(!squad.is_leader("node_1"));
-    assert_eq!(squad.leader_id, None);
+    cell.clear_leader();
+    assert!(!cell.is_leader("node_1"));
+    assert_eq!(cell.leader_id, None);
 }
 
 #[test]
-fn test_squad_is_member() {
+fn test_cell_is_member() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.add_member("node_1".to_string());
-    squad.add_member("node_2".to_string());
+    cell.add_member("node_1".to_string());
+    cell.add_member("node_2".to_string());
 
-    assert!(squad.is_member("node_1"));
-    assert!(squad.is_member("node_2"));
-    assert!(!squad.is_member("node_3"));
-    assert!(!squad.is_member(""));
+    assert!(cell.is_member("node_1"));
+    assert!(cell.is_member("node_2"));
+    assert!(!cell.is_member("node_3"));
+    assert!(!cell.is_member(""));
 }
 
 #[test]
-fn test_squad_capabilities_duplicate_handling() {
+fn test_cell_capabilities_duplicate_handling() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
     let cap = Capability::new(
         "cap_1".to_string(),
@@ -335,12 +335,12 @@ fn test_squad_capabilities_duplicate_handling() {
         0.9,
     );
 
-    squad.add_capability(cap.clone());
-    assert_eq!(squad.capabilities.len(), 1);
+    cell.add_capability(cap.clone());
+    assert_eq!(cell.capabilities.len(), 1);
 
     // Add duplicate - should not increase count
-    squad.add_capability(cap.clone());
-    assert_eq!(squad.capabilities.len(), 1);
+    cell.add_capability(cap.clone());
+    assert_eq!(cell.capabilities.len(), 1);
 
     // Add capability with different ID
     let cap2 = Capability::new(
@@ -349,115 +349,115 @@ fn test_squad_capabilities_duplicate_handling() {
         CapabilityType::Sensor,
         0.8,
     );
-    squad.add_capability(cap2);
-    assert_eq!(squad.capabilities.len(), 2);
+    cell.add_capability(cap2);
+    assert_eq!(cell.capabilities.len(), 2);
 }
 
 #[test]
-fn test_squad_has_capability_type_empty() {
+fn test_cell_has_capability_type_empty() {
     let config = CellConfig::new(5);
-    let squad = CellState::new(config);
+    let cell = CellState::new(config);
 
     // No capabilities initially
-    assert!(!squad.has_capability_type(CapabilityType::Sensor));
-    assert!(!squad.has_capability_type(CapabilityType::Compute));
+    assert!(!cell.has_capability_type(CapabilityType::Sensor));
+    assert!(!cell.has_capability_type(CapabilityType::Compute));
 }
 
 #[test]
-fn test_squad_get_capabilities_by_type_empty() {
+fn test_cell_get_capabilities_by_type_empty() {
     let config = CellConfig::new(5);
-    let squad = CellState::new(config);
+    let cell = CellState::new(config);
 
-    let caps = squad.get_capabilities_by_type(CapabilityType::Sensor);
+    let caps = cell.get_capabilities_by_type(CapabilityType::Sensor);
     assert_eq!(caps.len(), 0);
 }
 
 #[test]
-fn test_squad_merge_empty_squads() {
+fn test_cell_merge_empty_cells() {
     let config = CellConfig::new(5);
-    let mut squad1 = CellState::new(config.clone());
-    let squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let cell2 = CellState::new(config);
 
     // Both empty
-    squad1.merge(&squad2);
-    assert_eq!(squad1.member_count(), 0);
-    assert_eq!(squad1.capabilities.len(), 0);
+    cell1.merge(&cell2);
+    assert_eq!(cell1.member_count(), 0);
+    assert_eq!(cell1.capabilities.len(), 0);
 }
 
 #[test]
-fn test_squad_merge_with_older_timestamp() {
+fn test_cell_merge_with_older_timestamp() {
     let config = CellConfig::new(5);
-    let mut squad1 = CellState::new(config.clone());
-    let mut squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let mut cell2 = CellState::new(config);
 
-    squad1.add_member("node_1".to_string());
+    cell1.add_member("node_1".to_string());
 
-    // Update squad1's timestamp to be newer
+    // Update cell1's timestamp to be newer
     std::thread::sleep(std::time::Duration::from_millis(10));
-    squad1.set_leader("node_1".to_string()).unwrap();
+    cell1.set_leader("node_1".to_string()).unwrap();
 
-    // squad2 is older - its leader shouldn't win
-    squad2.add_member("node_2".to_string());
+    // cell2 is older - its leader shouldn't win
+    cell2.add_member("node_2".to_string());
 
-    // Merge older squad2 into newer squad1
-    squad1.merge(&squad2);
+    // Merge older cell2 into newer cell1
+    cell1.merge(&cell2);
 
-    // squad1's leader should remain
-    assert_eq!(squad1.leader_id, Some("node_1".to_string()));
+    // cell1's leader should remain
+    assert_eq!(cell1.leader_id, Some("node_1".to_string()));
 
     // But members should be merged
-    assert_eq!(squad1.member_count(), 2);
+    assert_eq!(cell1.member_count(), 2);
 }
 
 #[test]
-fn test_squad_platoon_assignment_multiple_times() {
+fn test_cell_cohort_assignment_multiple_times() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    squad.assign_platoon("platoon_1".to_string());
-    assert_eq!(squad.platoon_id, Some("platoon_1".to_string()));
+    cell.assign_cohort("cohort_1".to_string());
+    assert_eq!(cell.cohort_id, Some("cohort_1".to_string()));
 
-    // Reassign to different platoon
-    squad.assign_platoon("platoon_2".to_string());
-    assert_eq!(squad.platoon_id, Some("platoon_2".to_string()));
+    // Reassign to different cohort
+    cell.assign_cohort("cohort_2".to_string());
+    assert_eq!(cell.cohort_id, Some("cohort_2".to_string()));
 
-    // Leave platoon
-    squad.leave_platoon();
-    assert_eq!(squad.platoon_id, None);
+    // Leave cohort
+    cell.leave_cohort();
+    assert_eq!(cell.cohort_id, None);
 }
 
 #[test]
-fn test_squad_is_full_no_config() {
-    let mut squad = CellState::new(CellConfig::new(5));
-    squad.config = None;
+fn test_cell_is_full_no_config() {
+    let mut cell = CellState::new(CellConfig::new(5));
+    cell.config = None;
 
     // Should return false when no config
-    assert!(!squad.is_full());
+    assert!(!cell.is_full());
 }
 
 #[test]
-fn test_squad_is_valid_no_config() {
-    let mut squad = CellState::new(CellConfig::new(5));
-    squad.add_member("node_1".to_string());
-    squad.add_member("node_2".to_string());
+fn test_cell_is_valid_no_config() {
+    let mut cell = CellState::new(CellConfig::new(5));
+    cell.add_member("node_1".to_string());
+    cell.add_member("node_2".to_string());
 
-    squad.config = None;
+    cell.config = None;
 
     // Should return false when no config
-    assert!(!squad.is_valid());
+    assert!(!cell.is_valid());
 }
 
 #[test]
-fn test_squad_update_timestamp() {
+fn test_cell_update_timestamp() {
     let config = CellConfig::new(5);
-    let mut squad = CellState::new(config);
+    let mut cell = CellState::new(config);
 
-    let initial_ts = squad.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
+    let initial_ts = cell.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
 
     std::thread::sleep(std::time::Duration::from_millis(10));
-    squad.update_timestamp();
+    cell.update_timestamp();
 
-    let new_ts = squad.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
+    let new_ts = cell.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
     assert!(new_ts >= initial_ts);
 }
 
@@ -470,10 +470,10 @@ fn test_cell_config_default_min_size() {
 }
 
 #[test]
-fn test_squad_merge_capabilities_union() {
+fn test_cell_merge_capabilities_union() {
     let config = CellConfig::new(5);
-    let mut squad1 = CellState::new(config.clone());
-    let mut squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let mut cell2 = CellState::new(config);
 
     let cap1 = Capability::new(
         "cap_1".to_string(),
@@ -494,37 +494,37 @@ fn test_squad_merge_capabilities_union() {
         0.7,
     );
 
-    squad1.add_capability(cap1.clone());
-    squad1.add_capability(cap2.clone());
+    cell1.add_capability(cap1.clone());
+    cell1.add_capability(cap2.clone());
 
-    squad2.add_capability(cap2.clone()); // Duplicate
-    squad2.add_capability(cap3);
+    cell2.add_capability(cap2.clone()); // Duplicate
+    cell2.add_capability(cap3);
 
-    squad1.merge(&squad2);
+    cell1.merge(&cell2);
 
     // Should have 3 unique capabilities
-    assert_eq!(squad1.capabilities.len(), 3);
+    assert_eq!(cell1.capabilities.len(), 3);
 }
 
 #[test]
-fn test_squad_merge_members_union() {
+fn test_cell_merge_members_union() {
     let config = CellConfig::new(10);
-    let mut squad1 = CellState::new(config.clone());
-    let mut squad2 = CellState::new(config);
+    let mut cell1 = CellState::new(config.clone());
+    let mut cell2 = CellState::new(config);
 
-    squad1.add_member("node_1".to_string());
-    squad1.add_member("node_2".to_string());
+    cell1.add_member("node_1".to_string());
+    cell1.add_member("node_2".to_string());
 
-    squad2.add_member("node_2".to_string()); // Duplicate
-    squad2.add_member("node_3".to_string());
-    squad2.add_member("node_4".to_string());
+    cell2.add_member("node_2".to_string()); // Duplicate
+    cell2.add_member("node_3".to_string());
+    cell2.add_member("node_4".to_string());
 
-    squad1.merge(&squad2);
+    cell1.merge(&cell2);
 
     // Should have 4 unique members
-    assert_eq!(squad1.member_count(), 4);
-    assert!(squad1.is_member("node_1"));
-    assert!(squad1.is_member("node_2"));
-    assert!(squad1.is_member("node_3"));
-    assert!(squad1.is_member("node_4"));
+    assert_eq!(cell1.member_count(), 4);
+    assert!(cell1.is_member("node_1"));
+    assert!(cell1.is_member("node_2"));
+    assert!(cell1.is_member("node_3"));
+    assert!(cell1.is_member("node_4"));
 }

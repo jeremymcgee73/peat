@@ -4,10 +4,10 @@
 //! aggregation, allowing different CRDT backends (Ditto, Automerge/Iroh) to be
 //! used interchangeably.
 
-use crate::hierarchy::deltas::{CompanyDelta, PlatoonDelta, SquadDelta};
+use crate::hierarchy::deltas::{CellDelta, CoalitionDelta, CohortDelta, FederationDelta};
 use crate::Result;
 use async_trait::async_trait;
-use peat_schema::hierarchy::v1::{CompanySummary, PlatoonSummary, SquadSummary};
+use peat_schema::hierarchy::v1::{CellSummary, CoalitionSummary, CohortSummary, FederationSummary};
 
 /// Backend-agnostic storage interface for hierarchical summaries
 ///
@@ -28,15 +28,15 @@ use peat_schema::hierarchy::v1::{CompanySummary, PlatoonSummary, SquadSummary};
 #[async_trait]
 pub trait SummaryStorage: Send + Sync {
     // ========================================================================
-    // Squad Summary Operations
+    // Cell Summary Operations
     // ========================================================================
 
-    /// Create a squad summary document (called ONCE during squad formation)
+    /// Create a cell summary document (called ONCE during cell formation)
     ///
     /// # Arguments
     ///
-    /// * `squad_id` - Unique squad identifier
-    /// * `initial_state` - Initial squad summary state
+    /// * `cell_id` - Unique cell identifier
+    /// * `initial_state` - Initial cell summary state
     ///
     /// # Returns
     ///
@@ -45,73 +45,104 @@ pub trait SummaryStorage: Send + Sync {
     /// # Errors
     ///
     /// Returns error if document already exists (enforces create-once)
-    async fn create_squad_summary(
+    async fn create_cell_summary(
         &self,
-        squad_id: &str,
-        initial_state: &SquadSummary,
+        cell_id: &str,
+        initial_state: &CellSummary,
     ) -> Result<String>;
 
-    /// Update squad summary with delta (called MANY times)
+    /// Update cell summary with delta (called MANY times)
     ///
     /// # Arguments
     ///
-    /// * `squad_id` - Unique squad identifier
+    /// * `cell_id` - Unique cell identifier
     /// * `delta` - Field-level delta updates
     ///
     /// # Errors
     ///
     /// Returns error if document does not exist (must create first)
-    async fn update_squad_summary(&self, squad_id: &str, delta: SquadDelta) -> Result<()>;
+    async fn update_cell_summary(&self, cell_id: &str, delta: CellDelta) -> Result<()>;
 
-    /// Retrieve squad summary
+    /// Retrieve cell summary
     ///
     /// # Returns
     ///
-    /// Some(SquadSummary) if found, None if not found
-    async fn get_squad_summary(&self, squad_id: &str) -> Result<Option<SquadSummary>>;
+    /// Some(CellSummary) if found, None if not found
+    async fn get_cell_summary(&self, cell_id: &str) -> Result<Option<CellSummary>>;
 
-    /// Delete squad summary (called when squad disbands)
-    async fn delete_squad_summary(&self, squad_id: &str) -> Result<()>;
+    /// Delete cell summary (called when cell disbands)
+    async fn delete_cell_summary(&self, cell_id: &str) -> Result<()>;
 
     // ========================================================================
-    // Platoon Summary Operations
+    // Cohort Summary Operations
     // ========================================================================
 
-    /// Create a platoon summary document (called ONCE during platoon formation)
-    async fn create_platoon_summary(
+    /// Create a cohort summary document (called ONCE during cohort formation)
+    async fn create_cohort_summary(
         &self,
-        platoon_id: &str,
-        initial_state: &PlatoonSummary,
+        cohort_id: &str,
+        initial_state: &CohortSummary,
     ) -> Result<String>;
 
-    /// Update platoon summary with delta (called MANY times)
-    async fn update_platoon_summary(&self, platoon_id: &str, delta: PlatoonDelta) -> Result<()>;
+    /// Update cohort summary with delta (called MANY times)
+    async fn update_cohort_summary(&self, cohort_id: &str, delta: CohortDelta) -> Result<()>;
 
-    /// Retrieve platoon summary
-    async fn get_platoon_summary(&self, platoon_id: &str) -> Result<Option<PlatoonSummary>>;
+    /// Retrieve cohort summary
+    async fn get_cohort_summary(&self, cohort_id: &str) -> Result<Option<CohortSummary>>;
 
-    /// Delete platoon summary (called when platoon disbands)
-    async fn delete_platoon_summary(&self, platoon_id: &str) -> Result<()>;
+    /// Delete cohort summary (called when cohort disbands)
+    async fn delete_cohort_summary(&self, cohort_id: &str) -> Result<()>;
 
     // ========================================================================
-    // Company Summary Operations
+    // Federation Summary Operations
     // ========================================================================
 
-    /// Create a company summary document (called ONCE during company formation)
-    async fn create_company_summary(
+    /// Create a federation summary document (called ONCE during federation formation)
+    async fn create_federation_summary(
         &self,
-        company_id: &str,
-        initial_state: &CompanySummary,
+        federation_id: &str,
+        initial_state: &FederationSummary,
     ) -> Result<String>;
 
-    /// Update company summary with delta (called MANY times)
-    async fn update_company_summary(&self, company_id: &str, delta: CompanyDelta) -> Result<()>;
+    /// Update federation summary with delta (called MANY times)
+    async fn update_federation_summary(
+        &self,
+        federation_id: &str,
+        delta: FederationDelta,
+    ) -> Result<()>;
 
-    /// Retrieve company summary
-    async fn get_company_summary(&self, company_id: &str) -> Result<Option<CompanySummary>>;
+    /// Retrieve federation summary
+    async fn get_federation_summary(
+        &self,
+        federation_id: &str,
+    ) -> Result<Option<FederationSummary>>;
 
-    /// Delete company summary (called when company disbands)
-    async fn delete_company_summary(&self, company_id: &str) -> Result<()>;
+    /// Delete federation summary (called when federation disbands)
+    async fn delete_federation_summary(&self, federation_id: &str) -> Result<()>;
+
+    // ========================================================================
+    // Coalition Summary Operations (ADR-066 — top-tier aggregation)
+    // ========================================================================
+
+    /// Create a coalition summary document (called ONCE during coalition formation)
+    async fn create_coalition_summary(
+        &self,
+        coalition_id: &str,
+        initial_state: &CoalitionSummary,
+    ) -> Result<String>;
+
+    /// Update coalition summary with delta (called MANY times)
+    async fn update_coalition_summary(
+        &self,
+        coalition_id: &str,
+        delta: CoalitionDelta,
+    ) -> Result<()>;
+
+    /// Retrieve coalition summary
+    async fn get_coalition_summary(&self, coalition_id: &str) -> Result<Option<CoalitionSummary>>;
+
+    /// Delete coalition summary (called when coalition disbands)
+    async fn delete_coalition_summary(&self, coalition_id: &str) -> Result<()>;
 
     // ========================================================================
     // Lifecycle Metrics (for validation)
@@ -208,7 +239,7 @@ mod tests {
     #[test]
     fn test_metrics_validation_success() {
         let metrics = DocumentMetrics {
-            document_id: "squad-1A-summary".to_string(),
+            document_id: "cell-1A-summary".to_string(),
             created_at_us: 1234567890,
             create_count: 1, // ✓ Created once
             update_count: 20,
@@ -225,7 +256,7 @@ mod tests {
     #[test]
     fn test_metrics_validation_create_count_violation() {
         let metrics = DocumentMetrics {
-            document_id: "squad-1A-summary".to_string(),
+            document_id: "cell-1A-summary".to_string(),
             created_at_us: 1234567890,
             create_count: 21, // ✗ Recreated 21 times (E12 violation)
             update_count: 0,
@@ -242,7 +273,7 @@ mod tests {
     #[test]
     fn test_avg_delta_size() {
         let metrics = DocumentMetrics {
-            document_id: "squad-1A-summary".to_string(),
+            document_id: "cell-1A-summary".to_string(),
             created_at_us: 1234567890,
             create_count: 1,
             update_count: 20,

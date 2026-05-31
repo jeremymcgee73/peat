@@ -1,12 +1,12 @@
 //! Event Query Protocol (ADR-027 Phase 3)
 //!
 //! Events with `PropagationMode::Query` are stored locally and accessible via query.
-//! Higher echelons can query subordinates for events that were not automatically propagated.
+//! Higher tiers can query subordinates for events that were not automatically propagated.
 //!
 //! ## Query Flow
 //!
 //! ```text
-//! Company → EventQuery → Platoon → Forward to Squad(s) → Collect Results
+//! Federation → EventQuery → Cohort → Forward to Cell(s) → Collect Results
 //!    ↑                      ↓
 //!    └──────── EventQueryResponse ←──────────────────────┘
 //! ```
@@ -488,7 +488,7 @@ mod tests {
                 nanos: 0,
             }),
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: Some("instance-1".to_string()),
             event_class: EventClass::Product as i32,
             event_type: event_type.to_string(),
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn test_query_handler_local_query() {
         let handler =
-            EventQueryHandler::with_memory_store("node-1".to_string(), "squad-1".to_string());
+            EventQueryHandler::with_memory_store("node-1".to_string(), "cell-1".to_string());
 
         handler.store_event(make_event("evt-1", "detection", 1000));
         handler.store_event(make_event("evt-2", "detection", 1001));
@@ -576,17 +576,17 @@ mod tests {
     #[test]
     fn test_query_handler_forward_to_node() {
         let handler =
-            EventQueryHandler::with_memory_store("platoon-1".to_string(), "platoon-1".to_string());
+            EventQueryHandler::with_memory_store("cohort-1".to_string(), "cohort-1".to_string());
 
-        handler.add_subordinate("squad-1");
-        handler.add_subordinate("squad-2");
+        handler.add_subordinate("cell-1");
+        handler.add_subordinate("cell-2");
 
-        let query = EventQueryHandler::create_node_query("requester-1", "squad-1", None, 0);
+        let query = EventQueryHandler::create_node_query("requester-1", "cell-1", None, 0);
 
         match handler.handle_query(&query) {
             QueryResult::Forward(nodes) => {
                 assert_eq!(nodes.len(), 1);
-                assert_eq!(nodes[0], "squad-1");
+                assert_eq!(nodes[0], "cell-1");
             }
             _ => panic!("Expected Forward result"),
         }
@@ -595,20 +595,20 @@ mod tests {
     #[test]
     fn test_query_handler_subordinates_query() {
         let handler =
-            EventQueryHandler::with_memory_store("platoon-1".to_string(), "platoon-1".to_string());
+            EventQueryHandler::with_memory_store("cohort-1".to_string(), "cohort-1".to_string());
 
-        handler.add_subordinate("squad-1");
-        handler.add_subordinate("squad-2");
-        handler.add_subordinate("squad-3");
+        handler.add_subordinate("cell-1");
+        handler.add_subordinate("cell-2");
+        handler.add_subordinate("cell-3");
 
         let query = EventQueryHandler::create_subordinates_query("requester-1", None, 0);
 
         match handler.handle_query(&query) {
             QueryResult::Forward(nodes) => {
                 assert_eq!(nodes.len(), 3);
-                assert!(nodes.contains(&"squad-1".to_string()));
-                assert!(nodes.contains(&"squad-2".to_string()));
-                assert!(nodes.contains(&"squad-3".to_string()));
+                assert!(nodes.contains(&"cell-1".to_string()));
+                assert!(nodes.contains(&"cell-2".to_string()));
+                assert!(nodes.contains(&"cell-3".to_string()));
             }
             _ => panic!("Expected Forward result"),
         }
@@ -617,12 +617,12 @@ mod tests {
     #[test]
     fn test_query_handler_formation_query_local() {
         let handler =
-            EventQueryHandler::with_memory_store("node-1".to_string(), "squad-1".to_string());
+            EventQueryHandler::with_memory_store("node-1".to_string(), "cell-1".to_string());
 
         handler.store_event(make_event("evt-1", "detection", 1000));
 
         // Query for our own formation
-        let query = EventQueryHandler::create_formation_query("requester-1", "squad-1", None, 0);
+        let query = EventQueryHandler::create_formation_query("requester-1", "cell-1", None, 0);
 
         match handler.handle_query(&query) {
             QueryResult::Local(response) => {
@@ -653,8 +653,7 @@ mod tests {
             truncated: false,
         };
 
-        let merged =
-            EventQueryHandler::merge_responses("qry-1", "platoon-1", vec![resp1, resp2], 0);
+        let merged = EventQueryHandler::merge_responses("qry-1", "cohort-1", vec![resp1, resp2], 0);
 
         assert_eq!(merged.events.len(), 3);
         assert_eq!(merged.total_matching, 3);
@@ -690,8 +689,7 @@ mod tests {
             truncated: false,
         };
 
-        let merged =
-            EventQueryHandler::merge_responses("qry-1", "platoon-1", vec![resp1, resp2], 2);
+        let merged = EventQueryHandler::merge_responses("qry-1", "cohort-1", vec![resp1, resp2], 2);
 
         assert_eq!(merged.events.len(), 2);
         assert_eq!(merged.total_matching, 4);

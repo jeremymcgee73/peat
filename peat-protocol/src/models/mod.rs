@@ -20,9 +20,9 @@ pub use operator::{
 pub use role::{CellRole, RoleAssignment, RoleScorer};
 pub use zone::{ZoneConfig, ZoneState, ZoneStats};
 
-// Legacy compatibility aliases - allow both old and new names during transition
-pub use cell::CellConfig as SquadConfig;
-pub use cell::CellState as SquadState;
+// Legacy compatibility aliases for the `Platform*` naming kept during the
+// pre-ADR-066 migration window. The earlier military-vocabulary aliases were
+// removed alongside the Cell/Cohort/Federation/Coalition vocabulary refresh
+// (ADR-066, peat#904).
 pub use node::NodeConfig as PlatformConfig;
 pub use node::NodeState as PlatformState;
-pub use role::CellRole as SquadRole;

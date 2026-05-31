@@ -1,5 +1,5 @@
-// Cell (squad) definitions for CAP Protocol
-// Version: 1.0.0
+// Cell definitions for Peat Protocol — smallest aggregation unit (tier 1 of 4)
+// Version: 2.0.0 — abstract hierarchy vocabulary per ADR-066
 
 syntax = "proto3";
 
@@ -37,8 +37,8 @@ message CellState {
   // Aggregated cell capabilities (G-Set: grow-only)
   repeated capability.v1.Capability capabilities = 4;
 
-  // Parent platoon/zone ID for hierarchy (LWW-Register)
-  optional string platoon_id = 5;
+  // Parent cohort ID for hierarchy (LWW-Register)
+  optional string cohort_id = 5;
 
   // Last update timestamp (for LWW conflict resolution)
   common.v1.Timestamp timestamp = 6;

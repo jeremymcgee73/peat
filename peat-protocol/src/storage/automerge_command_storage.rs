@@ -691,7 +691,7 @@ mod tests {
         // overwritten on every call, and Automerge's binary `save()`
         // format can legitimately compact subsequent snapshots smaller
         // than earlier ones when later writes supersede the same key.
-        // The squad/platoon/company summary tests retain the stricter
+        // The cell/cohort/federation summary tests retain the stricter
         // monotonic check because their `Set*` updates touch distinct
         // delta sequences and don't compact.
         let unique: std::collections::BTreeSet<_> = saved_lens.iter().copied().collect();

@@ -8,12 +8,12 @@
 //!
 //! The PacketAggregator implements `peat_mesh::routing::Aggregator` and:
 //! 1. Deserializes DataPacket payloads into domain objects (NodeState, NodeConfig)
-//! 2. Calls StateAggregator::aggregate_squad() from peat-protocol
-//! 3. Serializes SquadSummary back into DataPacket with AggregatedTelemetry type
+//! 2. Calls StateAggregator::aggregate_cell() from peat-protocol
+//! 3. Serializes CellSummary back into DataPacket with AggregatedTelemetry type
 
 use crate::hierarchy::StateAggregator;
 use peat_mesh::routing::{AggregationError, Aggregator, DataDirection, DataPacket, DataType};
-use peat_schema::hierarchy::v1::SquadSummary;
+use peat_schema::hierarchy::v1::CellSummary;
 use peat_schema::node::v1::{NodeConfig, NodeState};
 use serde::{Deserialize, Serialize};
 
@@ -58,11 +58,11 @@ impl PacketAggregator {
         Self
     }
 
-    /// Deserialize a SquadSummary from an aggregated telemetry packet
-    pub fn extract_squad_summary(
+    /// Deserialize a CellSummary from an aggregated telemetry packet
+    pub fn extract_cell_summary(
         &self,
         packet: &DataPacket,
-    ) -> Result<SquadSummary, AggregationError> {
+    ) -> Result<CellSummary, AggregationError> {
         if packet.data_type != DataType::AggregatedTelemetry {
             return Err(AggregationError::InvalidPacketType {
                 expected: "AggregatedTelemetry".to_string(),
@@ -114,12 +114,12 @@ impl Aggregator for PacketAggregator {
         let member_states = member_states?;
 
         // Call StateAggregator from peat-protocol
-        let squad_summary = StateAggregator::aggregate_squad(group_id, leader_id, member_states)
+        let cell_summary = StateAggregator::aggregate_cell(group_id, leader_id, member_states)
             .map_err(|e| AggregationError::AggregationFailed(e.to_string()))?;
 
-        // Serialize SquadSummary back into DataPacket payload
+        // Serialize CellSummary back into DataPacket payload
         let aggregated_payload =
-            serde_json::to_vec(&squad_summary).map_err(AggregationError::from)?;
+            serde_json::to_vec(&cell_summary).map_err(AggregationError::from)?;
 
         // Create new DataPacket with AggregatedTelemetry type
         Ok(DataPacket {
@@ -149,7 +149,7 @@ mod tests {
     fn test_aggregate_empty_packets() {
         let aggregator = PacketAggregator::new();
 
-        let result = aggregator.aggregate_telemetry("squad-1", "node-1", vec![]);
+        let result = aggregator.aggregate_telemetry("cell-1", "node-1", vec![]);
 
         assert!(matches!(result, Err(AggregationError::EmptyInput)));
     }
@@ -161,7 +161,7 @@ mod tests {
         // Create a command packet instead of telemetry
         let command_packet = DataPacket::command("hq", "node-1", vec![1, 2, 3]);
 
-        let result = aggregator.aggregate_telemetry("squad-1", "node-1", vec![command_packet]);
+        let result = aggregator.aggregate_telemetry("cell-1", "node-1", vec![command_packet]);
 
         assert!(matches!(
             result,
@@ -176,7 +176,7 @@ mod tests {
         // Create a telemetry packet (not aggregated)
         let telemetry_packet = DataPacket::telemetry("node-1", vec![1, 2, 3]);
 
-        let result = aggregator.extract_squad_summary(&telemetry_packet);
+        let result = aggregator.extract_cell_summary(&telemetry_packet);
 
         assert!(matches!(
             result,

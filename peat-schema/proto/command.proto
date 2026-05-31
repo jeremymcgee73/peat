@@ -11,7 +11,7 @@ import "common.proto";
 
 // Hierarchical command message
 //
-// Commands flow downward through the hierarchy (platoon → squad → individual).
+// Commands flow downward through the hierarchy (federation → cohort → cell → individual).
 // Each command carries policy configurations that define its behavior during
 // partition, conflict, acknowledgment, and leader change scenarios.
 message HierarchicalCommand {
@@ -53,15 +53,17 @@ message CommandTarget {
   enum Scope {
     SCOPE_UNSPECIFIED = 0;
     INDIVIDUAL = 1;      // Single node
-    SQUAD = 2;           // All members of a squad
-    PLATOON = 3;         // All members of a platoon
+    CELL = 2;            // All members of a cell (tier 1)
+    COHORT = 3;          // All members of a cohort (tier 2)
+    FEDERATION = 5;      // All members of a federation (tier 3)
+    COALITION = 6;       // All members of a coalition (tier 4)
     BROADCAST = 4;       // All nodes in the network
   }
 
   Scope scope = 1;
 
   // Target identifiers (depends on scope)
-  repeated string target_ids = 2; // node_ids, squad_ids, or platoon_ids
+  repeated string target_ids = 2; // node_ids, cell_ids, cohort_ids, federation_ids, or coalition_ids
 }
 
 // Command priority levels
@@ -101,7 +103,7 @@ enum AcknowledgmentPolicy {
   NO_ACK_REQUIRED = 1;           // Fire-and-forget
   ACK_REQUIRED = 2;              // Require acknowledgment from all targets
   ACK_MAJORITY_REQUIRED = 3;     // Require acks from >50% of targets
-  ACK_LEADER_ONLY = 4;           // Only squad/platoon leader acks
+  ACK_LEADER_ONLY = 4;           // Only cell/cohort leader acks
 }
 
 // Leader change policy

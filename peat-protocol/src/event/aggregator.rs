@@ -1,12 +1,12 @@
-//! Echelon Aggregation for Event Routing (ADR-027 Phase 2)
+//! Hierarchy Aggregation for Event Routing (ADR-027 Phase 2)
 //!
-//! The EchelonAggregator processes incoming events from subordinates and applies
-//! aggregation policies at echelon boundaries (squad → platoon → company).
+//! The HierarchyAggregator processes incoming events from subordinates and applies
+//! aggregation policies at tier boundaries (cell → cohort → federation → coalition).
 //!
 //! ## Aggregation Flow
 //!
 //! ```text
-//! Subordinate Events → EchelonAggregator → Parent Echelon
+//! Subordinate Events → HierarchyAggregator → Parent Tier
 //!                           ↓
 //!                    ┌──────┴──────┐
 //!                    │ PropagationMode │
@@ -28,26 +28,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-/// Echelon type for aggregation context
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EchelonType {
-    /// Squad level (8-12 platforms)
-    Squad,
-    /// Platoon level (3-4 squads)
-    Platoon,
-    /// Company level (3-4 platoons)
-    Company,
-}
-
-impl std::fmt::Display for EchelonType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EchelonType::Squad => write!(f, "squad"),
-            EchelonType::Platoon => write!(f, "platoon"),
-            EchelonType::Company => write!(f, "company"),
-        }
-    }
-}
+// `HierarchyLevel` was consolidated into `HierarchyLevel` per ADR-066 (peat#904).
+// Use [`crate::security::HierarchyLevel`] directly. This module re-exports it
+// for ergonomics in event-routing call sites that previously referenced
+// `HierarchyLevel`.
+pub use crate::security::HierarchyLevel;
 
 /// Aggregation window for collecting events before summarization
 #[derive(Debug)]
@@ -145,12 +130,12 @@ type WindowKey = (i32, String); // (event_class as i32, event_type)
 /// - `Query`: Stored locally for query access
 /// - `Local`: Ignored (should not reach aggregator)
 #[derive(Debug)]
-pub struct EchelonAggregator {
+pub struct HierarchyAggregator {
     /// Unique identifier for this echelon
-    echelon_id: String,
+    tier_id: String,
 
-    /// Type of echelon (Squad, Platoon, Company)
-    echelon_type: EchelonType,
+    /// Hierarchy tier (Cell, Cohort, Federation, Coalition)
+    tier: HierarchyLevel,
 
     /// Aggregation windows by (event_class, event_type)
     windows: Arc<RwLock<HashMap<WindowKey, AggregationWindow>>>,
@@ -174,9 +159,9 @@ pub struct EchelonAggregator {
     default_window_duration: Duration,
 }
 
-impl EchelonAggregator {
+impl HierarchyAggregator {
     /// Create a new echelon aggregator
-    pub fn new(echelon_id: String, echelon_type: EchelonType) -> Self {
+    pub fn new(tier_id: String, tier: HierarchyLevel) -> Self {
         let mut strategies: HashMap<String, Box<dyn SummaryStrategy>> = HashMap::new();
 
         // Register default strategies
@@ -190,8 +175,8 @@ impl EchelonAggregator {
         );
 
         Self {
-            echelon_id,
-            echelon_type,
+            tier_id,
+            tier,
             windows: Arc::new(RwLock::new(HashMap::new())),
             passthrough_queue: Arc::new(RwLock::new(PriorityEventQueue::new())),
             queryable_store: Arc::new(RwLock::new(HashMap::new())),
@@ -364,7 +349,7 @@ impl EchelonAggregator {
 
         // Create the EventSummary
         let event_summary = EventSummary {
-            formation_id: self.echelon_id.clone(),
+            formation_id: self.tier_id.clone(),
             window_start: Some(now), // We'd need to track actual start time
             window_end: Some(now),
             event_class: window.event_class as i32,
@@ -379,8 +364,8 @@ impl EchelonAggregator {
         Some(PeatEvent {
             event_id: summary_id,
             timestamp: Some(now),
-            source_node_id: self.echelon_id.clone(),
-            source_formation_id: self.echelon_id.clone(),
+            source_node_id: self.tier_id.clone(),
+            source_formation_id: self.tier_id.clone(),
             source_instance_id: None,
             event_class: window.event_class as i32,
             event_type: format!("{}_summary", window.event_type),
@@ -463,13 +448,13 @@ impl EchelonAggregator {
     }
 
     /// Get the echelon ID
-    pub fn echelon_id(&self) -> &str {
-        &self.echelon_id
+    pub fn tier_id(&self) -> &str {
+        &self.tier_id
     }
 
     /// Get the echelon type
-    pub fn echelon_type(&self) -> EchelonType {
-        self.echelon_type
+    pub fn tier(&self) -> HierarchyLevel {
+        self.tier
     }
 
     /// Clear expired events from queryable store based on TTL
@@ -497,7 +482,7 @@ impl EchelonAggregator {
     fn generate_summary_id(&self) -> String {
         let mut counter = self.summary_counter.write().unwrap();
         *counter += 1;
-        format!("{}-summary-{}", self.echelon_id, *counter)
+        format!("{}-summary-{}", self.tier_id, *counter)
     }
 }
 
@@ -526,7 +511,7 @@ mod tests {
             event_id: id.to_string(),
             timestamp: Some(current_timestamp()),
             source_node_id: format!("node-{}", id),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: EventClass::Product as i32,
             event_type: event_type.to_string(),
@@ -543,14 +528,14 @@ mod tests {
 
     #[test]
     fn test_aggregator_creation() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad);
-        assert_eq!(aggregator.echelon_id(), "squad-1");
-        assert_eq!(aggregator.echelon_type(), EchelonType::Squad);
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell);
+        assert_eq!(aggregator.tier_id(), "cell-1");
+        assert_eq!(aggregator.tier(), HierarchyLevel::Cell);
     }
 
     #[test]
     fn test_full_propagation_passthrough() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad);
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell);
 
         let event = make_event(
             "evt-1",
@@ -570,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_query_propagation_stored_locally() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad);
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell);
 
         let event = make_event(
             "evt-1",
@@ -590,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_summary_propagation_aggregated() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad)
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
             .with_default_window_duration(Duration::from_millis(50));
 
         // Add multiple events for aggregation
@@ -622,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_local_propagation_ignored() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad);
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell);
 
         let event = make_event(
             "evt-1",
@@ -639,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_critical_events_passthrough() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad);
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell);
 
         // Add critical event
         let event = make_event(
@@ -667,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_flush_all_windows() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad)
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
             .with_default_window_duration(Duration::from_secs(3600)); // Long window
 
         // Add events
@@ -691,7 +676,7 @@ mod tests {
 
     #[test]
     fn test_multiple_event_types_separate_windows() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad)
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
             .with_default_window_duration(Duration::from_millis(50));
 
         // Add detection events
@@ -723,7 +708,7 @@ mod tests {
 
     #[test]
     fn test_pop_all_includes_passthrough_and_summaries() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad)
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
             .with_default_window_duration(Duration::from_millis(50));
 
         // Add passthrough event
@@ -755,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_source_nodes_tracked_in_window() {
-        let aggregator = EchelonAggregator::new("squad-1".to_string(), EchelonType::Squad)
+        let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
             .with_default_window_duration(Duration::from_millis(50));
 
         // Add events from different nodes

@@ -2,23 +2,9 @@
 
 use std::time::Duration;
 
-/// Echelon level in military hierarchy
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub enum EchelonLevel {
-    /// Individual platform/asset
-    #[default]
-    Platform,
-    /// Squad (4-12 platforms)
-    Squad,
-    /// Cell (multiple squads)
-    Cell,
-    /// Platoon
-    Platoon,
-    /// Company
-    Company,
-    /// Formation (battalion+)
-    Formation,
-}
+// Re-export the canonical hierarchy vocabulary from peat-protocol so the
+// bridge layer doesn't fork its own enum. ADR-066 pins this taxonomy.
+pub use peat_protocol::security::HierarchyLevel;
 
 /// Aggregation policy for TAK publishing
 ///
@@ -26,27 +12,27 @@ pub enum EchelonLevel {
 /// being sent to TAK, optimizing bandwidth usage.
 #[derive(Debug, Clone, Default)]
 pub enum AggregationPolicy {
-    /// Full fidelity - all platforms visible (O(n) bandwidth)
+    /// Full fidelity - all nodes visible (O(n) bandwidth)
     /// Use for small formations or high-bandwidth links
     #[default]
     FullFidelity,
 
-    /// Squad leader only - cell leaders + formation aggregates
+    /// Cell leader only - cell leaders + coalition aggregates
     /// Reduces traffic by showing only leadership positions
-    SquadLeaderOnly,
+    CellLeaderOnly,
 
-    /// Hierarchical filtering based on viewer echelon
-    /// Company HQ sees platoon summaries, not individual platforms
+    /// Hierarchical filtering based on viewer tier
+    /// Federation HQ sees cohort summaries, not individual nodes
     HierarchicalFiltering {
-        /// Viewer's echelon level
-        viewer_echelon: EchelonLevel,
+        /// Viewer's hierarchy tier
+        viewer_tier: HierarchyLevel,
     },
 
-    /// Tracks only - active enemy/unknown tracks, not friendly platforms
+    /// Tracks only - active enemy/unknown tracks, not friendly nodes
     /// For combat-focused displays
     TracksOnly,
 
-    /// Capability summaries only - formation capabilities, not positions
+    /// Capability summaries only - coalition capabilities, not positions
     CapabilitySummaryOnly,
 
     /// Time-windowed aggregation - batch updates over time window
@@ -64,8 +50,8 @@ pub enum AggregationPolicy {
 
 impl AggregationPolicy {
     /// Create a hierarchical filtering policy for a specific viewer
-    pub fn hierarchical(viewer_echelon: EchelonLevel) -> Self {
-        Self::HierarchicalFiltering { viewer_echelon }
+    pub fn hierarchical(viewer_tier: HierarchyLevel) -> Self {
+        Self::HierarchicalFiltering { viewer_tier }
     }
 
     /// Create a time-windowed policy
@@ -78,24 +64,23 @@ impl AggregationPolicy {
         Self::BandwidthAdaptive { target_kbps }
     }
 
-    /// Should this message echelon be visible to the viewer?
-    pub fn should_publish_echelon(&self, message_echelon: EchelonLevel) -> bool {
+    /// Should this message tier be visible to the viewer?
+    pub fn should_publish_tier(&self, message_tier: HierarchyLevel) -> bool {
         match self {
             Self::FullFidelity => true,
-            Self::SquadLeaderOnly => message_echelon >= EchelonLevel::Squad,
-            Self::HierarchicalFiltering { viewer_echelon } => {
-                // Viewer sees their level and one below
-                match viewer_echelon {
-                    EchelonLevel::Formation => message_echelon >= EchelonLevel::Company,
-                    EchelonLevel::Company => message_echelon >= EchelonLevel::Platoon,
-                    EchelonLevel::Platoon => message_echelon >= EchelonLevel::Cell,
-                    EchelonLevel::Cell => message_echelon >= EchelonLevel::Squad,
-                    EchelonLevel::Squad => true,
-                    EchelonLevel::Platform => true,
+            Self::CellLeaderOnly => message_tier >= HierarchyLevel::Cell,
+            Self::HierarchicalFiltering { viewer_tier } => {
+                // Viewer sees their tier and one below
+                match viewer_tier {
+                    HierarchyLevel::Coalition => message_tier >= HierarchyLevel::Federation,
+                    HierarchyLevel::Federation => message_tier >= HierarchyLevel::Cohort,
+                    HierarchyLevel::Cohort => message_tier >= HierarchyLevel::Cell,
+                    HierarchyLevel::Cell => true,
+                    HierarchyLevel::Node => true,
                 }
             }
-            Self::TracksOnly => false, // Only tracks, not platforms - handled elsewhere
-            Self::CapabilitySummaryOnly => message_echelon >= EchelonLevel::Formation,
+            Self::TracksOnly => false, // Only tracks, not nodes - handled elsewhere
+            Self::CapabilitySummaryOnly => message_tier >= HierarchyLevel::Coalition,
             Self::TimeWindowed { .. } => true, // Aggregated by time, not filtered
             Self::BandwidthAdaptive { .. } => true, // Dynamic filtering
         }
@@ -228,31 +213,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_aggregation_policy_echelon_filtering() {
+    fn test_aggregation_policy_tier_filtering() {
         // Full fidelity allows everything
         let policy = AggregationPolicy::FullFidelity;
-        assert!(policy.should_publish_echelon(EchelonLevel::Platform));
-        assert!(policy.should_publish_echelon(EchelonLevel::Formation));
+        assert!(policy.should_publish_tier(HierarchyLevel::Node));
+        assert!(policy.should_publish_tier(HierarchyLevel::Coalition));
 
-        // Squad leader only filters platforms
-        let policy = AggregationPolicy::SquadLeaderOnly;
-        assert!(!policy.should_publish_echelon(EchelonLevel::Platform));
-        assert!(policy.should_publish_echelon(EchelonLevel::Squad));
-        assert!(policy.should_publish_echelon(EchelonLevel::Formation));
+        // Cell leader only filters node-level traffic
+        let policy = AggregationPolicy::CellLeaderOnly;
+        assert!(!policy.should_publish_tier(HierarchyLevel::Node));
+        assert!(policy.should_publish_tier(HierarchyLevel::Cell));
+        assert!(policy.should_publish_tier(HierarchyLevel::Coalition));
 
-        // Hierarchical: Company HQ sees platoon and up
-        let policy = AggregationPolicy::hierarchical(EchelonLevel::Company);
-        assert!(!policy.should_publish_echelon(EchelonLevel::Platform));
-        assert!(!policy.should_publish_echelon(EchelonLevel::Squad));
-        assert!(!policy.should_publish_echelon(EchelonLevel::Cell));
-        assert!(policy.should_publish_echelon(EchelonLevel::Platoon));
-        assert!(policy.should_publish_echelon(EchelonLevel::Company));
+        // Hierarchical: Federation HQ sees cohort and up
+        let policy = AggregationPolicy::hierarchical(HierarchyLevel::Federation);
+        assert!(!policy.should_publish_tier(HierarchyLevel::Node));
+        assert!(!policy.should_publish_tier(HierarchyLevel::Cell));
+        assert!(policy.should_publish_tier(HierarchyLevel::Cohort));
+        assert!(policy.should_publish_tier(HierarchyLevel::Federation));
+        assert!(policy.should_publish_tier(HierarchyLevel::Coalition));
     }
 
     #[test]
     fn test_config_builder() {
         let config = BridgeConfig::new("test-bridge")
-            .with_aggregation(AggregationPolicy::SquadLeaderOnly)
+            .with_aggregation(AggregationPolicy::CellLeaderOnly)
             .with_tak_group("ALPHA")
             .allow_cot_type("a-f-")
             .block_cot_type("b-m-");
@@ -264,9 +249,10 @@ mod tests {
     }
 
     #[test]
-    fn test_echelon_ordering() {
-        assert!(EchelonLevel::Platform < EchelonLevel::Squad);
-        assert!(EchelonLevel::Squad < EchelonLevel::Cell);
-        assert!(EchelonLevel::Cell < EchelonLevel::Formation);
+    fn test_tier_ordering() {
+        assert!(HierarchyLevel::Node < HierarchyLevel::Cell);
+        assert!(HierarchyLevel::Cell < HierarchyLevel::Cohort);
+        assert!(HierarchyLevel::Cohort < HierarchyLevel::Federation);
+        assert!(HierarchyLevel::Federation < HierarchyLevel::Coalition);
     }
 }

@@ -54,7 +54,7 @@ pub trait CommandStorage: Send + Sync {
 
     /// Query commands by target
     ///
-    /// Returns all commands targeting the specified node/squad/platoon
+    /// Returns all commands targeting the specified node/cell/cohort
     async fn query_commands_by_target(&self, target_id: &str) -> Result<Vec<HierarchicalCommand>>;
 
     /// Delete a command (when expired or completed)

@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Field-level delta for SquadSummary documents
+/// Field-level delta for CellSummary documents
 ///
-/// Represents incremental changes to a squad summary, enabling CRDT-based
+/// Represents incremental changes to a cell summary, enabling CRDT-based
 /// delta synchronization instead of full document recreation.
 ///
 /// # Example
@@ -29,24 +29,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// ```rust,no_run
 /// use peat_protocol::hierarchy::deltas::*;
 ///
-/// let delta = SquadDelta {
-///     squad_id: "squad-1A".to_string(),
+/// let delta = CellDelta {
+///     cell_id: "cell-1A".to_string(),
 ///     timestamp_us: current_timestamp_us(),
 ///     sequence: 42,
 ///     updates: vec![
-///         SquadFieldUpdate::SetMemberCount(7),
-///         SquadFieldUpdate::SetOperationalCount(6),
-///         SquadFieldUpdate::AddMemberId("node-8".to_string()),
+///         CellFieldUpdate::SetMemberCount(7),
+///         CellFieldUpdate::SetOperationalCount(6),
+///         CellFieldUpdate::AddMemberId("node-8".to_string()),
 ///     ],
 /// };
 ///
-/// // Delta is ~100 bytes vs ~2KB for full SquadSummary
+/// // Delta is ~100 bytes vs ~2KB for full CellSummary
 /// assert!(delta.size_bytes() < 200);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SquadDelta {
-    /// Squad identifier
-    pub squad_id: String,
+pub struct CellDelta {
+    /// Cell identifier
+    pub cell_id: String,
 
     /// Timestamp when delta was generated (microseconds since epoch)
     pub timestamp_us: u64,
@@ -55,14 +55,14 @@ pub struct SquadDelta {
     pub sequence: u64,
 
     /// Field-level updates
-    pub updates: Vec<SquadFieldUpdate>,
+    pub updates: Vec<CellFieldUpdate>,
 }
 
-/// Individual field update for SquadSummary
+/// Individual field update for CellSummary
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SquadFieldUpdate {
+pub enum CellFieldUpdate {
     // Scalar fields (LWW - Last Write Wins semantics)
-    /// Update squad leader ID
+    /// Update cell leader ID
     SetLeaderId(String),
 
     /// Update total member count
@@ -71,13 +71,13 @@ pub enum SquadFieldUpdate {
     /// Update operational member count (health >= DEGRADED)
     SetOperationalCount(u32),
 
-    /// Update average fuel across squad members (minutes)
+    /// Update average fuel across cell members (minutes)
     SetAvgFuelMinutes(f32),
 
-    /// Update worst health status in squad
+    /// Update worst health status in cell
     SetWorstHealth(i32),
 
-    /// Update squad readiness score (0.0-1.0)
+    /// Update cell readiness score (0.0-1.0)
     SetReadinessScore(f32),
 
     // Position update (LWW for centroid)
@@ -85,10 +85,10 @@ pub enum SquadFieldUpdate {
     UpdatePositionCentroid(Position),
 
     // Array operations (OR-Set semantics - Add-Wins)
-    /// Add member to squad
+    /// Add member to cell
     AddMemberId(String),
 
-    /// Remove member from squad
+    /// Remove member from cell
     RemoveMemberId(String),
 
     // Capability composition (additive)
@@ -106,7 +106,7 @@ pub enum SquadFieldUpdate {
     UpdateAggregatedAt(Timestamp),
 }
 
-impl SquadDelta {
+impl CellDelta {
     /// Convert delta to Ditto field update operations
     ///
     /// Maps delta field updates to JSON field paths and values for Ditto's
@@ -120,54 +120,54 @@ impl SquadDelta {
 
         for update in self.updates {
             match update {
-                SquadFieldUpdate::SetLeaderId(id) => {
+                CellFieldUpdate::SetLeaderId(id) => {
                     updates.push(("leader_id".to_string(), json!(id)));
                 }
-                SquadFieldUpdate::SetMemberCount(count) => {
+                CellFieldUpdate::SetMemberCount(count) => {
                     updates.push(("member_count".to_string(), json!(count)));
                 }
-                SquadFieldUpdate::SetOperationalCount(count) => {
+                CellFieldUpdate::SetOperationalCount(count) => {
                     updates.push(("operational_count".to_string(), json!(count)));
                 }
-                SquadFieldUpdate::SetAvgFuelMinutes(fuel) => {
+                CellFieldUpdate::SetAvgFuelMinutes(fuel) => {
                     updates.push(("avg_fuel_minutes".to_string(), json!(fuel)));
                 }
-                SquadFieldUpdate::SetWorstHealth(health) => {
+                CellFieldUpdate::SetWorstHealth(health) => {
                     updates.push(("worst_health".to_string(), json!(health)));
                 }
-                SquadFieldUpdate::SetReadinessScore(score) => {
+                CellFieldUpdate::SetReadinessScore(score) => {
                     updates.push(("readiness_score".to_string(), json!(score)));
                 }
-                SquadFieldUpdate::UpdatePositionCentroid(pos) => {
+                CellFieldUpdate::UpdatePositionCentroid(pos) => {
                     updates.push((
                         "position_centroid".to_string(),
                         serde_json::to_value(pos).unwrap_or(json!(null)),
                     ));
                 }
-                SquadFieldUpdate::AddMemberId(id) => {
+                CellFieldUpdate::AddMemberId(id) => {
                     // OR-Set: add to array
                     updates.push(("member_ids.$add".to_string(), json!(id)));
                 }
-                SquadFieldUpdate::RemoveMemberId(id) => {
+                CellFieldUpdate::RemoveMemberId(id) => {
                     // OR-Set: remove from array
                     updates.push(("member_ids.$remove".to_string(), json!(id)));
                 }
-                SquadFieldUpdate::AddCapability(cap) => {
+                CellFieldUpdate::AddCapability(cap) => {
                     updates.push((
                         "aggregated_capabilities.$add".to_string(),
                         serde_json::to_value(cap).unwrap_or(json!(null)),
                     ));
                 }
-                SquadFieldUpdate::RemoveCapability(cap_id) => {
+                CellFieldUpdate::RemoveCapability(cap_id) => {
                     updates.push(("aggregated_capabilities.$remove".to_string(), json!(cap_id)));
                 }
-                SquadFieldUpdate::UpdateBoundingBox(bbox) => {
+                CellFieldUpdate::UpdateBoundingBox(bbox) => {
                     updates.push((
                         "bounding_box".to_string(),
                         serde_json::to_value(bbox).unwrap_or(json!(null)),
                     ));
                 }
-                SquadFieldUpdate::UpdateAggregatedAt(ts) => {
+                CellFieldUpdate::UpdateAggregatedAt(ts) => {
                     updates.push((
                         "aggregated_at".to_string(),
                         serde_json::to_value(ts).unwrap_or(json!(null)),
@@ -186,29 +186,29 @@ impl SquadDelta {
     /// Estimate size of delta in bytes
     ///
     /// Used for bandwidth metrics and efficiency validation.
-    /// Target: delta should be <5% of full SquadSummary size (~2KB).
+    /// Target: delta should be <5% of full CellSummary size (~2KB).
     pub fn size_bytes(&self) -> usize {
         // Rough estimate based on field updates
-        let base_overhead = 64; // squad_id, timestamp_us, sequence
+        let base_overhead = 64; // cell_id, timestamp_us, sequence
         let per_update_overhead = 16; // field name + metadata
 
         let updates_size: usize = self
             .updates
             .iter()
             .map(|u| match u {
-                SquadFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
-                SquadFieldUpdate::SetMemberCount(_) => 4 + per_update_overhead,
-                SquadFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
-                SquadFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
-                SquadFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
-                SquadFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
-                SquadFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead, // 3 floats
-                SquadFieldUpdate::AddMemberId(s) => s.len() + per_update_overhead,
-                SquadFieldUpdate::RemoveMemberId(s) => s.len() + per_update_overhead,
-                SquadFieldUpdate::AddCapability(_) => 128 + per_update_overhead, // capability ~128 bytes
-                SquadFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
-                SquadFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
-                SquadFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
+                CellFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
+                CellFieldUpdate::SetMemberCount(_) => 4 + per_update_overhead,
+                CellFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
+                CellFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
+                CellFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
+                CellFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
+                CellFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead, // 3 floats
+                CellFieldUpdate::AddMemberId(s) => s.len() + per_update_overhead,
+                CellFieldUpdate::RemoveMemberId(s) => s.len() + per_update_overhead,
+                CellFieldUpdate::AddCapability(_) => 128 + per_update_overhead, // capability ~128 bytes
+                CellFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
+                CellFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
+                CellFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
             })
             .sum();
 
@@ -221,11 +221,11 @@ impl SquadDelta {
     }
 }
 
-/// Field-level delta for PlatoonSummary documents
+/// Field-level delta for CohortSummary documents
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlatoonDelta {
-    /// Platoon identifier
-    pub platoon_id: String,
+pub struct CohortDelta {
+    /// Cohort identifier
+    pub cohort_id: String,
 
     /// Timestamp when delta was generated (microseconds since epoch)
     pub timestamp_us: u64,
@@ -234,15 +234,15 @@ pub struct PlatoonDelta {
     pub sequence: u64,
 
     /// Field-level updates
-    pub updates: Vec<PlatoonFieldUpdate>,
+    pub updates: Vec<CohortFieldUpdate>,
 }
 
-/// Individual field update for PlatoonSummary
+/// Individual field update for CohortSummary
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PlatoonFieldUpdate {
+pub enum CohortFieldUpdate {
     // Scalar fields (LWW semantics)
     SetLeaderId(String),
-    SetSquadCount(u32),
+    SetCellCount(u32),
     SetTotalMemberCount(u32),
     SetOperationalCount(u32),
     SetAvgFuelMinutes(f32),
@@ -253,8 +253,8 @@ pub enum PlatoonFieldUpdate {
     UpdatePositionCentroid(Position),
 
     // Array operations (OR-Set)
-    AddSquadId(String),
-    RemoveSquadId(String),
+    AddCellId(String),
+    RemoveCellId(String),
 
     // Capabilities
     AddCapability(Capability),
@@ -265,62 +265,62 @@ pub enum PlatoonFieldUpdate {
     UpdateAggregatedAt(Timestamp),
 }
 
-impl PlatoonDelta {
+impl CohortDelta {
     /// Convert delta to Ditto field update operations
     pub fn into_ditto_updates(self) -> Vec<(String, serde_json::Value)> {
         let mut updates = Vec::new();
 
         for update in self.updates {
             match update {
-                PlatoonFieldUpdate::SetLeaderId(id) => {
+                CohortFieldUpdate::SetLeaderId(id) => {
                     updates.push(("leader_id".to_string(), json!(id)));
                 }
-                PlatoonFieldUpdate::SetSquadCount(count) => {
-                    updates.push(("squad_count".to_string(), json!(count)));
+                CohortFieldUpdate::SetCellCount(count) => {
+                    updates.push(("cell_count".to_string(), json!(count)));
                 }
-                PlatoonFieldUpdate::SetTotalMemberCount(count) => {
+                CohortFieldUpdate::SetTotalMemberCount(count) => {
                     updates.push(("total_member_count".to_string(), json!(count)));
                 }
-                PlatoonFieldUpdate::SetOperationalCount(count) => {
+                CohortFieldUpdate::SetOperationalCount(count) => {
                     updates.push(("operational_count".to_string(), json!(count)));
                 }
-                PlatoonFieldUpdate::SetAvgFuelMinutes(fuel) => {
+                CohortFieldUpdate::SetAvgFuelMinutes(fuel) => {
                     updates.push(("avg_fuel_minutes".to_string(), json!(fuel)));
                 }
-                PlatoonFieldUpdate::SetWorstHealth(health) => {
+                CohortFieldUpdate::SetWorstHealth(health) => {
                     updates.push(("worst_health".to_string(), json!(health)));
                 }
-                PlatoonFieldUpdate::SetReadinessScore(score) => {
+                CohortFieldUpdate::SetReadinessScore(score) => {
                     updates.push(("readiness_score".to_string(), json!(score)));
                 }
-                PlatoonFieldUpdate::UpdatePositionCentroid(pos) => {
+                CohortFieldUpdate::UpdatePositionCentroid(pos) => {
                     updates.push((
                         "position_centroid".to_string(),
                         serde_json::to_value(pos).unwrap_or(json!(null)),
                     ));
                 }
-                PlatoonFieldUpdate::AddSquadId(id) => {
-                    updates.push(("squad_ids.$add".to_string(), json!(id)));
+                CohortFieldUpdate::AddCellId(id) => {
+                    updates.push(("cell_ids.$add".to_string(), json!(id)));
                 }
-                PlatoonFieldUpdate::RemoveSquadId(id) => {
-                    updates.push(("squad_ids.$remove".to_string(), json!(id)));
+                CohortFieldUpdate::RemoveCellId(id) => {
+                    updates.push(("cell_ids.$remove".to_string(), json!(id)));
                 }
-                PlatoonFieldUpdate::AddCapability(cap) => {
+                CohortFieldUpdate::AddCapability(cap) => {
                     updates.push((
                         "aggregated_capabilities.$add".to_string(),
                         serde_json::to_value(cap).unwrap_or(json!(null)),
                     ));
                 }
-                PlatoonFieldUpdate::RemoveCapability(cap_id) => {
+                CohortFieldUpdate::RemoveCapability(cap_id) => {
                     updates.push(("aggregated_capabilities.$remove".to_string(), json!(cap_id)));
                 }
-                PlatoonFieldUpdate::UpdateBoundingBox(bbox) => {
+                CohortFieldUpdate::UpdateBoundingBox(bbox) => {
                     updates.push((
                         "bounding_box".to_string(),
                         serde_json::to_value(bbox).unwrap_or(json!(null)),
                     ));
                 }
-                PlatoonFieldUpdate::UpdateAggregatedAt(ts) => {
+                CohortFieldUpdate::UpdateAggregatedAt(ts) => {
                     updates.push((
                         "aggregated_at".to_string(),
                         serde_json::to_value(ts).unwrap_or(json!(null)),
@@ -344,20 +344,20 @@ impl PlatoonDelta {
             .updates
             .iter()
             .map(|u| match u {
-                PlatoonFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
-                PlatoonFieldUpdate::SetSquadCount(_) => 4 + per_update_overhead,
-                PlatoonFieldUpdate::SetTotalMemberCount(_) => 4 + per_update_overhead,
-                PlatoonFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
-                PlatoonFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
-                PlatoonFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
-                PlatoonFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
-                PlatoonFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead,
-                PlatoonFieldUpdate::AddSquadId(s) => s.len() + per_update_overhead,
-                PlatoonFieldUpdate::RemoveSquadId(s) => s.len() + per_update_overhead,
-                PlatoonFieldUpdate::AddCapability(_) => 128 + per_update_overhead,
-                PlatoonFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
-                PlatoonFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
-                PlatoonFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
+                CohortFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
+                CohortFieldUpdate::SetCellCount(_) => 4 + per_update_overhead,
+                CohortFieldUpdate::SetTotalMemberCount(_) => 4 + per_update_overhead,
+                CohortFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
+                CohortFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
+                CohortFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
+                CohortFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
+                CohortFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead,
+                CohortFieldUpdate::AddCellId(s) => s.len() + per_update_overhead,
+                CohortFieldUpdate::RemoveCellId(s) => s.len() + per_update_overhead,
+                CohortFieldUpdate::AddCapability(_) => 128 + per_update_overhead,
+                CohortFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
+                CohortFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
+                CohortFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
             })
             .sum();
 
@@ -370,11 +370,11 @@ impl PlatoonDelta {
     }
 }
 
-/// Field-level delta for CompanySummary documents
+/// Field-level delta for FederationSummary documents
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompanyDelta {
-    /// Company identifier
-    pub company_id: String,
+pub struct FederationDelta {
+    /// Federation identifier
+    pub federation_id: String,
 
     /// Timestamp when delta was generated (microseconds since epoch)
     pub timestamp_us: u64,
@@ -383,15 +383,15 @@ pub struct CompanyDelta {
     pub sequence: u64,
 
     /// Field-level updates
-    pub updates: Vec<CompanyFieldUpdate>,
+    pub updates: Vec<FederationFieldUpdate>,
 }
 
-/// Individual field update for CompanySummary
+/// Individual field update for FederationSummary
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CompanyFieldUpdate {
+pub enum FederationFieldUpdate {
     // Scalar fields (LWW semantics)
     SetLeaderId(String),
-    SetPlatoonCount(u32),
+    SetCohortCount(u32),
     SetTotalMemberCount(u32),
     SetOperationalCount(u32),
     SetAvgFuelMinutes(f32),
@@ -402,8 +402,8 @@ pub enum CompanyFieldUpdate {
     UpdatePositionCentroid(Position),
 
     // Array operations (OR-Set)
-    AddPlatoonId(String),
-    RemovePlatoonId(String),
+    AddCohortId(String),
+    RemoveCohortId(String),
 
     // Capabilities
     AddCapability(Capability),
@@ -414,62 +414,62 @@ pub enum CompanyFieldUpdate {
     UpdateAggregatedAt(Timestamp),
 }
 
-impl CompanyDelta {
+impl FederationDelta {
     /// Convert delta to Ditto field update operations
     pub fn into_ditto_updates(self) -> Vec<(String, serde_json::Value)> {
         let mut updates = Vec::new();
 
         for update in self.updates {
             match update {
-                CompanyFieldUpdate::SetLeaderId(id) => {
+                FederationFieldUpdate::SetLeaderId(id) => {
                     updates.push(("leader_id".to_string(), json!(id)));
                 }
-                CompanyFieldUpdate::SetPlatoonCount(count) => {
-                    updates.push(("platoon_count".to_string(), json!(count)));
+                FederationFieldUpdate::SetCohortCount(count) => {
+                    updates.push(("cohort_count".to_string(), json!(count)));
                 }
-                CompanyFieldUpdate::SetTotalMemberCount(count) => {
+                FederationFieldUpdate::SetTotalMemberCount(count) => {
                     updates.push(("total_member_count".to_string(), json!(count)));
                 }
-                CompanyFieldUpdate::SetOperationalCount(count) => {
+                FederationFieldUpdate::SetOperationalCount(count) => {
                     updates.push(("operational_count".to_string(), json!(count)));
                 }
-                CompanyFieldUpdate::SetAvgFuelMinutes(fuel) => {
+                FederationFieldUpdate::SetAvgFuelMinutes(fuel) => {
                     updates.push(("avg_fuel_minutes".to_string(), json!(fuel)));
                 }
-                CompanyFieldUpdate::SetWorstHealth(health) => {
+                FederationFieldUpdate::SetWorstHealth(health) => {
                     updates.push(("worst_health".to_string(), json!(health)));
                 }
-                CompanyFieldUpdate::SetReadinessScore(score) => {
+                FederationFieldUpdate::SetReadinessScore(score) => {
                     updates.push(("readiness_score".to_string(), json!(score)));
                 }
-                CompanyFieldUpdate::UpdatePositionCentroid(pos) => {
+                FederationFieldUpdate::UpdatePositionCentroid(pos) => {
                     updates.push((
                         "position_centroid".to_string(),
                         serde_json::to_value(pos).unwrap_or(json!(null)),
                     ));
                 }
-                CompanyFieldUpdate::AddPlatoonId(id) => {
-                    updates.push(("platoon_ids.$add".to_string(), json!(id)));
+                FederationFieldUpdate::AddCohortId(id) => {
+                    updates.push(("cohort_ids.$add".to_string(), json!(id)));
                 }
-                CompanyFieldUpdate::RemovePlatoonId(id) => {
-                    updates.push(("platoon_ids.$remove".to_string(), json!(id)));
+                FederationFieldUpdate::RemoveCohortId(id) => {
+                    updates.push(("cohort_ids.$remove".to_string(), json!(id)));
                 }
-                CompanyFieldUpdate::AddCapability(cap) => {
+                FederationFieldUpdate::AddCapability(cap) => {
                     updates.push((
                         "aggregated_capabilities.$add".to_string(),
                         serde_json::to_value(cap).unwrap_or(json!(null)),
                     ));
                 }
-                CompanyFieldUpdate::RemoveCapability(cap_id) => {
+                FederationFieldUpdate::RemoveCapability(cap_id) => {
                     updates.push(("aggregated_capabilities.$remove".to_string(), json!(cap_id)));
                 }
-                CompanyFieldUpdate::UpdateBoundingBox(bbox) => {
+                FederationFieldUpdate::UpdateBoundingBox(bbox) => {
                     updates.push((
                         "bounding_box".to_string(),
                         serde_json::to_value(bbox).unwrap_or(json!(null)),
                     ));
                 }
-                CompanyFieldUpdate::UpdateAggregatedAt(ts) => {
+                FederationFieldUpdate::UpdateAggregatedAt(ts) => {
                     updates.push((
                         "aggregated_at".to_string(),
                         serde_json::to_value(ts).unwrap_or(json!(null)),
@@ -493,20 +493,173 @@ impl CompanyDelta {
             .updates
             .iter()
             .map(|u| match u {
-                CompanyFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
-                CompanyFieldUpdate::SetPlatoonCount(_) => 4 + per_update_overhead,
-                CompanyFieldUpdate::SetTotalMemberCount(_) => 4 + per_update_overhead,
-                CompanyFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
-                CompanyFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
-                CompanyFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
-                CompanyFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
-                CompanyFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead,
-                CompanyFieldUpdate::AddPlatoonId(s) => s.len() + per_update_overhead,
-                CompanyFieldUpdate::RemovePlatoonId(s) => s.len() + per_update_overhead,
-                CompanyFieldUpdate::AddCapability(_) => 128 + per_update_overhead,
-                CompanyFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
-                CompanyFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
-                CompanyFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
+                FederationFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
+                FederationFieldUpdate::SetCohortCount(_) => 4 + per_update_overhead,
+                FederationFieldUpdate::SetTotalMemberCount(_) => 4 + per_update_overhead,
+                FederationFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
+                FederationFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
+                FederationFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
+                FederationFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
+                FederationFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead,
+                FederationFieldUpdate::AddCohortId(s) => s.len() + per_update_overhead,
+                FederationFieldUpdate::RemoveCohortId(s) => s.len() + per_update_overhead,
+                FederationFieldUpdate::AddCapability(_) => 128 + per_update_overhead,
+                FederationFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
+                FederationFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
+                FederationFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
+            })
+            .sum();
+
+        base_overhead + updates_size
+    }
+
+    /// Check if delta is empty
+    pub fn is_empty(&self) -> bool {
+        self.updates.is_empty()
+    }
+}
+
+/// Field-level delta for CoalitionSummary documents
+///
+/// Coalition is the top-tier aggregation under the four-tier rigid-schema
+/// model defined by ADR-066. A coalition is an alliance of federations for
+/// combined action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoalitionDelta {
+    /// Coalition identifier
+    pub coalition_id: String,
+
+    /// Timestamp when delta was generated (microseconds since epoch)
+    pub timestamp_us: u64,
+
+    /// Monotonic sequence number for ordering
+    pub sequence: u64,
+
+    /// Field-level updates
+    pub updates: Vec<CoalitionFieldUpdate>,
+}
+
+/// Individual field update for CoalitionSummary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CoalitionFieldUpdate {
+    // Scalar fields (LWW semantics)
+    SetLeaderId(String),
+    SetFederationCount(u32),
+    SetTotalMemberCount(u32),
+    SetOperationalCount(u32),
+    SetAvgFuelMinutes(f32),
+    SetWorstHealth(i32),
+    SetReadinessScore(f32),
+
+    // Position update
+    UpdatePositionCentroid(Position),
+
+    // Array operations (OR-Set)
+    AddFederationId(String),
+    RemoveFederationId(String),
+
+    // Capabilities
+    AddCapability(Capability),
+    RemoveCapability(String),
+
+    // Spatial
+    UpdateBoundingBox(BoundingBox),
+    UpdateAggregatedAt(Timestamp),
+}
+
+impl CoalitionDelta {
+    /// Convert delta to Ditto field update operations
+    pub fn into_ditto_updates(self) -> Vec<(String, serde_json::Value)> {
+        let mut updates = Vec::new();
+
+        for update in self.updates {
+            match update {
+                CoalitionFieldUpdate::SetLeaderId(id) => {
+                    updates.push(("leader_id".to_string(), json!(id)));
+                }
+                CoalitionFieldUpdate::SetFederationCount(count) => {
+                    updates.push(("federation_count".to_string(), json!(count)));
+                }
+                CoalitionFieldUpdate::SetTotalMemberCount(count) => {
+                    updates.push(("total_member_count".to_string(), json!(count)));
+                }
+                CoalitionFieldUpdate::SetOperationalCount(count) => {
+                    updates.push(("operational_count".to_string(), json!(count)));
+                }
+                CoalitionFieldUpdate::SetAvgFuelMinutes(fuel) => {
+                    updates.push(("avg_fuel_minutes".to_string(), json!(fuel)));
+                }
+                CoalitionFieldUpdate::SetWorstHealth(health) => {
+                    updates.push(("worst_health".to_string(), json!(health)));
+                }
+                CoalitionFieldUpdate::SetReadinessScore(score) => {
+                    updates.push(("readiness_score".to_string(), json!(score)));
+                }
+                CoalitionFieldUpdate::UpdatePositionCentroid(pos) => {
+                    updates.push((
+                        "position_centroid".to_string(),
+                        serde_json::to_value(pos).unwrap_or(json!(null)),
+                    ));
+                }
+                CoalitionFieldUpdate::AddFederationId(id) => {
+                    updates.push(("federation_ids.$add".to_string(), json!(id)));
+                }
+                CoalitionFieldUpdate::RemoveFederationId(id) => {
+                    updates.push(("federation_ids.$remove".to_string(), json!(id)));
+                }
+                CoalitionFieldUpdate::AddCapability(cap) => {
+                    updates.push((
+                        "aggregated_capabilities.$add".to_string(),
+                        serde_json::to_value(cap).unwrap_or(json!(null)),
+                    ));
+                }
+                CoalitionFieldUpdate::RemoveCapability(cap_id) => {
+                    updates.push(("aggregated_capabilities.$remove".to_string(), json!(cap_id)));
+                }
+                CoalitionFieldUpdate::UpdateBoundingBox(bbox) => {
+                    updates.push((
+                        "bounding_box".to_string(),
+                        serde_json::to_value(bbox).unwrap_or(json!(null)),
+                    ));
+                }
+                CoalitionFieldUpdate::UpdateAggregatedAt(ts) => {
+                    updates.push((
+                        "aggregated_at".to_string(),
+                        serde_json::to_value(ts).unwrap_or(json!(null)),
+                    ));
+                }
+            }
+        }
+
+        updates.push(("last_update_us".to_string(), json!(self.timestamp_us)));
+        updates.push(("sequence".to_string(), json!(self.sequence)));
+
+        updates
+    }
+
+    /// Estimate size of delta in bytes
+    pub fn size_bytes(&self) -> usize {
+        let base_overhead = 64;
+        let per_update_overhead = 16;
+
+        let updates_size: usize = self
+            .updates
+            .iter()
+            .map(|u| match u {
+                CoalitionFieldUpdate::SetLeaderId(s) => s.len() + per_update_overhead,
+                CoalitionFieldUpdate::SetFederationCount(_) => 4 + per_update_overhead,
+                CoalitionFieldUpdate::SetTotalMemberCount(_) => 4 + per_update_overhead,
+                CoalitionFieldUpdate::SetOperationalCount(_) => 4 + per_update_overhead,
+                CoalitionFieldUpdate::SetAvgFuelMinutes(_) => 4 + per_update_overhead,
+                CoalitionFieldUpdate::SetWorstHealth(_) => 4 + per_update_overhead,
+                CoalitionFieldUpdate::SetReadinessScore(_) => 4 + per_update_overhead,
+                CoalitionFieldUpdate::UpdatePositionCentroid(_) => 24 + per_update_overhead,
+                CoalitionFieldUpdate::AddFederationId(s) => s.len() + per_update_overhead,
+                CoalitionFieldUpdate::RemoveFederationId(s) => s.len() + per_update_overhead,
+                CoalitionFieldUpdate::AddCapability(_) => 128 + per_update_overhead,
+                CoalitionFieldUpdate::RemoveCapability(s) => s.len() + per_update_overhead,
+                CoalitionFieldUpdate::UpdateBoundingBox(_) => 64 + per_update_overhead,
+                CoalitionFieldUpdate::UpdateAggregatedAt(_) => 16 + per_update_overhead,
             })
             .sum();
 
@@ -531,10 +684,10 @@ pub fn current_timestamp_us() -> u64 {
 // Delta Generation Helpers
 // ============================================================================
 
-use peat_schema::hierarchy::v1::{CompanySummary, PlatoonSummary, SquadSummary};
+use peat_schema::hierarchy::v1::{CellSummary, CoalitionSummary, CohortSummary, FederationSummary};
 
-impl SquadDelta {
-    /// Create a delta from a SquadSummary
+impl CellDelta {
+    /// Create a delta from a CellSummary
     ///
     /// Generates field updates representing the complete state of the summary.
     /// This is used for both:
@@ -544,48 +697,46 @@ impl SquadDelta {
     /// The bandwidth savings come from Ditto's CRDT delta propagation, which only
     /// sends changed fields across the network even if we send all field updates.
     #[allow(clippy::vec_init_then_push, clippy::clone_on_copy)]
-    pub fn from_summary(summary: &SquadSummary, sequence: u64) -> Self {
-        let mut updates = Vec::new();
+    pub fn from_summary(summary: &CellSummary, sequence: u64) -> Self {
+        let mut updates: Vec<CellFieldUpdate> = Vec::new();
 
         // Scalar fields (LWW semantics)
-        updates.push(SquadFieldUpdate::SetLeaderId(summary.leader_id.clone()));
-        updates.push(SquadFieldUpdate::SetMemberCount(summary.member_count));
-        updates.push(SquadFieldUpdate::SetOperationalCount(
+        updates.push(CellFieldUpdate::SetLeaderId(summary.leader_id.clone()));
+        updates.push(CellFieldUpdate::SetMemberCount(summary.member_count));
+        updates.push(CellFieldUpdate::SetOperationalCount(
             summary.operational_count,
         ));
-        updates.push(SquadFieldUpdate::SetAvgFuelMinutes(
-            summary.avg_fuel_minutes,
-        ));
-        updates.push(SquadFieldUpdate::SetWorstHealth(summary.worst_health));
-        updates.push(SquadFieldUpdate::SetReadinessScore(summary.readiness_score));
+        updates.push(CellFieldUpdate::SetAvgFuelMinutes(summary.avg_fuel_minutes));
+        updates.push(CellFieldUpdate::SetWorstHealth(summary.worst_health));
+        updates.push(CellFieldUpdate::SetReadinessScore(summary.readiness_score));
 
         // Position centroid
         if let Some(pos) = &summary.position_centroid {
-            updates.push(SquadFieldUpdate::UpdatePositionCentroid(pos.clone()));
+            updates.push(CellFieldUpdate::UpdatePositionCentroid(pos.clone()));
         }
 
         // Member IDs (OR-Set semantics - send current set)
         for member_id in &summary.member_ids {
-            updates.push(SquadFieldUpdate::AddMemberId(member_id.clone()));
+            updates.push(CellFieldUpdate::AddMemberId(member_id.clone()));
         }
 
         // Aggregated capabilities
         for capability in &summary.aggregated_capabilities {
-            updates.push(SquadFieldUpdate::AddCapability(capability.clone()));
+            updates.push(CellFieldUpdate::AddCapability(capability.clone()));
         }
 
         // Bounding box
         if let Some(bbox) = &summary.bounding_box {
-            updates.push(SquadFieldUpdate::UpdateBoundingBox(bbox.clone()));
+            updates.push(CellFieldUpdate::UpdateBoundingBox(bbox.clone()));
         }
 
         // Aggregated timestamp
         if let Some(ts) = &summary.aggregated_at {
-            updates.push(SquadFieldUpdate::UpdateAggregatedAt(ts.clone()));
+            updates.push(CellFieldUpdate::UpdateAggregatedAt(ts.clone()));
         }
 
         Self {
-            squad_id: summary.squad_id.clone(),
+            cell_id: summary.cell_id.clone(),
             timestamp_us: current_timestamp_us(),
             sequence,
             updates,
@@ -593,59 +744,59 @@ impl SquadDelta {
     }
 }
 
-impl PlatoonDelta {
-    /// Create a delta from a PlatoonSummary
+impl CohortDelta {
+    /// Create a delta from a CohortSummary
     ///
-    /// Similar to SquadDelta::from_summary, generates field updates representing
+    /// Similar to CellDelta::from_summary, generates field updates representing
     /// the complete state. Ditto handles delta compression during CRDT sync.
     #[allow(clippy::vec_init_then_push, clippy::clone_on_copy)]
-    pub fn from_summary(summary: &PlatoonSummary, sequence: u64) -> Self {
-        let mut updates = Vec::new();
+    pub fn from_summary(summary: &CohortSummary, sequence: u64) -> Self {
+        let mut updates: Vec<CohortFieldUpdate> = Vec::new();
 
         // Scalar fields
-        updates.push(PlatoonFieldUpdate::SetLeaderId(summary.leader_id.clone()));
-        updates.push(PlatoonFieldUpdate::SetSquadCount(summary.squad_count));
-        updates.push(PlatoonFieldUpdate::SetTotalMemberCount(
+        updates.push(CohortFieldUpdate::SetLeaderId(summary.leader_id.clone()));
+        updates.push(CohortFieldUpdate::SetCellCount(summary.cell_count));
+        updates.push(CohortFieldUpdate::SetTotalMemberCount(
             summary.total_member_count,
         ));
-        updates.push(PlatoonFieldUpdate::SetOperationalCount(
+        updates.push(CohortFieldUpdate::SetOperationalCount(
             summary.operational_count,
         ));
-        updates.push(PlatoonFieldUpdate::SetAvgFuelMinutes(
+        updates.push(CohortFieldUpdate::SetAvgFuelMinutes(
             summary.avg_fuel_minutes,
         ));
-        updates.push(PlatoonFieldUpdate::SetWorstHealth(summary.worst_health));
-        updates.push(PlatoonFieldUpdate::SetReadinessScore(
+        updates.push(CohortFieldUpdate::SetWorstHealth(summary.worst_health));
+        updates.push(CohortFieldUpdate::SetReadinessScore(
             summary.readiness_score,
         ));
 
         // Position centroid
         if let Some(pos) = &summary.position_centroid {
-            updates.push(PlatoonFieldUpdate::UpdatePositionCentroid(pos.clone()));
+            updates.push(CohortFieldUpdate::UpdatePositionCentroid(pos.clone()));
         }
 
-        // Squad IDs
-        for squad_id in &summary.squad_ids {
-            updates.push(PlatoonFieldUpdate::AddSquadId(squad_id.clone()));
+        // Cell IDs
+        for cell_id in &summary.cell_ids {
+            updates.push(CohortFieldUpdate::AddCellId(cell_id.clone()));
         }
 
         // Aggregated capabilities
         for capability in &summary.aggregated_capabilities {
-            updates.push(PlatoonFieldUpdate::AddCapability(capability.clone()));
+            updates.push(CohortFieldUpdate::AddCapability(capability.clone()));
         }
 
         // Bounding box
         if let Some(bbox) = &summary.bounding_box {
-            updates.push(PlatoonFieldUpdate::UpdateBoundingBox(bbox.clone()));
+            updates.push(CohortFieldUpdate::UpdateBoundingBox(bbox.clone()));
         }
 
         // Aggregated timestamp
         if let Some(ts) = &summary.aggregated_at {
-            updates.push(PlatoonFieldUpdate::UpdateAggregatedAt(ts.clone()));
+            updates.push(CohortFieldUpdate::UpdateAggregatedAt(ts.clone()));
         }
 
         Self {
-            platoon_id: summary.platoon_id.clone(),
+            cohort_id: summary.cohort_id.clone(),
             timestamp_us: current_timestamp_us(),
             sequence,
             updates,
@@ -653,59 +804,123 @@ impl PlatoonDelta {
     }
 }
 
-impl CompanyDelta {
-    /// Create a delta from a CompanySummary
+impl FederationDelta {
+    /// Create a delta from a FederationSummary
     ///
-    /// Similar to Squad/Platoon delta generation, represents complete state
+    /// Similar to Cell/Cohort delta generation, represents complete state
     /// while relying on Ditto's CRDT delta compression for bandwidth efficiency.
     #[allow(clippy::vec_init_then_push, clippy::clone_on_copy)]
-    pub fn from_summary(summary: &CompanySummary, sequence: u64) -> Self {
-        let mut updates = Vec::new();
+    pub fn from_summary(summary: &FederationSummary, sequence: u64) -> Self {
+        let mut updates: Vec<FederationFieldUpdate> = Vec::new();
 
         // Scalar fields
-        updates.push(CompanyFieldUpdate::SetLeaderId(summary.leader_id.clone()));
-        updates.push(CompanyFieldUpdate::SetPlatoonCount(summary.platoon_count));
-        updates.push(CompanyFieldUpdate::SetTotalMemberCount(
+        updates.push(FederationFieldUpdate::SetLeaderId(
+            summary.leader_id.clone(),
+        ));
+        updates.push(FederationFieldUpdate::SetCohortCount(summary.cohort_count));
+        updates.push(FederationFieldUpdate::SetTotalMemberCount(
             summary.total_member_count,
         ));
-        updates.push(CompanyFieldUpdate::SetOperationalCount(
+        updates.push(FederationFieldUpdate::SetOperationalCount(
             summary.operational_count,
         ));
-        updates.push(CompanyFieldUpdate::SetAvgFuelMinutes(
+        updates.push(FederationFieldUpdate::SetAvgFuelMinutes(
             summary.avg_fuel_minutes,
         ));
-        updates.push(CompanyFieldUpdate::SetWorstHealth(summary.worst_health));
-        updates.push(CompanyFieldUpdate::SetReadinessScore(
+        updates.push(FederationFieldUpdate::SetWorstHealth(summary.worst_health));
+        updates.push(FederationFieldUpdate::SetReadinessScore(
             summary.readiness_score,
         ));
 
         // Position centroid
         if let Some(pos) = &summary.position_centroid {
-            updates.push(CompanyFieldUpdate::UpdatePositionCentroid(pos.clone()));
+            updates.push(FederationFieldUpdate::UpdatePositionCentroid(pos.clone()));
         }
 
-        // Platoon IDs
-        for platoon_id in &summary.platoon_ids {
-            updates.push(CompanyFieldUpdate::AddPlatoonId(platoon_id.clone()));
+        // Cohort IDs
+        for cohort_id in &summary.cohort_ids {
+            updates.push(FederationFieldUpdate::AddCohortId(cohort_id.clone()));
         }
 
         // Aggregated capabilities
         for capability in &summary.aggregated_capabilities {
-            updates.push(CompanyFieldUpdate::AddCapability(capability.clone()));
+            updates.push(FederationFieldUpdate::AddCapability(capability.clone()));
         }
 
         // Bounding box
         if let Some(bbox) = &summary.bounding_box {
-            updates.push(CompanyFieldUpdate::UpdateBoundingBox(bbox.clone()));
+            updates.push(FederationFieldUpdate::UpdateBoundingBox(bbox.clone()));
         }
 
         // Aggregated timestamp
         if let Some(ts) = &summary.aggregated_at {
-            updates.push(CompanyFieldUpdate::UpdateAggregatedAt(ts.clone()));
+            updates.push(FederationFieldUpdate::UpdateAggregatedAt(ts.clone()));
         }
 
         Self {
-            company_id: summary.company_id.clone(),
+            federation_id: summary.federation_id.clone(),
+            timestamp_us: current_timestamp_us(),
+            sequence,
+            updates,
+        }
+    }
+}
+
+impl CoalitionDelta {
+    /// Create a delta from a CoalitionSummary
+    ///
+    /// Mirrors `FederationDelta::from_summary` for the top tier introduced by
+    /// ADR-066. A coalition aggregates over federations.
+    #[allow(clippy::vec_init_then_push, clippy::clone_on_copy)]
+    pub fn from_summary(summary: &CoalitionSummary, sequence: u64) -> Self {
+        let mut updates: Vec<CoalitionFieldUpdate> = Vec::new();
+
+        // Scalar fields
+        updates.push(CoalitionFieldUpdate::SetLeaderId(summary.leader_id.clone()));
+        updates.push(CoalitionFieldUpdate::SetFederationCount(
+            summary.federation_count,
+        ));
+        updates.push(CoalitionFieldUpdate::SetTotalMemberCount(
+            summary.total_member_count,
+        ));
+        updates.push(CoalitionFieldUpdate::SetOperationalCount(
+            summary.operational_count,
+        ));
+        updates.push(CoalitionFieldUpdate::SetAvgFuelMinutes(
+            summary.avg_fuel_minutes,
+        ));
+        updates.push(CoalitionFieldUpdate::SetWorstHealth(summary.worst_health));
+        updates.push(CoalitionFieldUpdate::SetReadinessScore(
+            summary.readiness_score,
+        ));
+
+        // Position centroid
+        if let Some(pos) = &summary.position_centroid {
+            updates.push(CoalitionFieldUpdate::UpdatePositionCentroid(pos.clone()));
+        }
+
+        // Federation IDs
+        for federation_id in &summary.federation_ids {
+            updates.push(CoalitionFieldUpdate::AddFederationId(federation_id.clone()));
+        }
+
+        // Aggregated capabilities
+        for capability in &summary.aggregated_capabilities {
+            updates.push(CoalitionFieldUpdate::AddCapability(capability.clone()));
+        }
+
+        // Bounding box
+        if let Some(bbox) = &summary.bounding_box {
+            updates.push(CoalitionFieldUpdate::UpdateBoundingBox(bbox.clone()));
+        }
+
+        // Aggregated timestamp
+        if let Some(ts) = &summary.aggregated_at {
+            updates.push(CoalitionFieldUpdate::UpdateAggregatedAt(ts.clone()));
+        }
+
+        Self {
+            coalition_id: summary.coalition_id.clone(),
             timestamp_us: current_timestamp_us(),
             sequence,
             updates,
@@ -718,39 +933,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_squad_delta_serialization() {
-        let delta = SquadDelta {
-            squad_id: "squad-1A".to_string(),
+    fn test_cell_delta_serialization() {
+        let delta = CellDelta {
+            cell_id: "cell-1A".to_string(),
             timestamp_us: 1234567890,
             sequence: 42,
             updates: vec![
-                SquadFieldUpdate::SetMemberCount(7),
-                SquadFieldUpdate::SetOperationalCount(6),
-                SquadFieldUpdate::AddMemberId("node-8".to_string()),
+                CellFieldUpdate::SetMemberCount(7),
+                CellFieldUpdate::SetOperationalCount(6),
+                CellFieldUpdate::AddMemberId("node-8".to_string()),
             ],
         };
 
         // Should serialize to JSON
         let json = serde_json::to_string(&delta).unwrap();
-        assert!(json.contains("squad-1A"));
+        assert!(json.contains("cell-1A"));
         assert!(json.contains("SetMemberCount"));
 
         // Should deserialize back
-        let deserialized: SquadDelta = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.squad_id, "squad-1A");
+        let deserialized: CellDelta = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.cell_id, "cell-1A");
         assert_eq!(deserialized.updates.len(), 3);
     }
 
     #[test]
-    fn test_squad_delta_into_ditto_updates() {
-        let delta = SquadDelta {
-            squad_id: "squad-1A".to_string(),
+    fn test_cell_delta_into_ditto_updates() {
+        let delta = CellDelta {
+            cell_id: "cell-1A".to_string(),
             timestamp_us: 1234567890,
             sequence: 42,
             updates: vec![
-                SquadFieldUpdate::SetLeaderId("leader-1".to_string()),
-                SquadFieldUpdate::SetMemberCount(8),
-                SquadFieldUpdate::AddMemberId("node-9".to_string()),
+                CellFieldUpdate::SetLeaderId("leader-1".to_string()),
+                CellFieldUpdate::SetMemberCount(8),
+                CellFieldUpdate::AddMemberId("node-9".to_string()),
             ],
         };
 
@@ -781,22 +996,22 @@ mod tests {
 
     #[test]
     fn test_delta_size_estimation() {
-        let small_delta = SquadDelta {
-            squad_id: "squad-1A".to_string(),
+        let small_delta = CellDelta {
+            cell_id: "cell-1A".to_string(),
             timestamp_us: 1234567890,
             sequence: 1,
-            updates: vec![SquadFieldUpdate::SetMemberCount(7)],
+            updates: vec![CellFieldUpdate::SetMemberCount(7)],
         };
 
-        let large_delta = SquadDelta {
-            squad_id: "squad-1A".to_string(),
+        let large_delta = CellDelta {
+            cell_id: "cell-1A".to_string(),
             timestamp_us: 1234567890,
             sequence: 1,
             updates: vec![
-                SquadFieldUpdate::SetMemberCount(7),
-                SquadFieldUpdate::SetOperationalCount(6),
-                SquadFieldUpdate::AddMemberId("node-123456789".to_string()),
-                SquadFieldUpdate::UpdatePositionCentroid(Position {
+                CellFieldUpdate::SetMemberCount(7),
+                CellFieldUpdate::SetOperationalCount(6),
+                CellFieldUpdate::AddMemberId("node-123456789".to_string()),
+                CellFieldUpdate::UpdatePositionCentroid(Position {
                     latitude: 37.7749,
                     longitude: -122.4194,
                     altitude: 100.0,
@@ -807,15 +1022,15 @@ mod tests {
         // Small delta should be ~100 bytes
         assert!(small_delta.size_bytes() < 150);
 
-        // Large delta should still be much smaller than full SquadSummary (~2KB)
+        // Large delta should still be much smaller than full CellSummary (~2KB)
         assert!(large_delta.size_bytes() < 500);
         assert!(large_delta.size_bytes() > small_delta.size_bytes());
     }
 
     #[test]
     fn test_empty_delta() {
-        let delta = SquadDelta {
-            squad_id: "squad-1A".to_string(),
+        let delta = CellDelta {
+            cell_id: "cell-1A".to_string(),
             timestamp_us: 1234567890,
             sequence: 1,
             updates: vec![],
@@ -826,41 +1041,65 @@ mod tests {
     }
 
     #[test]
-    fn test_platoon_delta_basic() {
-        let delta = PlatoonDelta {
-            platoon_id: "platoon-1".to_string(),
+    fn test_cohort_delta_basic() {
+        let delta = CohortDelta {
+            cohort_id: "cohort-1".to_string(),
             timestamp_us: 1234567890,
             sequence: 10,
             updates: vec![
-                PlatoonFieldUpdate::SetSquadCount(3),
-                PlatoonFieldUpdate::AddSquadId("squad-1A".to_string()),
+                CohortFieldUpdate::SetCellCount(3),
+                CohortFieldUpdate::AddCellId("cell-1A".to_string()),
             ],
         };
 
         let ditto_updates = delta.into_ditto_updates();
         assert!(ditto_updates.len() >= 2);
 
-        let squad_count = ditto_updates
+        let cell_count = ditto_updates
             .iter()
-            .find(|(path, _)| path == "squad_count")
+            .find(|(path, _)| path == "cell_count")
             .unwrap();
-        assert_eq!(squad_count.1, json!(3));
+        assert_eq!(cell_count.1, json!(3));
     }
 
     #[test]
-    fn test_company_delta_basic() {
-        let delta = CompanyDelta {
-            company_id: "company-alpha".to_string(),
+    fn test_federation_delta_basic() {
+        let delta = FederationDelta {
+            federation_id: "federation-alpha".to_string(),
             timestamp_us: 1234567890,
             sequence: 5,
             updates: vec![
-                CompanyFieldUpdate::SetPlatoonCount(4),
-                CompanyFieldUpdate::SetTotalMemberCount(96),
+                FederationFieldUpdate::SetCohortCount(4),
+                FederationFieldUpdate::SetTotalMemberCount(96),
             ],
         };
 
         assert!(!delta.is_empty());
         assert_eq!(delta.updates.len(), 2);
+    }
+
+    #[test]
+    fn test_coalition_delta_basic() {
+        let delta = CoalitionDelta {
+            coalition_id: "coalition-1".to_string(),
+            timestamp_us: 1234567890,
+            sequence: 7,
+            updates: vec![
+                CoalitionFieldUpdate::SetFederationCount(3),
+                CoalitionFieldUpdate::AddFederationId("federation-alpha".to_string()),
+                CoalitionFieldUpdate::SetTotalMemberCount(300),
+            ],
+        };
+
+        assert!(!delta.is_empty());
+        assert_eq!(delta.updates.len(), 3);
+
+        let ditto_updates = delta.into_ditto_updates();
+        let federation_count = ditto_updates
+            .iter()
+            .find(|(path, _)| path == "federation_count")
+            .unwrap();
+        assert_eq!(federation_count.1, json!(3));
     }
 
     #[test]

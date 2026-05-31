@@ -1,6 +1,6 @@
 //! Cell role model and scoring
 //!
-//! Defines tactical roles that nodes can fill within a squad, with scoring
+//! Defines tactical roles that nodes can fill within a cell, with scoring
 //! algorithms that consider both platform capabilities and human operator specialties.
 
 use crate::models::{
@@ -9,10 +9,10 @@ use crate::models::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Tactical role that a platform can fill within a squad
+/// Tactical role that a platform can fill within a cell
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CellRole {
-    /// Cell leader - elected leader, coordinates squad operations
+    /// Cell leader - elected leader, coordinates cell operations
     Leader,
     /// Primary sensor/scout - long-range detection and reconnaissance
     Sensor,
@@ -52,7 +52,7 @@ impl CellRole {
             Self::Support => {
                 "Support platform - provides logistics, medical, or maintenance support"
             }
-            Self::Follower => "General squad member - performs assigned tasks",
+            Self::Follower => "General cell member - performs assigned tasks",
         }
     }
 

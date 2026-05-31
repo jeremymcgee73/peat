@@ -85,7 +85,7 @@ impl EventEmitter {
                 self.store_local(event)?;
             }
             PropagationMode::PropagationSummary | PropagationMode::PropagationFull => {
-                // Queue for transmission to parent echelon
+                // Queue for transmission to parent tier
                 let mut queue = self.outbound_queue.write().unwrap();
                 queue.push(event);
             }
@@ -317,13 +317,13 @@ mod tests {
 
     #[test]
     fn test_emit_event_full_propagation() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         let event = PeatEvent {
             event_id: "evt-1".to_string(),
             timestamp: None,
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: EventClass::Product as i32,
             event_type: "detection".to_string(),
@@ -345,13 +345,13 @@ mod tests {
 
     #[test]
     fn test_emit_event_local_propagation() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         let event = PeatEvent {
             event_id: "evt-1".to_string(),
             timestamp: None,
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: EventClass::Telemetry as i32,
             event_type: "debug".to_string(),
@@ -373,13 +373,13 @@ mod tests {
 
     #[test]
     fn test_emit_event_query_propagation() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         let event = PeatEvent {
             event_id: "evt-1".to_string(),
             timestamp: None,
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: EventClass::Telemetry as i32,
             event_type: "metrics".to_string(),
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_emit_new_generates_id() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         let routing = AggregationPolicy {
             propagation: PropagationMode::PropagationFull as i32,
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_emit_product() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         let event_id = emitter
             .emit_product(
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_emit_telemetry_stored_locally() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         emitter.emit_telemetry("cpu_usage", vec![42]).unwrap();
 
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_emit_critical() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         emitter.emit_critical("urgent_condition", vec![]).unwrap();
 
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_pop_events_critical_first() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         // Add normal event first
         emitter
@@ -498,13 +498,13 @@ mod tests {
 
     #[test]
     fn test_emit_without_event_id_fails() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         let event = PeatEvent {
             event_id: String::new(), // Empty ID should fail
             timestamp: None,
             source_node_id: "node-1".to_string(),
-            source_formation_id: "squad-1".to_string(),
+            source_formation_id: "cell-1".to_string(),
             source_instance_id: None,
             event_class: EventClass::Product as i32,
             event_type: "test".to_string(),
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_query_local_by_type() {
-        let emitter = EventEmitter::new("node-1".to_string(), "squad-1".to_string());
+        let emitter = EventEmitter::new("node-1".to_string(), "cell-1".to_string());
 
         // Emit different telemetry types
         emitter.emit_telemetry("cpu", vec![]).unwrap();

@@ -146,14 +146,14 @@ impl<B: DataSyncBackend> CellStore<B> {
         Ok(cells)
     }
 
-    /// Get all cells in a platoon
+    /// Get all cells in a cohort
     #[instrument(skip(self))]
-    pub async fn get_cells_by_zone(&self, platoon_id: &str) -> Result<Vec<CellState>> {
-        debug!("Querying cells by platoon: {}", platoon_id);
+    pub async fn get_cells_by_zone(&self, cohort_id: &str) -> Result<Vec<CellState>> {
+        debug!("Querying cells by cohort: {}", cohort_id);
 
         let query = Query::Eq {
-            field: "platoon_id".to_string(),
-            value: Value::String(platoon_id.to_string()),
+            field: "cohort_id".to_string(),
+            value: Value::String(cohort_id.to_string()),
         };
         let docs = self
             .backend
@@ -259,10 +259,10 @@ impl<B: DataSyncBackend> CellStore<B> {
         Ok(())
     }
 
-    /// Set squad leader (LWW-Register operation)
+    /// Set cell leader (LWW-Register operation)
     #[instrument(skip(self))]
     pub async fn set_leader(&self, cell_id: &str, node_id: String) -> Result<()> {
-        info!("Setting leader {} for squad {}", node_id, cell_id);
+        info!("Setting leader {} for cell {}", node_id, cell_id);
 
         let mut cell = self
             .get_cell(cell_id)

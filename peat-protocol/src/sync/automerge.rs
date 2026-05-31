@@ -3368,7 +3368,7 @@ impl SyncEngine for IrohSyncEngine {
         // wait for the peer to connect to us, which we handle below.
         //
         // Having tie-breaking at BOTH layers caused connections to fail when:
-        // - Child node (soldier) has higher EndpointId than parent (squad leader)
+        // - Child node (member) has higher EndpointId than parent (cell leader)
         // - Child's TCP_CONNECT says "connect to parent"
         // - Sync layer tie-breaking blocked the connection
         // - Parent doesn't have child in config, so never connects
@@ -3637,7 +3637,7 @@ impl crate::storage::HierarchicalStorageCapable for AutomergeIrohBackend {
 ///
 /// # Arguments
 /// * `doc` - The document to match against
-/// * `query_str` - The DQL-like query string (e.g., "collection_name == 'squad_summaries'")
+/// * `query_str` - The DQL-like query string (e.g., "collection_name == 'cell_summaries'")
 ///
 /// # Returns
 /// * `true` if the document matches the query (or query is unrecognized)
@@ -5351,15 +5351,15 @@ mod issue_271_clone_tests {
 
     #[test]
     fn test_custom_query_equality_string() {
-        // Test: collection_name == 'squad_summaries'
+        // Test: collection_name == 'cell_summaries'
         let doc = create_test_doc(vec![(
             "collection_name",
-            serde_json::json!("squad_summaries"),
+            serde_json::json!("cell_summaries"),
         )]);
 
         assert!(evaluate_custom_query(
             &doc,
-            "collection_name == 'squad_summaries'"
+            "collection_name == 'cell_summaries'"
         ));
         assert!(!evaluate_custom_query(&doc, "collection_name == 'other'"));
     }
@@ -5378,20 +5378,20 @@ mod issue_271_clone_tests {
 
     #[test]
     fn test_custom_query_starts_with() {
-        // Test: collection_name STARTS WITH 'squad-'
-        let doc = create_test_doc(vec![("collection_name", serde_json::json!("squad-alpha"))]);
+        // Test: collection_name STARTS WITH 'cell-'
+        let doc = create_test_doc(vec![("collection_name", serde_json::json!("cell-alpha"))]);
 
         assert!(evaluate_custom_query(
             &doc,
-            "collection_name STARTS WITH 'squad-'"
+            "collection_name STARTS WITH 'cell-'"
         ));
         assert!(evaluate_custom_query(
             &doc,
-            "collection_name starts with 'squad-'"
+            "collection_name starts with 'cell-'"
         )); // Case insensitive
         assert!(!evaluate_custom_query(
             &doc,
-            "collection_name STARTS WITH 'platoon-'"
+            "collection_name STARTS WITH 'cohort-'"
         ));
     }
 
@@ -5400,7 +5400,7 @@ mod issue_271_clone_tests {
         // Test: collection_name ENDS WITH '.summaries'
         let doc = create_test_doc(vec![(
             "collection_name",
-            serde_json::json!("squad.summaries"),
+            serde_json::json!("cell.summaries"),
         )]);
 
         assert!(evaluate_custom_query(
@@ -5422,7 +5422,7 @@ mod issue_271_clone_tests {
         // Test: CONTAINS(authorized_roles, 'soldier')
         let doc = create_test_doc(vec![(
             "authorized_roles",
-            serde_json::json!(["soldier", "squad_leader"]),
+            serde_json::json!(["soldier", "cell_leader"]),
         )]);
 
         assert!(evaluate_custom_query(
@@ -5431,7 +5431,7 @@ mod issue_271_clone_tests {
         ));
         assert!(evaluate_custom_query(
             &doc,
-            "CONTAINS(authorized_roles, 'squad_leader')"
+            "CONTAINS(authorized_roles, 'cell_leader')"
         ));
         assert!(!evaluate_custom_query(
             &doc,
@@ -5444,33 +5444,30 @@ mod issue_271_clone_tests {
         // Test: CONTAINS on string field (substring search)
         let doc = create_test_doc(vec![(
             "description",
-            serde_json::json!("This is a squad summary document"),
+            serde_json::json!("This is a cell summary document"),
         )]);
 
-        assert!(evaluate_custom_query(
-            &doc,
-            "CONTAINS(description, 'squad')"
-        ));
+        assert!(evaluate_custom_query(&doc, "CONTAINS(description, 'cell')"));
         assert!(evaluate_custom_query(
             &doc,
             "CONTAINS(description, 'summary')"
         ));
         assert!(!evaluate_custom_query(
             &doc,
-            "CONTAINS(description, 'platoon')"
+            "CONTAINS(description, 'cohort')"
         ));
     }
 
     #[test]
     fn test_custom_query_or_compound() {
-        // Test: type == 'node_state' OR type == 'squad_summary'
+        // Test: type == 'node_state' OR type == 'cell_summary'
         let doc_node = create_test_doc(vec![("type", serde_json::json!("node_state"))]);
-        let doc_squad = create_test_doc(vec![("type", serde_json::json!("squad_summary"))]);
+        let doc_cell = create_test_doc(vec![("type", serde_json::json!("cell_summary"))]);
         let doc_other = create_test_doc(vec![("type", serde_json::json!("other"))]);
 
-        let query = "type == 'node_state' OR type == 'squad_summary'";
+        let query = "type == 'node_state' OR type == 'cell_summary'";
         assert!(evaluate_custom_query(&doc_node, query));
-        assert!(evaluate_custom_query(&doc_squad, query));
+        assert!(evaluate_custom_query(&doc_cell, query));
         assert!(!evaluate_custom_query(&doc_other, query));
     }
 
@@ -5518,12 +5515,12 @@ mod issue_271_clone_tests {
         // Test: queries with parentheses are handled
         let doc = create_test_doc(vec![(
             "collection_name",
-            serde_json::json!("squad_summaries"),
+            serde_json::json!("cell_summaries"),
         )]);
 
         assert!(evaluate_custom_query(
             &doc,
-            "(collection_name == 'squad_summaries')"
+            "(collection_name == 'cell_summaries')"
         ));
     }
 
@@ -5543,10 +5540,10 @@ mod issue_271_clone_tests {
         // Test that Query::Custom works through matches_query
         let doc = create_test_doc(vec![(
             "collection_name",
-            serde_json::json!("squad_summaries"),
+            serde_json::json!("cell_summaries"),
         )]);
 
-        let query = Query::Custom("collection_name == 'squad_summaries'".to_string());
+        let query = Query::Custom("collection_name == 'cell_summaries'".to_string());
         assert!(matches_query(&doc, &query));
 
         let query_no_match = Query::Custom("collection_name == 'other'".to_string());
@@ -5557,35 +5554,35 @@ mod issue_271_clone_tests {
     fn test_custom_query_real_world_patterns() {
         // Test actual patterns from the Peat codebase
 
-        // Pattern 1: collection_name == 'squad_summaries' (from peat-sim)
+        // Pattern 1: collection_name == 'cell_summaries' (from peat-sim)
         let doc_summaries = create_test_doc(vec![(
             "collection_name",
-            serde_json::json!("squad_summaries"),
+            serde_json::json!("cell_summaries"),
         )]);
         assert!(evaluate_custom_query(
             &doc_summaries,
-            "collection_name == 'squad_summaries'"
+            "collection_name == 'cell_summaries'"
         ));
 
-        // Pattern 2: collection_name STARTS WITH 'squad-1' OR type == 'node_state'
-        let doc_squad = create_test_doc(vec![
-            ("collection_name", serde_json::json!("squad-1-alpha")),
+        // Pattern 2: collection_name STARTS WITH 'cell-1' OR type == 'node_state'
+        let doc_cell = create_test_doc(vec![
+            ("collection_name", serde_json::json!("cell-1-alpha")),
             ("type", serde_json::json!("other")),
         ]);
         let doc_node = create_test_doc(vec![
             ("collection_name", serde_json::json!("other")),
             ("type", serde_json::json!("node_state")),
         ]);
-        let query = "collection_name STARTS WITH 'squad-1' OR type == 'node_state'";
-        assert!(evaluate_custom_query(&doc_squad, query));
+        let query = "collection_name STARTS WITH 'cell-1' OR type == 'node_state'";
+        assert!(evaluate_custom_query(&doc_cell, query));
         assert!(evaluate_custom_query(&doc_node, query));
 
-        // Pattern 3: collection_name ENDS WITH '.summaries' OR type == 'squad_summary'
+        // Pattern 3: collection_name ENDS WITH '.summaries' OR type == 'cell_summary'
         let doc_suffix = create_test_doc(vec![
-            ("collection_name", serde_json::json!("platoon.summaries")),
+            ("collection_name", serde_json::json!("cohort.summaries")),
             ("type", serde_json::json!("other")),
         ]);
-        let query2 = "collection_name ENDS WITH '.summaries' OR type == 'squad_summary'";
+        let query2 = "collection_name ENDS WITH '.summaries' OR type == 'cell_summary'";
         assert!(evaluate_custom_query(&doc_suffix, query2));
 
         // Pattern 4: public == true OR CONTAINS(authorized_roles, 'soldier')
@@ -5635,11 +5632,11 @@ mod issue_271_clone_tests {
     #[test]
     fn test_custom_query_like_prefix() {
         // Test: field LIKE 'prefix%'
-        let doc = create_test_doc(vec![("name", serde_json::json!("squad-alpha-1"))]);
+        let doc = create_test_doc(vec![("name", serde_json::json!("cell-alpha-1"))]);
 
-        assert!(evaluate_custom_query(&doc, "name LIKE 'squad%'"));
-        assert!(evaluate_custom_query(&doc, "name like 'squad%'")); // Case insensitive
-        assert!(!evaluate_custom_query(&doc, "name LIKE 'platoon%'"));
+        assert!(evaluate_custom_query(&doc, "name LIKE 'cell%'"));
+        assert!(evaluate_custom_query(&doc, "name like 'cell%'")); // Case insensitive
+        assert!(!evaluate_custom_query(&doc, "name LIKE 'cohort%'"));
     }
 
     #[test]
@@ -5670,11 +5667,11 @@ mod issue_271_clone_tests {
     #[test]
     fn test_custom_query_like_complex() {
         // Test: field LIKE 'prefix%middle%suffix'
-        let doc = create_test_doc(vec![("path", serde_json::json!("squad-alpha-report.json"))]);
+        let doc = create_test_doc(vec![("path", serde_json::json!("cell-alpha-report.json"))]);
 
-        assert!(evaluate_custom_query(&doc, "path LIKE 'squad%report%'")); // prefix and middle
+        assert!(evaluate_custom_query(&doc, "path LIKE 'cell%report%'")); // prefix and middle
         assert!(evaluate_custom_query(&doc, "path LIKE '%alpha%json'")); // middle and suffix
-        assert!(evaluate_custom_query(&doc, "path LIKE 'squad%.json'")); // prefix and suffix
+        assert!(evaluate_custom_query(&doc, "path LIKE 'cell%.json'")); // prefix and suffix
     }
 
     #[test]

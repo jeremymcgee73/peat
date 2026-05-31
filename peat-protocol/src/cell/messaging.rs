@@ -1,11 +1,11 @@
 //! Intra-Cell Communication System
 //!
-//! Implements Phase 2 messaging infrastructure for squad cohesion and coordination.
+//! Implements Phase 2 messaging infrastructure for cell cohesion and coordination.
 //!
 //! # Architecture
 //!
 //! Cell messaging provides:
-//! - **Message Bus**: Publish/subscribe pattern for squad-internal messages
+//! - **Message Bus**: Publish/subscribe pattern for cell-internal messages
 //! - **Capability Exchange**: Protocol for sharing platform capabilities
 //! - **Message Ordering**: Sequence numbers for ordering guarantees
 //! - **Retransmission**: Reliable delivery with retry logic
@@ -142,12 +142,12 @@ impl MessagePriority {
 /// Cell message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CellMessageType {
-    /// Node joining squad
+    /// Node joining cell
     Join {
         platform_id: String,
         capabilities: Vec<Capability>,
     },
-    /// Node leaving squad
+    /// Node leaving cell
     Leave { platform_id: String, reason: String },
     /// Node announcing capabilities
     CapabilityAnnounce {
@@ -168,7 +168,7 @@ pub enum CellMessageType {
         score: f64,
         is_primary: bool,
     },
-    /// Generic squad status update
+    /// Generic cell status update
     StatusUpdate {
         platform_id: String,
         status: serde_json::Value,
@@ -191,8 +191,8 @@ pub struct CellMessage {
     pub seq: SequenceNumber,
     /// Sender platform ID
     pub sender: String,
-    /// Target squad ID
-    pub squad_id: String,
+    /// Target cell ID
+    pub cell_id: String,
     /// Message priority
     pub priority: MessagePriority,
     /// Routing context (for hierarchical priority escalation)
@@ -206,10 +206,10 @@ pub struct CellMessage {
 }
 
 impl CellMessage {
-    /// Create a new squad message (defaults to intra-cell routing)
+    /// Create a new cell message (defaults to intra-cell routing)
     pub fn new(
         sender: String,
-        squad_id: String,
+        cell_id: String,
         seq: SequenceNumber,
         payload: CellMessageType,
     ) -> Self {
@@ -222,7 +222,7 @@ impl CellMessage {
             message_id: format!("{}-{}", sender, seq),
             seq,
             sender,
-            squad_id,
+            cell_id,
             priority: MessagePriority::Normal,
             routing_context: RoutingContext::IntraCell,
             payload,
@@ -276,7 +276,7 @@ impl CellMessage {
     /// Create a role assignment message
     pub fn role_assignment(
         sender: String,
-        squad_id: String,
+        cell_id: String,
         seq: SequenceNumber,
         platform_id: String,
         role: CellRole,
@@ -285,7 +285,7 @@ impl CellMessage {
     ) -> Self {
         Self::new(
             sender,
-            squad_id,
+            cell_id,
             seq,
             CellMessageType::RoleAssignment {
                 platform_id,
@@ -325,14 +325,14 @@ pub type MessageHandler = Arc<dyn Fn(&CellMessage) -> Result<()> + Send + Sync>;
 
 /// Cell Message Bus
 ///
-/// Provides publish/subscribe messaging within a squad with:
+/// Provides publish/subscribe messaging within a cell with:
 /// - Message ordering via sequence numbers
 /// - Reliable delivery with retransmission
 /// - Priority-based delivery
 /// - Message expiration
 pub struct CellMessageBus {
     /// Cell ID this bus serves
-    squad_id: String,
+    cell_id: String,
     /// Local platform ID
     platform_id: String,
     /// Next sequence number for outbound messages
@@ -353,9 +353,9 @@ pub struct CellMessageBus {
 
 impl CellMessageBus {
     /// Create a new message bus
-    pub fn new(squad_id: String, platform_id: String) -> Self {
+    pub fn new(cell_id: String, platform_id: String) -> Self {
         Self {
-            squad_id,
+            cell_id,
             platform_id,
             next_seq: Arc::new(Mutex::new(1)),
             outbound_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -367,14 +367,14 @@ impl CellMessageBus {
         }
     }
 
-    /// Subscribe to squad messages
+    /// Subscribe to cell messages
     pub fn subscribe(&self, handler: MessageHandler) -> Result<()> {
         let mut subscribers = self.subscribers.lock().unwrap();
         subscribers.push(handler);
         Ok(())
     }
 
-    /// Publish a message to the squad
+    /// Publish a message to the cell
     #[instrument(skip(self, payload))]
     pub fn publish(&self, payload: CellMessageType) -> Result<SequenceNumber> {
         let seq = {
@@ -384,16 +384,12 @@ impl CellMessageBus {
             seq
         };
 
-        let message = CellMessage::new(
-            self.platform_id.clone(),
-            self.squad_id.clone(),
-            seq,
-            payload,
-        );
+        let message =
+            CellMessage::new(self.platform_id.clone(), self.cell_id.clone(), seq, payload);
 
         debug!(
-            "Publishing message seq={} from {} to squad {}",
-            seq, self.platform_id, self.squad_id
+            "Publishing message seq={} from {} to cell {}",
+            seq, self.platform_id, self.cell_id
         );
 
         // Add to outbound queue
@@ -550,11 +546,11 @@ mod tests {
             platform_id: "node_1".to_string(),
         };
 
-        let message = CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload);
+        let message = CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload);
 
         assert_eq!(message.seq, 1);
         assert_eq!(message.sender, "node_1");
-        assert_eq!(message.squad_id, "squad_alpha");
+        assert_eq!(message.cell_id, "cell_alpha");
         assert_eq!(message.priority, MessagePriority::Normal);
         assert!(!message.is_expired());
     }
@@ -566,7 +562,7 @@ mod tests {
         };
 
         let mut message =
-            CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload)
+            CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload)
                 .with_ttl(0);
 
         // Force timestamp to be in the past
@@ -581,7 +577,7 @@ mod tests {
             platform_id: "node_1".to_string(),
         };
 
-        let message = CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload)
+        let message = CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload)
             .with_priority(MessagePriority::Critical);
 
         assert_eq!(message.priority, MessagePriority::Critical);
@@ -589,9 +585,9 @@ mod tests {
 
     #[test]
     fn test_message_bus_creation() {
-        let bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
 
-        assert_eq!(bus.squad_id, "squad_alpha");
+        assert_eq!(bus.cell_id, "cell_alpha");
         assert_eq!(bus.platform_id, "node_1");
 
         let stats = bus.stats();
@@ -601,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_publish_message() {
-        let bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
 
         let payload = CellMessageType::Heartbeat {
             platform_id: "node_1".to_string(),
@@ -617,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_priority_ordering() {
-        let bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
 
         // Publish messages with different priorities
         let _ = bus.publish(CellMessageType::Heartbeat {
@@ -644,11 +640,11 @@ mod tests {
 
     #[test]
     fn test_duplicate_detection() {
-        let bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
 
         let message = CellMessage::new(
             "node_2".to_string(),
-            "squad_alpha".to_string(),
+            "cell_alpha".to_string(),
             1,
             CellMessageType::Heartbeat {
                 platform_id: "node_2".to_string(),
@@ -667,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_subscriber_notification() {
-        let bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
 
         let received = Arc::new(Mutex::new(false));
         let received_clone = received.clone();
@@ -680,7 +676,7 @@ mod tests {
 
         let message = CellMessage::new(
             "node_2".to_string(),
-            "squad_alpha".to_string(),
+            "cell_alpha".to_string(),
             1,
             CellMessageType::Heartbeat {
                 platform_id: "node_2".to_string(),
@@ -694,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_acknowledgment() {
-        let bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
 
         let seq = bus
             .publish(CellMessageType::Heartbeat {
@@ -713,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_retransmission() {
-        let mut bus = CellMessageBus::new("squad_alpha".to_string(), "node_1".to_string());
+        let mut bus = CellMessageBus::new("cell_alpha".to_string(), "node_1".to_string());
         bus.retry_timeout = Duration::from_millis(10); // Short timeout for testing
 
         let seq = bus
@@ -739,7 +735,7 @@ mod tests {
     fn test_role_assignment_message() {
         let msg = CellMessage::role_assignment(
             "node_1".to_string(),
-            "squad_1".to_string(),
+            "cell_1".to_string(),
             1,
             "node_2".to_string(),
             CellRole::Sensor,
@@ -748,7 +744,7 @@ mod tests {
         );
 
         assert_eq!(msg.sender, "node_1");
-        assert_eq!(msg.squad_id, "squad_1");
+        assert_eq!(msg.cell_id, "cell_1");
         assert_eq!(msg.seq, 1);
         assert_eq!(msg.priority, MessagePriority::High);
 
@@ -844,13 +840,13 @@ mod tests {
         };
 
         // Default is intra-cell
-        let msg = CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload);
+        let msg = CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload);
         assert_eq!(msg.routing_context, RoutingContext::IntraCell);
 
         // Can set custom context
         let msg2 = CellMessage::new(
             "node_1".to_string(),
-            "squad_alpha".to_string(),
+            "cell_alpha".to_string(),
             2,
             CellMessageType::Heartbeat {
                 platform_id: "node_1".to_string(),
@@ -867,7 +863,7 @@ mod tests {
             platform_id: "node_1".to_string(),
         };
 
-        let mut msg = CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload)
+        let mut msg = CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload)
             .with_priority(MessagePriority::Normal)
             .with_routing_context(RoutingContext::CellToZone);
 
@@ -887,7 +883,7 @@ mod tests {
             platform_id: "node_1".to_string(),
         };
 
-        let msg = CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload)
+        let msg = CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload)
             .with_priority(MessagePriority::Low)
             .with_routing_context(RoutingContext::CellToZone);
 
@@ -937,7 +933,7 @@ mod tests {
         };
 
         // Step 1: Node sends normal priority message within cell
-        let mut msg = CellMessage::new("node_1".to_string(), "squad_alpha".to_string(), 1, payload)
+        let mut msg = CellMessage::new("node_1".to_string(), "cell_alpha".to_string(), 1, payload)
             .with_priority(MessagePriority::Normal)
             .with_routing_context(RoutingContext::IntraCell);
 

@@ -445,10 +445,10 @@ async fn test_distribution_formation_scope() {
         .await
         .expect("Should create blob");
 
-    // Distribute to alpha-squad formation
-    println!("  1. Distributing to formation 'alpha-squad'...");
+    // Distribute to alpha-cell formation
+    println!("  1. Distributing to formation 'alpha-cell'...");
     let scope = DistributionScope::Formation {
-        formation_id: "alpha-squad".to_string(),
+        formation_id: "alpha-cell".to_string(),
     };
 
     let handle = distribution
@@ -462,7 +462,7 @@ async fn test_distribution_formation_scope() {
     match &handle.scope {
         DistributionScope::Formation { formation_id } => {
             println!("    Formation ID: {}", formation_id);
-            assert_eq!(formation_id, "alpha-squad");
+            assert_eq!(formation_id, "alpha-cell");
         }
         _ => panic!("Expected Formation scope"),
     }

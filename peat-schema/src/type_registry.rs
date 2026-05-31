@@ -743,8 +743,8 @@ mod descriptors {
                     },
                 },
                 FieldDescriptor {
-                    name: "platoon_id",
-                    label: "Platoon",
+                    name: "cohort_id",
+                    label: "Cohort",
                     format: FieldFormat::Text,
                 },
                 FieldDescriptor {

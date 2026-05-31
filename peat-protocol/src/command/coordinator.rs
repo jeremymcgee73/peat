@@ -45,12 +45,12 @@ pub struct CommandCoordinator {
 impl CommandCoordinator {
     /// Create new command coordinator with storage backend
     pub fn new(
-        squad_id: Option<String>,
+        cell_id: Option<String>,
         node_id: String,
-        squad_members: Vec<String>,
+        cell_members: Vec<String>,
         storage: Arc<dyn CommandStorage>,
     ) -> Self {
-        let router = CommandRouter::new(node_id.clone(), squad_id, squad_members, None);
+        let router = CommandRouter::new(node_id.clone(), cell_id, cell_members, None);
 
         Self {
             node_id,
@@ -156,7 +156,7 @@ impl CommandCoordinator {
         Ok(())
     }
 
-    /// Receive a command (from higher echelon)
+    /// Receive a command (from higher tier)
     pub async fn receive_command(&self, command: HierarchicalCommand) -> Result<()> {
         tracing::info!(
             "[{}] Received command: {} from {}",
@@ -180,7 +180,7 @@ impl CommandCoordinator {
                 }
             }
 
-            TargetResolution::Subordinates(_) | TargetResolution::AllSquadMembers(_) => {
+            TargetResolution::Subordinates(_) | TargetResolution::AllCellMembers(_) => {
                 // Command targets subordinates - route it
                 self.route_command(&command).await?;
             }
@@ -485,7 +485,7 @@ mod tests {
     async fn test_issue_command() {
         let storage = Arc::new(MockStorage);
         let coordinator = CommandCoordinator::new(
-            Some("squad-alpha".to_string()),
+            Some("cell-alpha".to_string()),
             "node-1".to_string(),
             vec!["node-1".to_string(), "node-2".to_string()],
             storage,
@@ -514,7 +514,7 @@ mod tests {
     async fn test_receive_and_execute_command() {
         let storage = Arc::new(MockStorage);
         let coordinator = CommandCoordinator::new(
-            Some("squad-alpha".to_string()),
+            Some("cell-alpha".to_string()),
             "node-1".to_string(),
             vec!["node-1".to_string(), "node-2".to_string()],
             storage,
@@ -546,7 +546,7 @@ mod tests {
     async fn test_acknowledgment_tracking() {
         let storage = Arc::new(MockStorage);
         let coordinator = CommandCoordinator::new(
-            Some("squad-alpha".to_string()),
+            Some("cell-alpha".to_string()),
             "node-1".to_string(),
             vec!["node-1".to_string(), "node-2".to_string()],
             storage,

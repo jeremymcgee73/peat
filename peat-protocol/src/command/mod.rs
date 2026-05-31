@@ -39,14 +39,14 @@
 //! use peat_schema::command::v1::HierarchicalCommand;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create coordinator for a squad leader
+//! // Create coordinator for a cell leader
 //! let coordinator = CommandCoordinator::new(
-//!     Some("squad-alpha".to_string()),
+//!     Some("cell-alpha".to_string()),
 //!     "node-1".to_string(),
-//!     vec!["node-1".to_string(), "node-2".to_string()], // squad members
+//!     vec!["node-1".to_string(), "node-2".to_string()], // cell members
 //! );
 //!
-//! // Issue a command to squad members
+//! // Issue a command to cell members
 //! let command = HierarchicalCommand {
 //!     command_id: "cmd-001".to_string(),
 //!     originator_id: "node-1".to_string(),

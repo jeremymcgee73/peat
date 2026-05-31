@@ -138,7 +138,7 @@ impl OperatorRankExt for OperatorRank {
             Self::W5 => 0.90,
             Self::O1 => 0.85,
             Self::O2 => 0.90,
-            Self::O3 => 0.95, // Platoon leader
+            Self::O3 => 0.95, // Cohort leader
             Self::O4 => 0.97,
             Self::O5 => 0.98,
             Self::O6 => 0.99,
