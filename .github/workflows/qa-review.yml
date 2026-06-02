@@ -14,12 +14,13 @@ jobs:
     name: Peat QA Review
     if: ${{ !github.event.pull_request.draft }}
     runs-on: peat-arm64-linux-gb10
-    # 30m budget. Round-3 incremental reviews on substantive PRs (verifying
+    # 40m budget. Round-3 incremental reviews on substantive PRs (verifying
     # multiple prior-round findings + a new delta) have observed real work
     # of ~9 min plus agentic finalization, which exceeded the previous 15m
-    # cap. 30m gives comfortable headroom without blocking the runner
-    # concurrency slot for unreasonable spans.
-    timeout-minutes: 30
+    # cap. The two-tier model strategy (3 Opus 4.7 attempts → 1 Sonnet 4.6
+    # fallback) adds worst-case ~18 min of failed-Opus retries before Sonnet
+    # runs, so 40m keeps headroom for a substantive Sonnet fallback review.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,7 +43,8 @@ jobs:
       - name: Review PR with Claude Code
         if: steps.check.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:               ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           set -uo pipefail
           set +e   # GH Actions defaults to bash -e; -e would abort before rc=$? captures the claude exit code
@@ -50,26 +52,28 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           SHORT_SHA="${{ steps.check.outputs.short_sha }}"
 
-          MAX_ATTEMPTS=3
-          rc=0
+          # Two-tier resilience against upstream model incidents — status.claude.com
+          # has logged near-daily Opus 4.7 elevated-error windows in May 2026:
+          #   Primary:  up to 3 attempts on Opus 4.7, 15s apart.
+          #   Fallback: 1 attempt on Sonnet 4.6 with a disclaimer in the review body
+          #             so reviewers know [ARCH] coverage may be reduced and can
+          #             re-run CI when full architectural review is needed.
+          # Prompt template is single-quoted (preserves backticks); envsubst injects
+          # the per-model header line via $START_LINE.
 
-          for attempt in $(seq 1 $MAX_ATTEMPTS); do
-          echo "::group::QA Review attempt ${attempt}/${MAX_ATTEMPTS}"
+          # Idempotency check — used inside the Opus loop and again before the
+          # Sonnet fallback. `gh pr review --comment` posts to the PR's reviews
+          # endpoint, so check --json reviews here. The "Check for existing
+          # review" step at job start uses --json comments for backwards-compat
+          # with an older posting path — kept separate from this in-step check.
+          already_posted() {
+            gh pr view "$PR_NUMBER" --json reviews \
+              | jq -e --arg tag "Peat QA Review (SHA: ${SHORT_SHA})" \
+                   '.reviews[] | select(.body | contains($tag))' >/dev/null 2>&1
+          }
 
-          # Idempotency: if a prior attempt already posted the review for this SHA,
-          # treat as success. `gh pr review --comment` posts to the PR's reviews
-          # endpoint, so check --json reviews here. The "Check for existing review"
-          # step at job start uses --json comments for backwards-compat with an
-          # older posting path — kept separate from this in-step idempotency check.
-          if gh pr view "$PR_NUMBER" --json reviews \
-               | jq -e --arg tag "Peat QA Review (SHA: ${SHORT_SHA})" \
-                    '.reviews[] | select(.body | contains($tag))' >/dev/null 2>&1; then
-            echo "Review for SHA ${SHORT_SHA} already posted; treating as success."
-            echo "::endgroup::"
-            exit 0
-          fi
-
-          cat <<'PROMPT' | claude -p --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh pr review *)'
+          emit_prompt() {
+            START_LINE="$1" envsubst '$START_LINE' <<'PROMPT'
           You are the QA review agent for the Peat Protocol ecosystem.
 
           Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }} (HEAD: ${{ steps.check.outputs.short_sha }}).
@@ -107,7 +111,8 @@ jobs:
              - Architectural reach: if a change crosses crate boundaries, alters protocol/transport
                semantics, or sits in ADR territory in a way warranting design discussion, escalate.
           4. Post findings with: gh pr review ${{ github.event.pull_request.number }} --comment --body 'YOUR_REVIEW'
-             Start the body with: ## Peat QA Review (SHA: ${{ steps.check.outputs.short_sha }})
+             Start the body with EXACTLY (including the leading "## "):
+          $START_LINE
              Every finding must carry a tag with a defined action. Do NOT post optional/nice-to-have
              observations — if a finding has no clear action, omit it.
              Severity tags:
@@ -121,19 +126,62 @@ jobs:
              Do NOT make test, probe, or draft calls to `gh pr review` before posting.
              Compose the full review body in memory first, then post it in a single call.
           PROMPT
-          rc=$?
+          }
 
+          OPUS_START_LINE="## Peat QA Review (SHA: ${SHORT_SHA})"
+          # Sonnet fallback header is two lines (header + disclaimer). The literal
+          # newline flows through envsubst into the prompt; reviewers see the
+          # disclaimer in the posted comment so they can re-run CI on substantive
+          # PRs when full [ARCH] coverage is needed.
+          SONNET_START_LINE="## Peat QA Review (SHA: ${SHORT_SHA}) — fallback model: Sonnet 4.6
+          > Opus 4.7 was unavailable; this review was produced by Sonnet 4.6. [ARCH] coverage may be reduced — re-run CI on this PR when Opus is available if full architectural review is needed."
+
+          MAX_OPUS_ATTEMPTS=3
+          rc=0
+
+          for attempt in $(seq 1 $MAX_OPUS_ATTEMPTS); do
+            echo "::group::QA Review Opus 4.7 attempt ${attempt}/${MAX_OPUS_ATTEMPTS}"
+
+            if already_posted; then
+              echo "Review for SHA ${SHORT_SHA} already posted; treating as success."
+              echo "::endgroup::"
+              exit 0
+            fi
+
+            emit_prompt "$OPUS_START_LINE" \
+              | claude -p --model claude-opus-4-7 \
+                  --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh pr review *)'
+            rc=$?
+            echo "::endgroup::"
+
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt "$MAX_OPUS_ATTEMPTS" ]; then
+              echo "Opus 4.7 attempt ${attempt} failed (claude -p exit ${rc}); sleeping 15s before retry..."
+              sleep 15
+            fi
+          done
+
+          echo "All ${MAX_OPUS_ATTEMPTS} Opus 4.7 attempts failed; falling back to Sonnet 4.6."
+          echo "::group::QA Review Sonnet 4.6 fallback"
+
+          if already_posted; then
+            echo "Review for SHA ${SHORT_SHA} already posted; treating as success."
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          emit_prompt "$SONNET_START_LINE" \
+            | claude -p --model claude-sonnet-4-6 \
+                --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh pr review *)'
+          rc=$?
           echo "::endgroup::"
 
           if [ "$rc" -eq 0 ]; then
             exit 0
           fi
 
-          if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-            echo "Attempt ${attempt} failed (claude -p exit ${rc}); sleeping 15s before retry..."
-            sleep 15
-          fi
-          done
-
-          echo "All ${MAX_ATTEMPTS} QA Review attempts failed (likely transient API errors)."
+          echo "Sonnet 4.6 fallback also failed (likely a broader Anthropic API incident — see status.claude.com)."
           exit 1
