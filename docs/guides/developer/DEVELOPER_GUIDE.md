@@ -382,6 +382,10 @@ let comms = Capability::new(CapabilityType::Communication)
 
 ### 4.3 Cells
 
+> **See also:** [Forming a Team & Assigning Leaders](FORMATION_AND_LEADERSHIP.md) — a
+> task-oriented walkthrough of the full cell lifecycle (discover → form → elect → assign
+> roles → confirm → failover) over these primitives.
+
 A **Cell** is a group of nodes that coordinate together:
 
 ```rust
