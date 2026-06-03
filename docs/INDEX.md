@@ -10,6 +10,7 @@
 |----------|---------|----------|
 | [**QUICKSTART.md**](guides/QUICKSTART.md) | 2-node → 3-node mesh, static peers + mDNS, including Raspberry Pi cross-compile | New adopters |
 | [**Developer Guide**](guides/developer/DEVELOPER_GUIDE.md) | API reference, extending Peat | Software engineers |
+| [**Forming a Team & Assigning Leaders**](guides/developer/FORMATION_AND_LEADERSHIP.md) | Formation handshake, leader election, role assignment, failover — the cell lifecycle over the `peat-protocol` primitives | Software engineers |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | System architecture overview | New developers |
 | [**spec/**](spec/README.md) | Protocol specifications (IETF RFC style) | Protocol implementers |
 | [README.md](../README.md) | Project overview and getting started | All users |
