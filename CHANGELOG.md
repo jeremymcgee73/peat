@@ -14,6 +14,26 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.22] - 2026-06-02
+
+**ADR-066 hierarchy vocabulary rename ([peat#957](https://github.com/defenseunicorns/peat/pull/957), peat#904 Phases 1+2).** The schema and protocol adopt the abstract, non-military hierarchy vocabulary defined in [ADR-066](docs/adr/066-hierarchy-vocabulary.md): the four aggregation tiers are now **Cell → Cohort → Federation → Coalition** (replacing Squad/Platoon/Company and adding a fourth top tier). This is a **wire-breaking change** to the renamed proto fields, messages, and enum values — peers and persisted documents produced before rc.22 are not compatible across the rename. peat-mesh adopted the matching internal `HierarchyLevel` rename + Coalition tier in `0.9.0-rc.31` (Phase 3).
+
+### Changed — `peat-schema` (wire format)
+
+- **`cell.proto`:** `Cell.platoon_id` (field 5) renamed to `Cell.cohort_id`. Same field number, same `optional string` type and LWW-Register semantics — only the name changed.
+- **Hierarchy summary messages renamed:** `SquadSummary` → `CellSummary`, `PlatoonSummary` → `CohortSummary`, `CompanySummary` → `FederationSummary`, plus a new `CoalitionSummary` for the fourth tier. Their leaf identifier fields rename accordingly (`squad_id` → `cell_id`, `platoon_id` → `cohort_id`).
+- **`command.proto` `CommandScope` enum:** `SQUAD = 2` → `CELL = 2`, `PLATOON = 3` → `COHORT = 3`, added `FEDERATION = 5` and `COALITION = 6`. `target_ids` now carries node/cell/cohort/federation/coalition ids.
+- **Type registry / ontology:** `TypeDescriptor` field metadata and the ontology concepts updated (`platoon`/`company` → `cohort`/`federation`/`coalition`); type IDs (`peat.cell.v1.*`, `peat.node.v1.*`) and hyphenated collection names are unchanged.
+
+### Changed — `peat-protocol`
+
+- Internal coordinator, leader-election, routing, discovery, hierarchy-aggregation, and command types renamed `squad_id` → `cell_id` and the analogous tier fields throughout, tracking the schema rename. No new public capability beyond the rename.
+- **`automerge` dependency bumped `0.7.1` → `0.9.0`** to stay ABI-compatible with peat-mesh `0.9.0-rc.31` (which moved to automerge 0.9). Required because `peat-protocol`'s `automerge-backend` feature shares the `Automerge` type with peat-mesh's storage layer across the re-export boundary; a version split produces `mismatched types` against every `Automerge`-typed call site. No `peat-protocol` source changes were needed beyond the bump — the 0.9 read/write API surface peat-protocol uses (`ReadDoc`/`Transactable` `get`/`put`/`put_object`) is source-compatible.
+
+### Migration
+
+Consumers that round-trip the renamed fields must update to the new names (e.g. `platoon_id` → `cohort_id` on `CellState`). Because field numbers are preserved, Protobuf binary payloads decode unchanged; JSON/named-field access and any hardcoded `CommandScope` enum names must be updated.
+
 ## [0.9.0-rc.21] - 2026-05-30
 
 **ADR-065 auth-handshake version + capability negotiation ([peat#952](https://github.com/defenseunicorns/peat/pull/952)) + descriptor-driven proto3-zero JSON on `TypeDescriptor` ([peat#954](https://github.com/defenseunicorns/peat/pull/954), closes [peat#953](https://github.com/defenseunicorns/peat/issues/953)).** rc.21 fixes the long-standing authenticator timestamp-mismatch bug that produced ~10⁻⁶ flaky auth failures across the wall-clock-second boundary, and at the same time anchors the wire-format so future protocol revisions can roll across a heterogeneous mesh without producing the same hard rollout cliff this release carries (see the operational note below). Independently, `TypeDescriptor` now drives proto3-zero JSON per registered type — unblocking consumer-side proto3 defaulting (peat-cli, future SDKs) without the per-collection hardcoded table.

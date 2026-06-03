@@ -1399,11 +1399,23 @@ user-id = 192066
 start = "2024-08-20"
 end = "2027-03-26"
 
+[[trusted.iroh-dns]]
+criteria = "safe-to-deploy"
+user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
+start = "2020-01-01"
+end = "2027-12-31"
+
 [[trusted.iroh-io]]
 criteria = "safe-to-deploy"
 user-id = 65577 # Rüdiger Klaehn (rklaehn)
 start = "2023-06-20"
 end = "2027-03-26"
+
+[[trusted.iroh-mdns-address-lookup]]
+criteria = "safe-to-deploy"
+user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
+start = "2020-01-01"
+end = "2027-12-31"
 
 [[trusted.iroh-metrics]]
 criteria = "safe-to-deploy"
@@ -1464,6 +1476,12 @@ criteria = "safe-to-deploy"
 user-id = 192066
 start = "2025-11-05"
 end = "2027-03-26"
+
+[[trusted.iroh-util]]
+criteria = "safe-to-deploy"
+user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
+start = "2020-01-01"
+end = "2027-12-31"
 
 [[trusted.irpc]]
 criteria = "safe-to-deploy"

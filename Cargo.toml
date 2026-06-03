@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.21"
+version = "0.9.0-rc.22"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -270,7 +270,21 @@ repository = "https://github.com/defenseunicorns/peat"
 # CDC channel via this floor bump. Pinning below rc.29 would let
 # the workspace build against a peat-mesh whose CDC channel is
 # still delete-blind — silent contract violation, not a build break.
-peat-mesh = { version = ">=0.9.0-rc.29, <0.9.1", default-features = false }
+#
+# Floor bumped to rc.31 (2026-06-02) — ADR-066 Phase 3 + dependency
+# refresh. rc.31 moves peat-mesh to `automerge` 0.9 (from 0.7); this
+# release bumps `peat-protocol`'s own `automerge` dep to 0.9 to match.
+# The two MUST share the `automerge` major: peat-protocol's
+# `automerge-backend` feature exchanges the `Automerge` type with
+# peat-mesh's storage layer across the re-export boundary, so a split
+# (peat-mesh 0.9 / peat-protocol 0.7) is a hard build break — every
+# `Automerge`-typed call site fails with `mismatched types`. Pinning
+# the floor below rc.31 would let the workspace resolve a peat-mesh on
+# automerge 0.7 against a peat-protocol on 0.9 — the dual-version
+# conflict. rc.31 also carries the internal HierarchyLevel rename
+# (ADR-066 Phase 3) + the iroh rc.0→rc.1 train; both are internal to
+# peat-mesh and require no peat-protocol source change.
+peat-mesh = { version = ">=0.9.0-rc.31, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

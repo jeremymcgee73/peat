@@ -23,7 +23,7 @@ categories = ["network-programming"]
 [dependencies]
 # Peat facade: peat-protocol re-exports peat-schema and peat-mesh so
 # downstream consumers can depend on peat-protocol alone.
-peat-schema = { path = "../peat-schema", version = "=0.9.0-rc.21" }
+peat-schema = { path = "../peat-schema", version = "=0.9.0-rc.22" }
 peat-mesh = { workspace = true }
 
 tokio = { workspace = true }
@@ -66,7 +66,7 @@ hkdf = "0.12"              # HKDF key derivation
 subtle = "2.6"             # Constant-time comparison (formation key auth)
 
 # CRDT Backends (E8 Evaluation - ADR-007)
-automerge = { version = "0.7.1", optional = true }  # Automerge CRDT library for evaluation
+automerge = { version = "0.9.0", optional = true }  # Automerge CRDT library for evaluation
 
 # AutomergeIrohBackend dependencies (ADR-011)
 #
@@ -135,7 +135,7 @@ serial_test = "3.1"  # Serialize tests sharing global state (iroh endpoints)
 # those tests keep compiling without putting iroh back into the
 # runtime dep tree. Same feature set as peat-mesh's iroh activation
 # (default-features off + `tls-aws-lc-rs`) for FIPS posture parity.
-iroh = { version = "=1.0.0-rc.0", default-features = false, features = ["tls-aws-lc-rs"] }
+iroh = { version = "=1.0.0-rc.1", default-features = false, features = ["tls-aws-lc-rs"] }
 
 [[bench]]
 name = "cap_benchmarks"
