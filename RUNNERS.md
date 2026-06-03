@@ -8,7 +8,7 @@ All runners are user-level systemd template instances
 org-scoped; each is registered against a specific repo per Peat's
 "no org-level GH permissions" rule.
 
-## peat-arm64-linux-gb10-mesh — runner id 21
+## peat-arm64-linux-gb10-mesh — runner id 22
 
 - **Repo:** `defenseunicorns/peat-mesh`
 - **Host:** GB10 (NVIDIA Grace, aarch64), Ubuntu 24.04
@@ -78,6 +78,16 @@ ANDROID_NDK_HOME=~/Android/Sdk/ndk/android-ndk-r27d \
 CI job); the `-PandroidTestAbis=arm64-v8a` override is mandatory for
 deploying to ARM64 lab hardware.
 
+### systemd drop-in overrides
+
+`~/.config/systemd/user/actions-runner@actions-runner-mesh.service.d/path.conf`
+sets `RestartSec=300` in addition to the `PATH` env var. The longer restart
+delay is intentional: the runner exits after ~240 s of broker session-conflict
+retries (which happen when the process crashes mid-job and leaves an orphaned
+GH session). With the default `RestartSec=15` the restart cycle is faster than
+the GH session TTL, so the runner loops indefinitely. 300 s gives the orphaned
+session time to expire before the next connect attempt.
+
 ### Quirks
 
 - The HomuHomu NDK ships `toolchains/llvm/prebuilt/linux-x86_64` as
@@ -106,11 +116,47 @@ deploying to ARM64 lab hardware.
   `ubuntu-latest` (not this runner).
 - `actions-runner-gateway` → `defenseunicorns/peat-gateway`.
 - `actions-runner-node` → `defenseunicorns/peat-node`.
-- `actions-runner` → `defenseunicorns/peat` (base ecosystem repo).
+- `actions-runner` → `defenseunicorns/peat` (base ecosystem repo) — runner id 24.
 
 Update these stanzas as their tooling changes; no separate ADRs needed
 unless a host-level decision (e.g. unofficial toolchain choice) carries
 a provenance trade-off.
+
+## Recovery: runner re-registration
+
+Re-register when a runner is stuck in a session-conflict loop that doesn't
+resolve after one restart cycle, or when jobs consistently fail at checkout
+with `Missing file at path: .../_runner_file_commands/set_output_*`.
+
+The second symptom is caused by a runner 2.334.0 partial-migration state:
+`.runner_migrated` exists but `.credentials_migrated` does not. In this state
+the listener creates the pages log file during job init AND the worker's
+`JobExtension` tries to create the same file, causing an `IOException` that
+prevents `GITHUB_OUTPUT` from being initialized.
+
+For any runner `<instance>` (e.g. `actions-runner-mesh`, `actions-runner`):
+
+```bash
+# 1. Stop the service
+systemctl --user stop actions-runner@<instance>.service
+
+# 2. Remove the existing GH registration
+cd /home/kit/Code/Peat/<instance>
+REMOVE_TOKEN=$(gh api repos/defenseunicorns/<repo>/actions/runners/remove-token \
+  --method POST --jq '.token')
+./config.sh remove --token "$REMOVE_TOKEN"
+
+# 3. Re-register (get labels from RUNNERS.md or the GH runner list)
+RUNNER_TOKEN=$(gh api repos/defenseunicorns/<repo>/actions/runners/registration-token \
+  --method POST --jq '.token')
+./config.sh --url https://github.com/defenseunicorns/<repo> --token "$RUNNER_TOKEN" \
+  --unattended --labels '<labels>' --name <name>
+
+# 4. Start the service
+systemctl --user start actions-runner@<instance>.service
+```
+
+After re-registration the runner gets a new id — update the id in this file.
 
 ## Planned: ADR-064 follow-up (Rust PR-gating CI on self-hosted runners)
 
