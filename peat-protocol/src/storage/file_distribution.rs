@@ -1303,6 +1303,29 @@ fn write_receiver_status(
     Ok(())
 }
 
+/// Number of receive sweeps a not-yet-delivered distribution is always
+/// re-fetched before the Completed-holder gate engages (peat-mesh#137 /
+/// #226). The grace lets a transient early-sweep fetch failure recover
+/// (sender becomes reachable, or this node's own next attempt succeeds)
+/// without stranding the distribution; after it, an unreachable sender no
+/// longer drives per-sweep endpoint churn. ~3 sweeps at the 1s inbox poll
+/// is a few seconds of grace — short relative to a real transfer, ample
+/// for a handshake to settle.
+#[cfg(feature = "automerge-backend")]
+const RECEIVE_FETCH_GRACE_ATTEMPTS: u32 = 3;
+
+/// Whether to *defer* (skip) re-fetching a distribution's blob this sweep.
+///
+/// Defer only once the grace window is exhausted AND no other node reports
+/// the blob `Completed` (no reachable source to pull from). A completed
+/// holder always re-enables the fetch — so a distribution is never
+/// stranded once any peer holds it complete, and transient early failures
+/// are retried through the grace window.
+#[cfg(feature = "automerge-backend")]
+fn should_defer_fetch(prior_attempts: u32, completed_holder_exists: bool) -> bool {
+    prior_attempts >= RECEIVE_FETCH_GRACE_ATTEMPTS && !completed_holder_exists
+}
+
 /// One receive sweep: discover synced distribution documents, deliver
 /// any that target this node and aren't already handled.
 ///
@@ -1318,6 +1341,7 @@ async fn receive_sweep_once(
     own_short_id: &str,
     originated: &DistributionsMap,
     handled: &mut std::collections::HashSet<String>,
+    attempt_counts: &mut std::collections::HashMap<String, u32>,
 ) -> Result<()> {
     let docs = scan_distribution_documents(document_store.as_ref())?;
     debug!(
@@ -1366,6 +1390,38 @@ async fn receive_sweep_once(
             handled.insert(doc_id);
             continue;
         }
+
+        // peat-mesh#137 follow-up: gate re-fetch on a Completed holder to
+        // avoid endpoint churn against an unreachable sender — but only
+        // AFTER a short grace window (#963 QA / peat-mesh#226). The first
+        // RECEIVE_FETCH_GRACE_ATTEMPTS sweeps always fetch (direct from the
+        // sender), so a *transient* early failure (iroh handshake still
+        // settling, momentary route flap, blob-store warmup) recovers.
+        // Without the grace, every receiver failing the first sweep before
+        // any peer reaches Completed would gate itself and strand the
+        // distribution until the next reconnect full-sync. Past the grace,
+        // defer re-fetching until the mesh metadata (`node_statuses`) shows
+        // another node holds the blob *complete* — a reachable source.
+        // Blindly re-fetching every sweep against an unreachable sender
+        // opens a connection attempt on the iroh endpoint shared with CRDT
+        // sync, starving distribution-doc propagation (the 7n-dual-c2
+        // failover stall). A Completed holder always re-enables the fetch.
+        let completed_holder_exists = doc
+            .node_statuses
+            .iter()
+            .any(|(id, s)| id.as_str() != own_short_id && s.status == TransferState::Completed);
+        let prior_attempts = attempt_counts.get(&doc_id).copied().unwrap_or(0);
+        if should_defer_fetch(prior_attempts, completed_holder_exists) {
+            debug!(
+                distribution_id = %doc.distribution_id,
+                prior_attempts,
+                "no completed holder after grace window; deferring re-fetch to avoid endpoint churn"
+            );
+            // NOT marked handled → revisited when a peer's Completed status
+            // propagates via CRDT sync (or on the next tick).
+            continue;
+        }
+        attempt_counts.insert(doc_id.clone(), prior_attempts + 1);
 
         // Write Transferring before fetching. The sender's progress
         // watcher re-reads the doc on each observer event and emits an
@@ -1520,6 +1576,11 @@ async fn watch_receive_documents(
         "attachment receive watcher started"
     );
     let mut handled: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Per-distribution fetch-attempt counts (peat-mesh#137 / #226). After a
+    // grace window, gates re-fetch on a Completed holder to avoid endpoint
+    // churn — see `receive_sweep_once` / `should_defer_fetch`.
+    let mut attempt_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
     let mut ticker = tokio::time::interval(poll_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Discard the immediate-first tick — the collection is empty at
@@ -1535,6 +1596,7 @@ async fn watch_receive_documents(
             &own_short_id,
             &originated,
             &mut handled,
+            &mut attempt_counts,
         )
         .await
         {
@@ -1991,5 +2053,40 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    // peat-mesh#137 / #226: the inbox re-fetch gate. Locks in the gate
+    // semantics (and the stranding-avoidance grace window) without needing
+    // a live `NetworkedIrohBlobStore` (it's a concrete, un-mockable type),
+    // by testing the policy predicate `should_defer_fetch` directly.
+    #[cfg(feature = "automerge-backend")]
+    #[test]
+    fn fetch_gate_grace_window_then_completed_holder_gating() {
+        // Within the grace window: ALWAYS fetch, holder or not. This is the
+        // stranding-avoidance property — a transient early-sweep failure on
+        // every receiver still gets retried, so the distribution can never
+        // wedge before any peer reaches Completed.
+        for n in 0..RECEIVE_FETCH_GRACE_ATTEMPTS {
+            assert!(
+                !should_defer_fetch(n, false),
+                "attempt {n} (< grace) must fetch even with no completed holder"
+            );
+            assert!(
+                !should_defer_fetch(n, true),
+                "attempt {n} (< grace) must fetch"
+            );
+        }
+
+        // Past the grace window with NO completed holder: defer (the
+        // dual-C2 churn-avoidance property — stop hammering an unreachable
+        // sender on the shared iroh endpoint).
+        assert!(should_defer_fetch(RECEIVE_FETCH_GRACE_ATTEMPTS, false));
+        assert!(should_defer_fetch(RECEIVE_FETCH_GRACE_ATTEMPTS + 10, false));
+
+        // A Completed holder ALWAYS re-enables the fetch, even past grace —
+        // so once a reachable peer holds the blob complete, the receiver
+        // pulls from it and is never stranded.
+        assert!(!should_defer_fetch(RECEIVE_FETCH_GRACE_ATTEMPTS, true));
+        assert!(!should_defer_fetch(RECEIVE_FETCH_GRACE_ATTEMPTS + 10, true));
     }
 }
