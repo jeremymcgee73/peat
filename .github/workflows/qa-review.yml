@@ -34,8 +34,8 @@ jobs:
           SHORT_SHA="${{ github.event.pull_request.head.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          EXISTING=$(gh pr view "${{ github.event.pull_request.number }}" --json comments --jq \
-            ".comments[] | select(.body | contains(\"Peat QA Review (SHA: ${SHORT_SHA})\")) | .id" 2>/dev/null || true)
+          EXISTING=$(gh pr view "${{ github.event.pull_request.number }}" --json reviews --jq \
+            ".reviews[] | select(.body | contains(\"Peat QA Review (SHA: ${SHORT_SHA})\")) | .id" 2>/dev/null || true)
           if [ -n "$EXISTING" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
@@ -62,18 +62,60 @@ jobs:
           # the per-model header line via $START_LINE.
 
           # Idempotency check — used inside the Opus loop and again before the
-          # Sonnet fallback. `gh pr review --comment` posts to the PR's reviews
-          # endpoint, so check --json reviews here. The "Check for existing
-          # review" step at job start uses --json comments for backwards-compat
-          # with an older posting path — kept separate from this in-step check.
+          # Sonnet fallback. `gh pr review --approve/--request-changes` posts to
+          # the reviews endpoint; check --json reviews here and in the top-level
+          # "Check for existing review" step.
           already_posted() {
             gh pr view "$PR_NUMBER" --json reviews \
               | jq -e --arg tag "Peat QA Review (SHA: ${SHORT_SHA})" \
                    '.reviews[] | select(.body | contains($tag))' >/dev/null 2>&1
           }
 
+          submit_review() {
+            local verdict verb peat_bot_token
+            verdict=$(tr -d '[:space:]' < "$RUNNER_TEMP/peat-qa-verdict" 2>/dev/null || true)
+            case "$verdict" in
+              changes-requested) verb="--request-changes" ;;
+              approve)           verb="--approve" ;;
+              *)
+                echo "::warning::peat-qa-verdict missing or unrecognized ('${verdict}') — defaulting to --request-changes"
+                verb="--request-changes"
+                ;;
+            esac
+            # Defense in depth over the agent-written verdict file: the review
+            # BODY is authoritative for the *safe* direction. If the verdict says
+            # approve but the body carries a request-changes finding tag
+            # ([BLOCKER]/[WARNING]/[ARCH]) as a heading/bullet/line-start marker,
+            # downgrade to --request-changes. Anchored to line-start markers so
+            # prose/backtick mentions ("no [BLOCKER] issues", "any `[WARNING]`
+            # tag") do NOT false-trigger; [IDIOM] is intentionally not a trigger.
+            # This only ever downgrades approve->request-changes, never upgrades,
+            # so it closes the body/verdict divergence window fail-closed.
+            if [ "$verb" = "--approve" ] && \
+               grep -qE '^[[:space:]]*(#{1,6}[[:space:]]+|[-*][[:space:]]+)?\[(BLOCKER|WARNING|ARCH)\]' \
+                 "$RUNNER_TEMP/peat-qa-review.md" 2>/dev/null; then
+              echo "::warning::verdict file said 'approve' but the review body contains a [BLOCKER]/[WARNING]/[ARCH] finding — downgrading to --request-changes (fail-closed)"
+              verb="--request-changes"
+            fi
+            peat_bot_token=$(gh auth token --user peat-bot 2>/dev/null)
+            if [ -z "$peat_bot_token" ]; then
+              echo "::error::could not retrieve peat-bot token from host gh credential store"
+              exit 1
+            fi
+            if ! GH_TOKEN="$peat_bot_token" gh pr review "$PR_NUMBER" $verb --body-file "$RUNNER_TEMP/peat-qa-review.md"; then
+              echo "::error::gh pr review ${verb} failed — verdict not posted"
+              exit 1
+            fi
+          }
+
           emit_prompt() {
-            START_LINE="$1" envsubst '$START_LINE' <<'PROMPT'
+            # Expand both $START_LINE (per-model header) and $RUNNER_TEMP so the
+            # agent receives the real absolute artifact paths. Without
+            # $RUNNER_TEMP in the allowlist the prompt handed the agent the
+            # literal string "$RUNNER_TEMP/peat-qa-review.md", which it could not
+            # resolve — so it narrated the review to stdout instead of writing
+            # the body/verdict files, and submit_review found neither file.
+            START_LINE="$1" envsubst '$START_LINE $RUNNER_TEMP' <<'PROMPT'
           You are the QA review agent for the Peat Protocol ecosystem.
 
           Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }} (HEAD: ${{ steps.check.outputs.short_sha }}).
@@ -110,21 +152,23 @@ jobs:
                This is NOT formatter/style nitpicking — rustfmt/gofmt/prettier handles that.
              - Architectural reach: if a change crosses crate boundaries, alters protocol/transport
                semantics, or sits in ADR territory in a way warranting design discussion, escalate.
-          4. Post findings with: gh pr review ${{ github.event.pull_request.number }} --comment --body 'YOUR_REVIEW'
-             Start the body with EXACTLY (including the leading "## "):
+          4. Write findings using the Write tool:
+             (a) Save the complete review body to $RUNNER_TEMP/peat-qa-review.md.
+                 Start the body with EXACTLY (including the leading "## "):
           $START_LINE
-             Every finding must carry a tag with a defined action. Do NOT post optional/nice-to-have
-             observations — if a finding has no clear action, omit it.
-             Severity tags:
-               [BLOCKER]  — must fix before merge
-               [WARNING]  — should fix, may merge with justification
-               [IDIOM]    — non-idiomatic implementation for the language; worth fixing, not blocking
-               [ARCH]     — architectural concern requiring human design review; do NOT propose a fix, escalate
-             If there are no findings under any tag, post a single line: "No findings."
-             NEVER approve or request-changes — comment only.
-             CRITICAL: call `gh pr review` EXACTLY ONCE with the complete, final review body.
-             Do NOT make test, probe, or draft calls to `gh pr review` before posting.
-             Compose the full review body in memory first, then post it in a single call.
+                 Every finding must carry a tag with a defined action. Do NOT post optional/nice-to-have
+                 observations — if a finding has no clear action, omit it.
+                 Severity tags:
+                   [BLOCKER]  — must fix before merge
+                   [WARNING]  — should fix, may merge with justification
+                   [IDIOM]    — non-idiomatic implementation for the language; worth fixing, not blocking
+                   [ARCH]     — architectural concern requiring human design review; do NOT propose a fix, escalate
+                 If there are no findings under any tag, write a single line: "No findings."
+             (b) Use the Write tool to write the verdict to $RUNNER_TEMP/peat-qa-verdict:
+                 Write exactly: changes-requested if any [BLOCKER], [WARNING], or [ARCH] finding is present.
+                 Write exactly: approve if the review is clean or has only [IDIOM] findings.
+                 No other content in that file.
+             (c) Do NOT call gh pr review — the workflow posts the official review after you finish.
           PROMPT
           }
 
@@ -150,11 +194,12 @@ jobs:
 
             emit_prompt "$OPUS_START_LINE" \
               | claude -p --model claude-opus-4-7 \
-                  --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh pr review *)'
+                  --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Write'
             rc=$?
             echo "::endgroup::"
 
             if [ "$rc" -eq 0 ]; then
+              submit_review
               exit 0
             fi
 
@@ -175,11 +220,12 @@ jobs:
 
           emit_prompt "$SONNET_START_LINE" \
             | claude -p --model claude-sonnet-4-6 \
-                --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh pr review *)'
+                --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Write'
           rc=$?
           echo "::endgroup::"
 
           if [ "$rc" -eq 0 ]; then
+            submit_review
             exit 0
           fi
 
