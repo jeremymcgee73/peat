@@ -149,7 +149,7 @@ fn main() {
     // Initial publish
     let mut time_offset = 0u64;
     publish_flight_patterns(&node, &patterns, time_offset);
-    publish_cells_and_platforms(&node);
+    publish_cells_and_nodes(&node);
 
     // Verify data was stored
     println!("\n--- Verifying stored data ---");
@@ -161,9 +161,9 @@ fn main() {
         Ok(docs) => println!("Tracks: {} stored", docs.len()),
         Err(e) => println!("Error listing tracks: {:?}", e),
     }
-    match node.list_documents("platforms") {
-        Ok(docs) => println!("Platforms: {} stored", docs.len()),
-        Err(e) => println!("Error listing platforms: {:?}", e),
+    match node.list_documents("nodes") {
+        Ok(docs) => println!("Nodes: {} stored", docs.len()),
+        Err(e) => println!("Error listing nodes: {:?}", e),
     }
 
     // Start sync
@@ -178,7 +178,7 @@ fn main() {
     println!("\nFlying patterns over Atlanta... (Ctrl+C to exit)");
     println!("Consumer plugins should discover this node via mDNS.\n");
 
-    let mut last_platform_count = 0;
+    let mut last_node_count = 0;
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
         time_offset += 2;
@@ -186,22 +186,19 @@ fn main() {
         let peers = node.peer_count();
         let connected = node.connected_peers();
 
-        // Update track positions and platform positions/heartbeats
+        // Update track positions and node positions/heartbeats
         publish_flight_patterns(&node, &patterns, time_offset);
-        update_platform_positions(&node, &patterns, time_offset);
+        update_node_positions(&node, &patterns, time_offset);
 
-        // Check for received platforms (consumer PLI)
-        let platforms = node.get_platforms().unwrap_or_default();
+        // Check for received nodes (consumer PLI)
+        let nodes = node.get_nodes().unwrap_or_default();
 
-        // Log new platforms received from consumers
-        if platforms.len() != last_platform_count {
-            println!(
-                "\n=== Received {} platforms from network ===",
-                platforms.len()
-            );
-            for p in &platforms {
-                // Skip our own platforms (they have "platform-" prefix)
-                if p.id.starts_with("platform-") {
+        // Log new nodes received from consumers
+        if nodes.len() != last_node_count {
+            println!("\n=== Received {} nodes from network ===", nodes.len());
+            for p in &nodes {
+                // Skip our own nodes (they have "node-" prefix)
+                if p.id.starts_with("node-") {
                     continue;
                 }
                 println!(
@@ -214,7 +211,7 @@ fn main() {
                 );
             }
             println!();
-            last_platform_count = platforms.len();
+            last_node_count = nodes.len();
         }
 
         println!("[t={}s] Peers: {} | Tracks updated", time_offset, peers);
@@ -344,7 +341,7 @@ fn publish_flight_patterns(node: &peat_ffi::PeatNode, patterns: &[FlightPattern]
 
         let track = serde_json::json!({
             "id": track_id,
-            "source_platform": format!("platform-{}", pattern.name.to_lowercase()),
+            "source_node": format!("node-{}", pattern.name.to_lowercase()),
             "cell_id": "cell-atlanta-001",
             "formation_id": "atlanta-isr",
             "lat": lat,
@@ -379,21 +376,21 @@ fn publish_flight_patterns(node: &peat_ffi::PeatNode, patterns: &[FlightPattern]
     }
 }
 
-/// Publish cells and platforms (static data)
-fn publish_cells_and_platforms(node: &peat_ffi::PeatNode) {
-    println!("--- Publishing cells and platforms ---");
+/// Publish cells and nodes (static data)
+fn publish_cells_and_nodes(node: &peat_ffi::PeatNode) {
+    println!("--- Publishing cells and nodes ---");
 
     // Publish Atlanta cell
     let cell = serde_json::json!({
         "id": "cell-atlanta-001",
         "name": "Atlanta ISR Cell",
         "status": "active",
-        "platform_count": 4,
+        "node_count": 4,
         "center_lat": ATLANTA_LAT,
         "center_lon": ATLANTA_LON,
         "capabilities": ["ISR", "SURVEILLANCE", "RECON"],
         "formation_id": "atlanta-isr",
-        "leader_id": "platform-hawk_1",
+        "leader_id": "node-hawk_1",
         "last_update": current_timestamp()
     });
 
@@ -403,8 +400,8 @@ fn publish_cells_and_platforms(node: &peat_ffi::PeatNode) {
         Err(e) => eprintln!("  Error publishing cell: {:?}", e),
     }
 
-    // Publish platforms
-    let platforms = vec![
+    // Publish nodes
+    let nodes = vec![
         (
             "HAWK-1",
             "UAV",
@@ -429,12 +426,12 @@ fn publish_cells_and_platforms(node: &peat_ffi::PeatNode) {
         ),
     ];
 
-    for (name, ptype, lat, lon, alt) in platforms {
-        let platform_id = format!("platform-{}", name.to_lowercase().replace('-', "_"));
-        let platform = serde_json::json!({
-            "id": platform_id,
+    for (name, ptype, lat, lon, alt) in nodes {
+        let node_id = format!("node-{}", name.to_lowercase().replace('-', "_"));
+        let node_doc = serde_json::json!({
+            "id": node_id,
             "name": name,
-            "platform_type": ptype,
+            "node_type": ptype,
             "lat": lat,
             "lon": lon,
             "hae": alt,
@@ -445,32 +442,28 @@ fn publish_cells_and_platforms(node: &peat_ffi::PeatNode) {
             "last_heartbeat": current_timestamp()
         });
 
-        let json = platform.to_string();
-        match node.put_document("platforms", &platform_id, &json) {
-            Ok(()) => println!("  Published platform: {}", platform_id),
-            Err(e) => eprintln!("  Error publishing platform {}: {:?}", platform_id, e),
+        let json = node_doc.to_string();
+        match node.put_document("nodes", &node_id, &json) {
+            Ok(()) => println!("  Published node: {}", node_id),
+            Err(e) => eprintln!("  Error publishing node {}: {:?}", node_id, e),
         }
     }
 }
 
-/// Update platform positions and heartbeats (called every refresh cycle)
-fn update_platform_positions(
-    node: &peat_ffi::PeatNode,
-    patterns: &[FlightPattern],
-    time_secs: u64,
-) {
+/// Update node positions and heartbeats (called every refresh cycle)
+fn update_node_positions(node: &peat_ffi::PeatNode, patterns: &[FlightPattern], time_secs: u64) {
     let now = current_timestamp();
 
     for pattern in patterns {
         let (lat, lon, alt) = calculate_position(pattern, time_secs);
         let heading = calculate_heading(pattern, time_secs);
 
-        let platform_id = format!("platform-{}", pattern.name.to_lowercase().replace('-', "_"));
+        let node_id = format!("node-{}", pattern.name.to_lowercase().replace('-', "_"));
 
-        let platform = serde_json::json!({
-            "id": platform_id,
+        let node_doc = serde_json::json!({
+            "id": node_id,
             "name": pattern.name,
-            "platform_type": "UAV",
+            "node_type": "UAV",
             "lat": lat,
             "lon": lon,
             "hae": alt,
@@ -483,9 +476,9 @@ fn update_platform_positions(
             "last_heartbeat": now
         });
 
-        let json = platform.to_string();
-        if let Err(e) = node.put_document("platforms", &platform_id, &json) {
-            eprintln!("Error updating platform {}: {:?}", platform_id, e);
+        let json = node_doc.to_string();
+        if let Err(e) = node.put_document("nodes", &node_id, &json) {
+            eprintln!("Error updating node {}: {:?}", node_id, e);
         }
     }
 }

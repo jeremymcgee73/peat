@@ -54,7 +54,7 @@ fn make_test_event(
 /// Test 1: Bandwidth Reduction Through Aggregation
 ///
 /// Validates that the aggregation system achieves >=95% event reduction.
-/// Per ADR-027: 48 platforms × 11 events/sec = 528 events/sec without aggregation
+/// Per ADR-027: 48 nodes × 11 events/sec = 528 events/sec without aggregation
 /// With aggregation: ~7.5 events/sec (summaries + passthrough)
 #[test]
 fn test_bandwidth_reduction_through_aggregation() {
@@ -62,12 +62,12 @@ fn test_bandwidth_reduction_through_aggregation() {
     let aggregator = HierarchyAggregator::new("cell-1".to_string(), HierarchyLevel::Cell)
         .with_default_window_duration(Duration::from_millis(100)); // Short window for testing
 
-    let platforms_per_cell = 8;
-    let detections_per_platform = 10; // Per second
+    let nodes_per_cell = 8;
+    let detections_per_node = 10; // Per second
     let test_seconds = 1;
 
-    // Simulate detection events from all platforms (SUMMARY mode)
-    let total_detections = platforms_per_cell * detections_per_platform * test_seconds;
+    // Simulate detection events from all nodes (SUMMARY mode)
+    let total_detections = nodes_per_cell * detections_per_node * test_seconds;
     for i in 0..total_detections {
         let event = make_test_event(
             &format!("det-{}", i),
@@ -80,8 +80,8 @@ fn test_bandwidth_reduction_through_aggregation() {
     }
 
     // Simulate telemetry events (QUERY mode - stored locally, not propagated)
-    let telemetry_per_platform = 1; // Per second
-    let total_telemetry = platforms_per_cell * telemetry_per_platform * test_seconds;
+    let telemetry_per_node = 1; // Per second
+    let total_telemetry = nodes_per_cell * telemetry_per_node * test_seconds;
     for i in 0..total_telemetry {
         let event = make_test_event(
             &format!("tel-{}", i),

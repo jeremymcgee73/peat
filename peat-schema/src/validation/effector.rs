@@ -244,13 +244,13 @@ pub fn validate_effector_spec(spec: &EffectorSpec) -> ValidationResult<()> {
 /// Validate an effector state update message
 ///
 /// Validates:
-/// - platform_id is present
+/// - node_id is present
 /// - effector spec is valid
 /// - status is specified
 /// - timestamp is present
 pub fn validate_effector_state_update(update: &EffectorStateUpdate) -> ValidationResult<()> {
-    if update.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if update.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     // Effector spec is required
@@ -279,7 +279,7 @@ pub fn validate_effector_state_update(update: &EffectorStateUpdate) -> Validatio
 ///
 /// Validates:
 /// - command_id is present
-/// - platform_id is present
+/// - node_id is present
 /// - effector_id is present
 /// - command_type is specified
 /// - issued_at is present
@@ -289,8 +289,8 @@ pub fn validate_effector_command(cmd: &EffectorCommand) -> ValidationResult<()> 
         return Err(ValidationError::MissingField("command_id".to_string()));
     }
 
-    if cmd.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if cmd.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     if cmd.effector_id.is_empty() {
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn test_valid_effector_state_update() {
         let update = EffectorStateUpdate {
-            platform_id: "IFV-Alpha-1".to_string(),
+            node_id: "IFV-Alpha-1".to_string(),
             effector: Some(valid_kinetic_effector()),
             status: EffectorStatus::Operational as i32,
             timestamp: Some(Timestamp {
@@ -555,9 +555,9 @@ mod tests {
     }
 
     #[test]
-    fn test_effector_update_missing_platform_id() {
+    fn test_effector_update_missing_node_id() {
         let update = EffectorStateUpdate {
-            platform_id: String::new(),
+            node_id: String::new(),
             effector: Some(valid_kinetic_effector()),
             status: EffectorStatus::Operational as i32,
             timestamp: Some(Timestamp {
@@ -566,13 +566,13 @@ mod tests {
             }),
         };
         let err = validate_effector_state_update(&update).unwrap_err();
-        assert!(matches!(err, ValidationError::MissingField(f) if f == "platform_id"));
+        assert!(matches!(err, ValidationError::MissingField(f) if f == "node_id"));
     }
 
     #[test]
     fn test_effector_update_unspecified_status() {
         let update = EffectorStateUpdate {
-            platform_id: "IFV-Alpha-1".to_string(),
+            node_id: "IFV-Alpha-1".to_string(),
             effector: Some(valid_kinetic_effector()),
             status: EffectorStatus::Unspecified as i32,
             timestamp: Some(Timestamp {
@@ -588,7 +588,7 @@ mod tests {
     fn test_valid_safe_command() {
         let cmd = EffectorCommand {
             command_id: "CMD-001".to_string(),
-            platform_id: "IFV-Alpha-1".to_string(),
+            node_id: "IFV-Alpha-1".to_string(),
             effector_id: "m240-coax".to_string(),
             command_type: EffectorCommandType::EffectorCommandSafe as i32,
             target: None,
@@ -609,7 +609,7 @@ mod tests {
     fn test_arm_command_requires_authorization() {
         let cmd = EffectorCommand {
             command_id: "CMD-001".to_string(),
-            platform_id: "IFV-Alpha-1".to_string(),
+            node_id: "IFV-Alpha-1".to_string(),
             effector_id: "m240-coax".to_string(),
             command_type: EffectorCommandType::EffectorCommandArm as i32,
             target: None,
@@ -631,7 +631,7 @@ mod tests {
     fn test_engage_command_requires_target() {
         let cmd = EffectorCommand {
             command_id: "CMD-001".to_string(),
-            platform_id: "IFV-Alpha-1".to_string(),
+            node_id: "IFV-Alpha-1".to_string(),
             effector_id: "m240-coax".to_string(),
             command_type: EffectorCommandType::EffectorCommandEngage as i32,
             target: None, // Missing - required for ENGAGE
@@ -666,7 +666,7 @@ mod tests {
     fn test_effector_command_expires_before_issued() {
         let cmd = EffectorCommand {
             command_id: "CMD-001".to_string(),
-            platform_id: "IFV-Alpha-1".to_string(),
+            node_id: "IFV-Alpha-1".to_string(),
             effector_id: "m240-coax".to_string(),
             command_type: EffectorCommandType::EffectorCommandSafe as i32,
             target: None,

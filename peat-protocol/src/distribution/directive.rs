@@ -150,9 +150,9 @@ impl DeploymentDirective {
     /// Conservative for `Capability` scope: returns `true` only if the
     /// filter is fully empty (no required capabilities, no hardware
     /// bounds, no custom constraints). Callers that have a candidate
-    /// platform's [`CapabilityAdvertisement`] should use
+    /// node's [`CapabilityAdvertisement`] should use
     /// [`Self::targets`] for the full match, which evaluates the filter
-    /// against the platform's advertised capabilities and hardware via
+    /// against the node's advertised capabilities and hardware via
     /// [`CapabilityMatcher`] (peat#773).
     ///
     /// [`CapabilityAdvertisement`]: crate::cot::CapabilityAdvertisement
@@ -179,17 +179,17 @@ impl DeploymentDirective {
         }
     }
 
-    /// Check if this directive targets a specific platform given its
+    /// Check if this directive targets a specific node given its
     /// [`CapabilityAdvertisement`].
     ///
-    /// Full evaluation: identity (`platform_id`), formation membership
+    /// Full evaluation: identity (`node_id`), formation membership
     /// (`formation_id` on both directive and advert), and capability
     /// matching via [`CapabilityMatcher::matches`]. Use this in place of
     /// [`Self::targets_node`] wherever an advertisement is available — it
     /// supersedes the ID-only fast path and is the entry point peat#773
     /// added.
     ///
-    /// # Formation scope: fall-through for unassigned platforms
+    /// # Formation scope: fall-through for unassigned nodes
     ///
     /// For `DeploymentScope::Formation(fid)`, this method matches if
     /// **either**:
@@ -204,7 +204,7 @@ impl DeploymentDirective {
     /// formation does NOT fall through — explicit non-membership wins.
     ///
     /// The fall-through exists to support transitional bootstrap flows:
-    /// a freshly-deployed platform with `formation_id = None` can
+    /// a freshly-deployed node with `formation_id = None` can
     /// receive formation-scoped directives from issuers in that
     /// formation (e.g., the very directive that sets its
     /// `formation_id`). This policy is **asymmetric with**
@@ -229,7 +229,7 @@ impl DeploymentDirective {
                     || (adv.formation_id.is_none()
                         && self.issuer_formation_id.as_deref() == Some(fid))
             }
-            DeploymentScope::Nodes(node_ids) => node_ids.iter().any(|n| n == &adv.platform_id),
+            DeploymentScope::Nodes(node_ids) => node_ids.iter().any(|n| n == &adv.node_id),
             DeploymentScope::Capability(filter) => {
                 crate::distribution::CapabilityMatcher::matches(adv, filter)
             }
@@ -708,7 +708,7 @@ mod tests {
         ));
 
         let base = CapabilityAdvertisement::new(
-            "platform-7".into(),
+            "node-7".into(),
             "UAV".into(),
             Position::new(35.0, -120.0),
             OperationalStatus::Active,

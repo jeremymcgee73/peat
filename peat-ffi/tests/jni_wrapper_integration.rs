@@ -238,7 +238,7 @@ fn scenario_endpoint_socket_addr_real_handle(raw: *mut jni::sys::JNIEnv, handle:
 // which are the two longest marshalling chains in the wrapper layer.
 // ---------------------------------------------------------------------
 fn scenario_publish_get_roundtrip(raw: *mut jni::sys::JNIEnv, handle: i64) {
-    let collection = "platforms";
+    let collection = "nodes";
     let doc_id = "peat-ffi-jvm-jni-roundtrip";
     let body = format!(
         r#"{{"id":"{}","name":"jvm-jni-roundtrip","value":42}}"#,
@@ -332,7 +332,7 @@ fn scenario_get_document_err_throws_runtime_exception(raw: *mut jni::sys::JNIEnv
 
     // Trigger.
     let mut env = unsafe { fresh_env(raw) };
-    let collection_j = new_jstring(&mut env, "platforms");
+    let collection_j = new_jstring(&mut env, "nodes");
     let doc_id_j = new_jstring(&mut env, "any");
     let result = peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
         unsafe { fresh_env(raw) },
@@ -513,8 +513,8 @@ fn scenario_native_method_table_audit() {
             peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getTracksJni as *const (),
         ),
         (
-            "getPlatformsJni",
-            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni as *const (),
+            "getNodesJni",
+            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getNodesJni as *const (),
         ),
         (
             "getCommandsJni",
@@ -525,8 +525,8 @@ fn scenario_native_method_table_audit() {
             peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getMarkersJni as *const (),
         ),
         (
-            "publishPlatformJni",
-            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni as *const (),
+            "publishNodeJni",
+            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_publishNodeJni as *const (),
         ),
         (
             "publishMarkerJni",

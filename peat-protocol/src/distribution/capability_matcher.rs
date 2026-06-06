@@ -1,7 +1,7 @@
 //! Capability matching for `DeploymentDirective`'s Capability scope (peat#773).
 //!
 //! `CapabilityMatcher::matches(adv, filter)` evaluates a
-//! `CapabilityFilter` against a candidate platform's `CapabilityAdvertisement`,
+//! `CapabilityFilter` against a candidate node's `CapabilityAdvertisement`,
 //! returning `true` only if **every** constraint in the filter is satisfied.
 //! Replaces the pre-#773 stub in `DeploymentDirective::targets_node` that
 //! returned `true` whenever the filter's capability list happened to be
@@ -150,7 +150,7 @@ fn capability_matches_any(required: &str, advertised: &[CapabilityInfo]) -> bool
 /// Map an already-normalised (trim + uppercase) capability string to a
 /// `SensorType` if one applies. Accepts the canonical short code
 /// (`EO`, `IR`, etc.) plus common spelled-out aliases so directives
-/// authored against either form match the same platforms.
+/// authored against either form match the same nodes.
 fn sensor_type_from_string(normalized: &str) -> Option<SensorType> {
     Some(match normalized {
         "EO" | "ELECTRO_OPTICAL" | "ELECTROOPTICAL" | "ELECTRO-OPTICAL" => {

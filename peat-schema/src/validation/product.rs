@@ -14,7 +14,7 @@ use crate::product::v1::{
 /// Validates:
 /// - product_id is present
 /// - product_type is specified (not unspecified)
-/// - source_platform is present
+/// - source_node is present
 /// - timestamp is present
 /// - confidence is in valid range (0.0 - 1.0)
 /// - content is present and valid for the product type
@@ -31,8 +31,8 @@ pub fn validate_product(product: &Product) -> ValidationResult<()> {
         ));
     }
 
-    if product.source_platform.is_empty() {
-        return Err(ValidationError::MissingField("source_platform".to_string()));
+    if product.source_node.is_empty() {
+        return Err(ValidationError::MissingField("source_node".to_string()));
     }
 
     // Timestamp is required
@@ -338,7 +338,7 @@ mod tests {
         Product {
             product_id: "det-001".to_string(),
             product_type: ProductType::Detection as i32,
-            source_platform: "Alpha-3".to_string(),
+            source_node: "Alpha-3".to_string(),
             timestamp: Some(Timestamp {
                 seconds: 1702000000,
                 nanos: 0,
@@ -382,11 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_source_platform() {
+    fn test_missing_source_node() {
         let mut product = valid_detection_product();
-        product.source_platform = String::new();
+        product.source_node = String::new();
         let err = validate_product(&product).unwrap_err();
-        assert!(matches!(err, ValidationError::MissingField(f) if f == "source_platform"));
+        assert!(matches!(err, ValidationError::MissingField(f) if f == "source_node"));
     }
 
     #[test]
@@ -425,7 +425,7 @@ mod tests {
         let product = Product {
             product_id: "cls-001".to_string(),
             product_type: ProductType::Classification as i32,
-            source_platform: "Alpha-3".to_string(),
+            source_node: "Alpha-3".to_string(),
             timestamp: Some(Timestamp {
                 seconds: 1702000000,
                 nanos: 0,
@@ -450,7 +450,7 @@ mod tests {
         let product = Product {
             product_id: "emb-001".to_string(),
             product_type: ProductType::Embedding as i32,
-            source_platform: "Alpha-3".to_string(),
+            source_node: "Alpha-3".to_string(),
             timestamp: Some(Timestamp {
                 seconds: 1702000000,
                 nanos: 0,
@@ -476,7 +476,7 @@ mod tests {
         let product = Product {
             product_id: "emb-001".to_string(),
             product_type: ProductType::Embedding as i32,
-            source_platform: "Alpha-3".to_string(),
+            source_node: "Alpha-3".to_string(),
             timestamp: Some(Timestamp {
                 seconds: 1702000000,
                 nanos: 0,

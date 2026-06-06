@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn test_cot_event_with_group() {
         let event = CotEvent::builder()
-            .uid("PLATFORM-001")
+            .uid("NODE-001")
             .cot_type(CotType::new("a-f-G-U-C"))
             .point(CotPoint::new(33.7749, -84.3958))
             .group("Alpha-Team", "Team Member")

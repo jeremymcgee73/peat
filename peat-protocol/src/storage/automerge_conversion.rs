@@ -432,7 +432,7 @@ mod tests {
     fn test_node_config_roundtrip() {
         let node = NodeConfig {
             id: "node-123".to_string(),
-            platform_type: "UAV".to_string(),
+            node_type: "UAV".to_string(),
             capabilities: vec![Capability {
                 id: "cap-1".to_string(),
                 name: "ISR Capability".to_string(),
@@ -457,7 +457,7 @@ mod tests {
         let restored = automerge_to_node_config(&doc).expect("Failed to convert from Automerge");
 
         assert_eq!(restored.id, node.id);
-        assert_eq!(restored.platform_type, node.platform_type);
+        assert_eq!(restored.node_type, node.node_type);
         assert_eq!(restored.capabilities.len(), node.capabilities.len());
     }
 

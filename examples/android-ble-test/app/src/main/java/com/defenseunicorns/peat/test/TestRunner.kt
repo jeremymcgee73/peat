@@ -55,7 +55,7 @@ class TestRunner(
     private var nodeHandle: Long = 0L
     private var bleClient: BleGattClient? = null
     private var discoveredDevice: BleGattClient.DiscoveredDevice? = null
-    private var quicPlatformReceived = false
+    private var quicNodeReceived = false
     private var mdnsDiscovered = false
 
     fun setLogCallback(callback: LogCallback) {
@@ -106,13 +106,13 @@ class TestRunner(
             if (!phase5GattSync()) return results
 
             if (isDualTransport) {
-                // Publish platform first so it's in local store before sync
-                if (!phase6PublishPlatform()) return results
+                // Publish node first so it's in local store before sync
+                if (!phase6PublishNode()) return results
                 // mDNS discovery — records pass/fail but doesn't abort
                 phase7MdnsDiscovery()
                 // QUIC peer connect — direct connect fallback if mDNS failed
                 if (!phase8PeerConnect()) return results
-                // Verify we received the Pi's platform
+                // Verify we received the Pi's node
                 if (!phase9QuicDataReceived()) return results
                 // BLE state + verification (10-11)
                 if (!phase10SignalBleState()) return results
@@ -350,14 +350,14 @@ class TestRunner(
         } catch (_: Throwable) { false }
     }
 
-    // Phase 6: Publish our platform via QUIC (before connecting, so it's in local store for sync)
-    private fun phase6PublishPlatform(): Boolean {
+    // Phase 6: Publish our node via QUIC (before connecting, so it's in local store for sync)
+    private fun phase6PublishNode(): Boolean {
         return try {
-            val platformJson = """
+            val nodeJson = """
                 {
                     "id": "android-dual-test",
                     "name": "ANDROID-DUAL",
-                    "platform_type": "HANDHELD",
+                    "node_type": "HANDHELD",
                     "lat": 33.749,
                     "lon": -84.388,
                     "hae": 0.0,
@@ -367,22 +367,22 @@ class TestRunner(
                 }
             """.trimIndent()
 
-            val ok = PeatJni.publishPlatformJni(nodeHandle, platformJson)
-            recordPhase(6, "Publish Platform", ok,
-                if (ok) "android-dual-test published (pre-connect)" else "publishPlatformJni returned false")
+            val ok = PeatJni.publishNodeJni(nodeHandle, nodeJson)
+            recordPhase(6, "Publish Node", ok,
+                if (ok) "android-dual-test published (pre-connect)" else "publishNodeJni returned false")
         } catch (e: Throwable) {
-            recordPhase(6, "Publish Platform", false, "${e.javaClass.simpleName}: ${e.message}")
+            recordPhase(6, "Publish Node", false, "${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
-    // Phase 9: Poll for PI-DUAL platform from rpi-ci (up to 30s)
+    // Phase 9: Poll for PI-DUAL node from rpi-ci (up to 30s)
     private fun phase9QuicDataReceived(): Boolean {
         return try {
             var found = false
-            var platformName = ""
+            var nodeName = ""
             for (i in 1..60) {
                 Thread.sleep(500)
-                val json = PeatJni.getPlatformsJni(nodeHandle)
+                val json = PeatJni.getNodesJni(nodeHandle)
                 try {
                     val arr = JSONArray(json)
                     for (j in 0 until arr.length()) {
@@ -390,7 +390,7 @@ class TestRunner(
                         val name = p.optString("name", "")
                         if (name == "PI-DUAL" || name == "PI-QUIC" || p.optString("id", "") == "pi-quic-test") {
                             found = true
-                            platformName = name
+                            nodeName = name
                             break
                         }
                     }
@@ -400,10 +400,10 @@ class TestRunner(
                 if (found) break
             }
 
-            quicPlatformReceived = found
+            quicNodeReceived = found
             recordPhase(9, "QUIC Data Received", found,
-                if (found) "platform \"$platformName\" via QUIC/mDNS"
-                else "PI-DUAL platform not received within 30s")
+                if (found) "node \"$nodeName\" via QUIC/mDNS"
+                else "PI-DUAL node not received within 30s")
         } catch (e: Throwable) {
             recordPhase(9, "QUIC Data Received", false, "${e.javaClass.simpleName}: ${e.message}")
         }
@@ -436,9 +436,9 @@ class TestRunner(
             val blePeers = PeatJni.blePeerCountJni(nodeHandle)
             val bleAvailable = PeatJni.bleIsAvailableJni(nodeHandle)
 
-            val passed = irohPeers >= 1 && blePeers >= 1 && quicPlatformReceived && bleAvailable
+            val passed = irohPeers >= 1 && blePeers >= 1 && quicNodeReceived && bleAvailable
             recordPhase(11, "Dual Transport Verified", passed,
-                "iroh=$irohPeers, ble=$blePeers, quic_data=${if (quicPlatformReceived) "OK" else "MISSING"}")
+                "iroh=$irohPeers, ble=$blePeers, quic_data=${if (quicNodeReceived) "OK" else "MISSING"}")
         } catch (e: Throwable) {
             recordPhase(11, "Dual Transport Verified", false, "${e.javaClass.simpleName}: ${e.message}")
         }
@@ -490,7 +490,7 @@ class TestRunner(
     private fun phase12HoldForSync(): Boolean {
         return try {
             log("  Holding connection for remote peer sync (15s)...")
-            // Stay connected so the Pi can receive our ANDROID-DUAL platform
+            // Stay connected so the Pi can receive our ANDROID-DUAL node
             for (i in 1..15) {
                 Thread.sleep(1000)
                 if (i % 5 == 0) {

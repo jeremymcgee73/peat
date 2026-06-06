@@ -211,7 +211,7 @@ pub enum DeviceType {
     Ugv,
     /// Command and Control station
     C2Station,
-    /// Sensor platform
+    /// Sensor node
     Sensor,
     /// Communications relay
     Relay,

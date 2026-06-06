@@ -538,8 +538,8 @@ mod descriptors {
                     format: FieldFormat::Text,
                 },
                 FieldDescriptor {
-                    name: "platform_type",
-                    label: "Platform",
+                    name: "node_type",
+                    label: "Node",
                     format: FieldFormat::Text,
                 },
                 FieldDescriptor {
@@ -973,7 +973,7 @@ mod tests {
         pub fn node_config() -> Value {
             json!({
                 "id": "node-1",
-                "platform_type": "UAV",
+                "node_type": "UAV",
                 "capabilities": [],
                 "comm_range_m": 1000.0,
                 "max_speed_mps": 10.0,

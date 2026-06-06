@@ -130,8 +130,3 @@ pub use model_distribution::{
     ModelDistribution, ModelDistributionHandle, ModelOperationalStatus, NodeModelStatus,
     VariantSelector,
 };
-
-// Legacy compatibility aliases (`Platform*` retained as a pre-ADR-066 alias;
-// earlier military-vocabulary aliases were removed alongside the
-// Cell/Cohort/Federation/Coalition rename in peat#904).
-pub use node_store::NodeStore as PlatformStore;

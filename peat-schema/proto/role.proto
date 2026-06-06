@@ -64,7 +64,7 @@ message RoleScoringFactors {
   // Operator MOS match score (0.0 - 1.0)
   float mos_score = 2;
 
-  // Platform health score (0.0 - 1.0)
+  // Node health score (0.0 - 1.0)
   float health_score = 3;
 
   // Fuel/endurance score (0.0 - 1.0)

@@ -129,11 +129,11 @@ impl CompositionRule for DetectionReliabilityRule {
 
 /// Rule for ensuring continuous coverage through temporal overlap
 ///
-/// Multiple platforms with overlapping coverage windows ensure continuous monitoring
+/// Multiple nodes with overlapping coverage windows ensure continuous monitoring
 /// of an area without gaps.
 pub struct ContinuousCoverageRule {
-    /// Minimum number of platforms for continuous coverage
-    min_platforms: usize,
+    /// Minimum number of nodes for continuous coverage
+    min_nodes: usize,
     /// Minimum overlap percentage required (0.0 - 1.0)
     #[allow(dead_code)]
     min_overlap: f32,
@@ -141,9 +141,9 @@ pub struct ContinuousCoverageRule {
 
 impl ContinuousCoverageRule {
     /// Create a new continuous coverage rule
-    pub fn new(min_platforms: usize, min_overlap: f32) -> Self {
+    pub fn new(min_nodes: usize, min_overlap: f32) -> Self {
         Self {
-            min_platforms,
+            min_nodes,
             min_overlap: min_overlap.clamp(0.0, 1.0),
         }
     }
@@ -162,7 +162,7 @@ impl CompositionRule for ContinuousCoverageRule {
     }
 
     fn description(&self) -> &str {
-        "Ensures continuous area coverage through temporal overlap of multiple platforms"
+        "Ensures continuous area coverage through temporal overlap of multiple nodes"
     }
 
     fn applies_to(&self, capabilities: &[Capability]) -> bool {
@@ -177,7 +177,7 @@ impl CompositionRule for ContinuousCoverageRule {
             })
             .count();
 
-        qualified_sensors >= self.min_platforms
+        qualified_sensors >= self.min_nodes
     }
 
     async fn compose(
@@ -196,7 +196,7 @@ impl CompositionRule for ContinuousCoverageRule {
             })
             .collect();
 
-        if sensors.len() < self.min_platforms {
+        if sensors.len() < self.min_nodes {
             return Ok(CompositionResult::new(vec![], 0.0));
         }
 
@@ -218,7 +218,7 @@ impl CompositionRule for ContinuousCoverageRule {
             0.0
         };
 
-        // Confidence based on number of platforms and individual confidences
+        // Confidence based on number of nodes and individual confidences
         let avg_confidence: f32 =
             sensors.iter().map(|s| s.confidence).sum::<f32>() / sensors.len() as f32;
 
@@ -234,7 +234,7 @@ impl CompositionRule for ContinuousCoverageRule {
         composed.metadata_json = serde_json::to_string(&json!({
             "composition_type": "redundant",
             "pattern": "continuous_coverage",
-            "platform_count": sensors.len(),
+            "node_count": sensors.len(),
             "total_coverage_area": total_coverage,
             "estimated_overlap": overlap_factor,
             "coverage_redundancy": (sensors.len() as f32 * overlap_factor),
@@ -442,7 +442,7 @@ mod tests {
 
         let mut sensor1 = Capability::new(
             "sensor1".to_string(),
-            "Platform 1".to_string(),
+            "Node 1".to_string(),
             CapabilityType::Sensor,
             0.85,
         );
@@ -451,7 +451,7 @@ mod tests {
 
         let mut sensor2 = Capability::new(
             "sensor2".to_string(),
-            "Platform 2".to_string(),
+            "Node 2".to_string(),
             CapabilityType::Sensor,
             0.8,
         );

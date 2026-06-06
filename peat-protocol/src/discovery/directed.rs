@@ -11,7 +11,7 @@
 //! ## Assignment Flow
 //!
 //! 1. **C2 Issues Assignment**: C2 broadcasts `CellAssignment` messages
-//! 2. **Node Receives**: Platforms observe assignments via the sync backend
+//! 2. **Node Receives**: Nodes observe assignments via the sync backend
 //! 3. **Validation**: Node validates assignment (exists, not full, authorized)
 //! 4. **Execution**: Node joins cell and updates state
 //! 5. **Confirmation**: Assignment status tracked in distributed state
@@ -22,7 +22,7 @@
 //! {
 //!   "assignment_id": "assign_123",
 //!   "cell_id": "cell_alpha",
-//!   "platform_ids": ["node_1", "node_2", "node_3"],
+//!   "node_ids": ["node_1", "node_2", "node_3"],
 //!   "issued_by": "c2_controller_1",
 //!   "timestamp": 1698765432,
 //!   "priority": "high"
@@ -72,16 +72,16 @@ pub enum AssignmentStatus {
 
 /// Cell assignment message from C2
 ///
-/// This message is broadcast via the sync backend and contains explicit platform-to-cell
-/// assignments. Platforms observe these messages and execute them if valid.
+/// This message is broadcast via the sync backend and contains explicit node-to-cell
+/// assignments. Nodes observe these messages and execute them if valid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellAssignment {
     /// Unique identifier for this assignment
     pub assignment_id: String,
     /// Target cell ID
     pub cell_id: String,
-    /// List of platform IDs to assign to this cell
-    pub platform_ids: Vec<String>,
+    /// List of node IDs to assign to this cell
+    pub node_ids: Vec<String>,
     /// C2 authority issuing the assignment
     pub issued_by: String,
     /// Unix timestamp when assignment was issued
@@ -99,7 +99,7 @@ impl CellAssignment {
     pub fn new(
         assignment_id: String,
         cell_id: String,
-        platform_ids: Vec<String>,
+        node_ids: Vec<String>,
         issued_by: String,
         priority: AssignmentPriority,
     ) -> Self {
@@ -111,7 +111,7 @@ impl CellAssignment {
         Self {
             assignment_id,
             cell_id,
-            platform_ids,
+            node_ids,
             issued_by,
             timestamp,
             priority,
@@ -126,9 +126,9 @@ impl CellAssignment {
         self
     }
 
-    /// Check if assignment includes a specific platform
-    pub fn includes_platform(&self, platform_id: &str) -> bool {
-        self.platform_ids.iter().any(|id| id == platform_id)
+    /// Check if assignment includes a specific node
+    pub fn includes_node(&self, node_id: &str) -> bool {
+        self.node_ids.iter().any(|id| id == node_id)
     }
 
     /// Mark assignment as in progress
@@ -165,7 +165,7 @@ pub enum ValidationResult {
     /// Cell is full and cannot accept more members
     CellFull,
     /// Node is already in another cell
-    PlatformAlreadyAssigned { current_cell: String },
+    NodeAlreadyAssigned { current_cell: String },
     /// Assignment is from unauthorized source
     Unauthorized,
     /// Assignment has expired
@@ -183,18 +183,18 @@ pub struct DirectedAssignmentManager<B: crate::sync::DataSyncBackend> {
     /// Active assignments being tracked
     assignments: HashMap<String, CellAssignment>,
     /// Node ID of this node
-    my_platform_id: String,
+    my_node_id: String,
     /// Assignment timeout (seconds)
     assignment_timeout: u64,
 }
 
 impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
     /// Create a new directed assignment manager
-    pub fn new(store: CellStore<B>, my_platform_id: String) -> Self {
+    pub fn new(store: CellStore<B>, my_node_id: String) -> Self {
         Self {
             store,
             assignments: HashMap::new(),
-            my_platform_id,
+            my_node_id,
             assignment_timeout: 300, // 5 minutes default
         }
     }
@@ -214,10 +214,10 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
         );
 
         // Check if this assignment applies to us
-        if !assignment.includes_platform(&self.my_platform_id) {
+        if !assignment.includes_node(&self.my_node_id) {
             debug!(
-                "Assignment {} does not include platform {}",
-                assignment.assignment_id, self.my_platform_id
+                "Assignment {} does not include node {}",
+                assignment.assignment_id, self.my_node_id
             );
             return Ok(());
         }
@@ -274,10 +274,10 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
             return Ok(ValidationResult::CellFull);
         }
 
-        // Check if platform is already in a cell
-        if let Some(current_cell) = self.get_current_cell(&self.my_platform_id).await? {
+        // Check if node is already in a cell
+        if let Some(current_cell) = self.get_current_cell(&self.my_node_id).await? {
             if current_cell != assignment.cell_id {
-                return Ok(ValidationResult::PlatformAlreadyAssigned {
+                return Ok(ValidationResult::NodeAlreadyAssigned {
                     current_cell: current_cell.clone(),
                 });
             }
@@ -296,9 +296,9 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
 
         assignment.mark_in_progress();
 
-        // Add platform to cell
+        // Add node to cell
         self.store
-            .add_member(&assignment.cell_id, self.my_platform_id.clone())
+            .add_member(&assignment.cell_id, self.my_node_id.clone())
             .await?;
 
         assignment.mark_completed();
@@ -313,12 +313,12 @@ impl<B: crate::sync::DataSyncBackend> DirectedAssignmentManager<B> {
         Ok(())
     }
 
-    /// Get the current cell for a platform
-    async fn get_current_cell(&self, platform_id: &str) -> Result<Option<String>> {
+    /// Get the current cell for a node
+    async fn get_current_cell(&self, node_id: &str) -> Result<Option<String>> {
         let valid_cells = self.store.get_valid_cells().await?;
 
         for cell in valid_cells {
-            if cell.is_member(platform_id) {
+            if cell.is_member(node_id) {
                 return Ok(cell.config.as_ref().map(|c| c.id.clone()));
             }
         }

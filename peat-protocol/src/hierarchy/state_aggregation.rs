@@ -901,7 +901,7 @@ mod tests {
         fuel: u32,
         health: SchemaHealthStatus,
     ) -> (NodeConfig, NodeState) {
-        let mut config = NodeConfig::new("TestPlatform".to_string());
+        let mut config = NodeConfig::new("TestNode".to_string());
         config.id = id.to_string();
         config.add_capability(Capability::new(
             format!("{}_sensor", id),

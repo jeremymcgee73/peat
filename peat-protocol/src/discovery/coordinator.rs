@@ -7,16 +7,16 @@
 //! The DiscoveryCoordinator manages:
 //! - Phase state transitions (Discovery → Cell)
 //! - Discovery timeout management (default 60s)
-//! - Tracking unassigned platforms
+//! - Tracking unassigned nodes
 //! - Discovery metrics collection
 //! - Re-bootstrap on failure
 //!
 //! ## Discovery Strategies
 //!
 //! Three strategies are supported:
-//! 1. **Geographic Self-Organization** (E3.1) - Platforms form cells based on proximity
+//! 1. **Geographic Self-Organization** (E3.1) - Nodes form cells based on proximity
 //! 2. **C2-Directed Assignment** (E3.2) - C2 explicitly assigns nodes to cells
-//! 3. **Capability-Based Queries** (E3.3) - Platforms query and form cells by capabilities
+//! 3. **Capability-Based Queries** (E3.3) - Nodes query and form cells by capabilities
 //!
 //! ## State Machine
 //!
@@ -79,11 +79,11 @@ pub enum BootstrapStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryMetrics {
     /// Total nodes participating
-    pub total_platforms: usize,
-    /// Platforms successfully assigned to cells
-    pub assigned_platforms: usize,
-    /// Platforms still unassigned
-    pub unassigned_platforms: usize,
+    pub total_nodes: usize,
+    /// Nodes successfully assigned to cells
+    pub assigned_nodes: usize,
+    /// Nodes still unassigned
+    pub unassigned_nodes: usize,
     /// Number of cells formed
     pub cells_formed: usize,
     /// Time elapsed since bootstrap start (seconds)
@@ -99,10 +99,10 @@ pub struct DiscoveryMetrics {
 impl DiscoveryMetrics {
     /// Calculate assignment rate (0.0 - 1.0)
     pub fn assignment_rate(&self) -> f32 {
-        if self.total_platforms == 0 {
+        if self.total_nodes == 0 {
             return 0.0;
         }
-        self.assigned_platforms as f32 / self.total_platforms as f32
+        self.assigned_nodes as f32 / self.total_nodes as f32
     }
 
     /// Calculate average cell size
@@ -110,7 +110,7 @@ impl DiscoveryMetrics {
         if self.cells_formed == 0 {
             return 0.0;
         }
-        self.assigned_platforms as f32 / self.cells_formed as f32
+        self.assigned_nodes as f32 / self.cells_formed as f32
     }
 
     /// Check if bootstrap was successful (>90% assigned)
@@ -121,7 +121,7 @@ impl DiscoveryMetrics {
 
 /// Discovery Coordinator
 ///
-/// Manages the bootstrap phase lifecycle for a platform or simulation.
+/// Manages the bootstrap phase lifecycle for a node or simulation.
 pub struct DiscoveryCoordinator<B: crate::sync::DataSyncBackend> {
     /// Cell storage
     store: CellStore<B>,
@@ -135,8 +135,8 @@ pub struct DiscoveryCoordinator<B: crate::sync::DataSyncBackend> {
     start_time: Option<Instant>,
     /// Discovery status
     status: BootstrapStatus,
-    /// Tracked platform IDs
-    tracked_platforms: HashSet<String>,
+    /// Tracked node IDs
+    tracked_nodes: HashSet<String>,
     /// Node to cell assignments
     assignments: HashMap<String, String>,
     /// Message count (optional tracking)
@@ -153,7 +153,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
             timeout: Duration::from_secs(DEFAULT_BOOTSTRAP_TIMEOUT_SECS),
             start_time: None,
             status: BootstrapStatus::NotStarted,
-            tracked_platforms: HashSet::new(),
+            tracked_nodes: HashSet::new(),
             assignments: HashMap::new(),
             message_count: 0,
         }
@@ -177,7 +177,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
 
     /// Start the bootstrap phase
     #[instrument(skip(self))]
-    pub fn start_bootstrap(&mut self, platform_ids: Vec<String>) -> Result<()> {
+    pub fn start_bootstrap(&mut self, node_ids: Vec<String>) -> Result<()> {
         if self.status != BootstrapStatus::NotStarted {
             return Err(Error::InvalidTransition {
                 from: format!("{:?}", self.status),
@@ -188,20 +188,20 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
 
         info!(
             "Starting bootstrap with {} nodes using {} strategy",
-            platform_ids.len(),
+            node_ids.len(),
             self.strategy
         );
 
-        self.tracked_platforms = platform_ids.into_iter().collect();
+        self.tracked_nodes = node_ids.into_iter().collect();
         self.start_time = Some(Instant::now());
         self.status = BootstrapStatus::InProgress;
 
         Ok(())
     }
 
-    /// Register a platform assignment to a cell
+    /// Register a node assignment to a cell
     #[instrument(skip(self))]
-    pub fn register_assignment(&mut self, platform_id: String, cell_id: String) -> Result<()> {
+    pub fn register_assignment(&mut self, node_id: String, cell_id: String) -> Result<()> {
         if self.status != BootstrapStatus::InProgress {
             return Err(Error::InvalidTransition {
                 from: format!("{:?}", self.status),
@@ -210,14 +210,14 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
             });
         }
 
-        if !self.tracked_platforms.contains(&platform_id) {
-            warn!("Attempted to assign unknown platform: {}", platform_id);
+        if !self.tracked_nodes.contains(&node_id) {
+            warn!("Attempted to assign unknown node: {}", node_id);
             return Ok(());
         }
 
-        debug!("Registering assignment: {} → cell {}", platform_id, cell_id);
+        debug!("Registering assignment: {} → cell {}", node_id, cell_id);
 
-        self.assignments.insert(platform_id, cell_id);
+        self.assignments.insert(node_id, cell_id);
         Ok(())
     }
 
@@ -235,17 +235,17 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
         }
     }
 
-    /// Get unassigned platform IDs
-    pub fn unassigned_platforms(&self) -> Vec<String> {
-        self.tracked_platforms
+    /// Get unassigned node IDs
+    pub fn unassigned_nodes(&self) -> Vec<String> {
+        self.tracked_nodes
             .iter()
             .filter(|id| !self.assignments.contains_key(*id))
             .cloned()
             .collect()
     }
 
-    /// Get assigned platform IDs
-    pub fn assigned_platforms(&self) -> Vec<String> {
+    /// Get assigned node IDs
+    pub fn assigned_nodes(&self) -> Vec<String> {
         self.assignments.keys().cloned().collect()
     }
 
@@ -266,7 +266,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
             return Ok(false);
         }
 
-        let all_assigned = self.unassigned_platforms().is_empty();
+        let all_assigned = self.unassigned_nodes().is_empty();
         let timed_out = self.has_timed_out();
 
         if all_assigned {
@@ -276,8 +276,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
         }
 
         if timed_out {
-            let assignment_rate =
-                self.assignments.len() as f32 / self.tracked_platforms.len() as f32;
+            let assignment_rate = self.assignments.len() as f32 / self.tracked_nodes.len() as f32;
 
             if assignment_rate > 0.9 {
                 info!(
@@ -348,7 +347,7 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
         self.start_time = None;
         self.assignments.clear();
         self.message_count = 0;
-        // Keep tracked_platforms for retry
+        // Keep tracked_nodes for retry
 
         Ok(())
     }
@@ -365,9 +364,9 @@ impl<B: crate::sync::DataSyncBackend> DiscoveryCoordinator<B> {
         let cells_formed = self.cells_formed().await?;
 
         Ok(DiscoveryMetrics {
-            total_platforms: self.tracked_platforms.len(),
-            assigned_platforms: self.assignments.len(),
-            unassigned_platforms: self.unassigned_platforms().len(),
+            total_nodes: self.tracked_nodes.len(),
+            assigned_nodes: self.assignments.len(),
+            unassigned_nodes: self.unassigned_nodes().len(),
             cells_formed,
             elapsed_seconds: elapsed,
             strategy: self.strategy,

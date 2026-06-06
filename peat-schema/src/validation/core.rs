@@ -33,8 +33,8 @@ pub fn validate_node_config(config: &NodeConfig) -> ValidationResult<()> {
         return Err(ValidationError::MissingField("id".to_string()));
     }
 
-    if config.platform_type.is_empty() {
-        return Err(ValidationError::MissingField("platform_type".to_string()));
+    if config.node_type.is_empty() {
+        return Err(ValidationError::MissingField("node_type".to_string()));
     }
 
     // Validate all capabilities

@@ -443,13 +443,13 @@ pub fn validate_actuator_spec(spec: &ActuatorSpec) -> ValidationResult<()> {
 /// Validate an actuator state update message
 ///
 /// Validates:
-/// - platform_id is present
+/// - node_id is present
 /// - actuator spec is valid
 /// - status is specified
 /// - timestamp is present
 pub fn validate_actuator_state_update(update: &ActuatorStateUpdate) -> ValidationResult<()> {
-    if update.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if update.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     // Actuator spec is required
@@ -478,7 +478,7 @@ pub fn validate_actuator_state_update(update: &ActuatorStateUpdate) -> Validatio
 ///
 /// Validates:
 /// - command_id is present
-/// - platform_id is present
+/// - node_id is present
 /// - actuator_id is present
 /// - command_type is specified
 /// - issued_at is present
@@ -487,8 +487,8 @@ pub fn validate_actuator_command(cmd: &ActuatorCommand) -> ValidationResult<()> 
         return Err(ValidationError::MissingField("command_id".to_string()));
     }
 
-    if cmd.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if cmd.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     if cmd.actuator_id.is_empty() {
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn test_valid_actuator_state_update() {
         let update = ActuatorStateUpdate {
-            platform_id: "PORT-GATE-1".to_string(),
+            node_id: "PORT-GATE-1".to_string(),
             actuator: Some(valid_barrier_actuator()),
             status: ActuatorStatus::Operational as i32,
             timestamp: Some(Timestamp {
@@ -729,9 +729,9 @@ mod tests {
     }
 
     #[test]
-    fn test_actuator_update_missing_platform_id() {
+    fn test_actuator_update_missing_node_id() {
         let update = ActuatorStateUpdate {
-            platform_id: String::new(),
+            node_id: String::new(),
             actuator: Some(valid_barrier_actuator()),
             status: ActuatorStatus::Operational as i32,
             timestamp: Some(Timestamp {
@@ -740,13 +740,13 @@ mod tests {
             }),
         };
         let err = validate_actuator_state_update(&update).unwrap_err();
-        assert!(matches!(err, ValidationError::MissingField(f) if f == "platform_id"));
+        assert!(matches!(err, ValidationError::MissingField(f) if f == "node_id"));
     }
 
     #[test]
     fn test_actuator_update_unspecified_status() {
         let update = ActuatorStateUpdate {
-            platform_id: "PORT-GATE-1".to_string(),
+            node_id: "PORT-GATE-1".to_string(),
             actuator: Some(valid_barrier_actuator()),
             status: ActuatorStatus::Unspecified as i32,
             timestamp: Some(Timestamp {
@@ -762,7 +762,7 @@ mod tests {
     fn test_valid_actuator_command() {
         let cmd = ActuatorCommand {
             command_id: "CMD-001".to_string(),
-            platform_id: "PORT-GATE-1".to_string(),
+            node_id: "PORT-GATE-1".to_string(),
             actuator_id: "gate-main".to_string(),
             command_type: ActuatorCommandType::ActuatorCommandDisengage as i32,
             target_position: 1.0,
@@ -782,7 +782,7 @@ mod tests {
     fn test_command_missing_command_id() {
         let cmd = ActuatorCommand {
             command_id: String::new(),
-            platform_id: "PORT-GATE-1".to_string(),
+            node_id: "PORT-GATE-1".to_string(),
             actuator_id: "gate-main".to_string(),
             command_type: ActuatorCommandType::ActuatorCommandDisengage as i32,
             target_position: 1.0,
@@ -803,7 +803,7 @@ mod tests {
     fn test_command_expires_before_issued() {
         let cmd = ActuatorCommand {
             command_id: "CMD-001".to_string(),
-            platform_id: "PORT-GATE-1".to_string(),
+            node_id: "PORT-GATE-1".to_string(),
             actuator_id: "gate-main".to_string(),
             command_type: ActuatorCommandType::ActuatorCommandDisengage as i32,
             target_position: 1.0,

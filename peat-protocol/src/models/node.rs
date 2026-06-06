@@ -1,6 +1,6 @@
 //! Node state data structures
 //!
-//! This module defines platform data models with CRDT operations:
+//! This module defines node data models with CRDT operations:
 //! - Static capabilities: G-Set (grow-only set) - capabilities can only be added
 //! - Dynamic state: LWW-Register (last-write-wins) - state updates with timestamps
 //! - Fuel counter: PN-Counter (positive-negative counter) - increments/decrements
@@ -15,18 +15,18 @@ pub use peat_schema::node::v1::{HealthStatus, NodeConfig, NodeState};
 // Extension trait for NodeConfig helper methods
 pub trait NodeConfigExt {
     /// Create a new node configuration (autonomous, no operator)
-    fn new(platform_type: String) -> Self;
+    fn new(node_type: String) -> Self;
 
-    /// Create a new platform with operator binding
+    /// Create a new node with operator binding
     fn with_operator(
-        platform_type: String,
+        node_type: String,
         operator_binding: peat_schema::node::v1::HumanMachinePair,
     ) -> Self;
 
     /// Add a capability (G-Set operation - monotonic add only)
     fn add_capability(&mut self, capability: Capability);
 
-    /// Check if platform has a specific capability type
+    /// Check if node has a specific capability type
     fn has_capability_type(&self, capability_type: crate::models::CapabilityType) -> bool;
 
     /// Get all capabilities of a specific type
@@ -35,10 +35,10 @@ pub trait NodeConfigExt {
         capability_type: crate::models::CapabilityType,
     ) -> Vec<&Capability>;
 
-    /// Check if platform has an operator binding
+    /// Check if node has an operator binding
     fn has_operator(&self) -> bool;
 
-    /// Check if platform is human-operated (has at least one operator)
+    /// Check if node is human-operated (has at least one operator)
     fn is_human_operated(&self) -> bool;
 
     /// Get the primary operator (highest-ranking) if any
@@ -50,15 +50,15 @@ pub trait NodeConfigExt {
     /// Set or update the operator binding
     fn set_operator_binding(&mut self, binding: Option<peat_schema::node::v1::HumanMachinePair>);
 
-    /// Check if platform is autonomous (no operators)
+    /// Check if node is autonomous (no operators)
     fn is_autonomous(&self) -> bool;
 }
 
 impl NodeConfigExt for NodeConfig {
-    fn new(platform_type: String) -> Self {
+    fn new(node_type: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            platform_type,
+            node_type,
             capabilities: Vec::new(),
             comm_range_m: 1000.0,
             max_speed_mps: 10.0,
@@ -68,12 +68,12 @@ impl NodeConfigExt for NodeConfig {
     }
 
     fn with_operator(
-        platform_type: String,
+        node_type: String,
         operator_binding: peat_schema::node::v1::HumanMachinePair,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            platform_type,
+            node_type,
             capabilities: Vec::new(),
             comm_range_m: 1000.0,
             max_speed_mps: 10.0,
@@ -179,10 +179,10 @@ pub trait NodeStateExt {
     /// Replenish fuel (PN-Counter increment operation)
     fn replenish_fuel(&mut self, minutes: u32);
 
-    /// Check if platform is operational
+    /// Check if node is operational
     fn is_operational(&self) -> bool;
 
-    /// Check if platform needs refueling (below 25% capacity)
+    /// Check if node needs refueling (below 25% capacity)
     fn needs_refuel(&self) -> bool;
 
     /// Merge with another state (LWW-Register merge)
@@ -327,7 +327,7 @@ mod tests {
     use crate::models::{AuthorityLevel, BindingType, CapabilityType, HumanMachinePair};
 
     #[test]
-    fn test_platform_config_add_capability() {
+    fn test_node_config_add_capability() {
         let mut config = NodeConfig::new("UAV".to_string());
 
         let cap1 = Capability::new(
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_config_has_capability_type() {
+    fn test_node_config_has_capability_type() {
         let mut config = NodeConfig::new("UAV".to_string());
         assert!(!config.has_capability_type(CapabilityType::Sensor));
 
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_state_lww_operations() {
+    fn test_node_state_lww_operations() {
         let mut state = NodeState::new((37.7, -122.4, 100.0));
         let initial_timestamp = state.timestamp.as_ref().map(|t| t.seconds).unwrap_or(0);
 
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_state_fuel_counter() {
+    fn test_node_state_fuel_counter() {
         let mut state = NodeState::new((0.0, 0.0, 0.0));
         assert_eq!(state.fuel_minutes, 120);
 
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_state_operational_checks() {
+    fn test_node_state_operational_checks() {
         let mut state = NodeState::new((0.0, 0.0, 0.0));
         assert!(state.is_operational());
 
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_state_needs_refuel() {
+    fn test_node_state_needs_refuel() {
         let mut state = NodeState::new((0.0, 0.0, 0.0));
         assert!(!state.needs_refuel());
 
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_state_merge_lww() {
+    fn test_node_state_merge_lww() {
         let mut state1 = NodeState::new((37.7, -122.4, 100.0));
         let mut state2 = state1.clone();
 
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_state_merge_older_ignored() {
+    fn test_node_state_merge_older_ignored() {
         let mut state1 = NodeState::new((37.7, -122.4, 100.0));
         std::thread::sleep(std::time::Duration::from_secs(1));
         state1.update_position((37.8, -122.5, 150.0));
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_config_autonomous() {
+    fn test_node_config_autonomous() {
         let config = NodeConfig::new("UAV".to_string());
 
         assert!(!config.has_operator());
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_config_with_operator() {
+    fn test_node_config_with_operator() {
         use crate::models::{OperatorExt, OperatorRank};
 
         let operator = Operator::new(
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_config_set_operator_binding() {
+    fn test_node_config_set_operator_binding() {
         use crate::models::{OperatorExt, OperatorRank};
 
         let mut config = NodeConfig::new("Robot".to_string());
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_config_multiple_operators() {
+    fn test_node_config_multiple_operators() {
         use crate::models::{OperatorExt, OperatorRank};
 
         // Command vehicle with multiple operators
@@ -608,10 +608,10 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_config_swarm_operator() {
+    fn test_node_config_swarm_operator() {
         use crate::models::{OperatorExt, OperatorRank};
 
-        // One operator controlling multiple platforms
+        // One operator controlling multiple nodes
         let operator = Operator::new(
             "op_1".to_string(),
             "SSG Martinez".to_string(),
@@ -620,7 +620,7 @@ mod tests {
             "11B".to_string(),
         );
 
-        let platform_ids = vec![
+        let node_ids = vec![
             "robot_1".to_string(),
             "robot_2".to_string(),
             "robot_3".to_string(),
@@ -628,7 +628,7 @@ mod tests {
         ];
 
         let binding =
-            HumanMachinePair::new(vec![operator], platform_ids.clone(), BindingType::OneToMany);
+            HumanMachinePair::new(vec![operator], node_ids.clone(), BindingType::OneToMany);
 
         let config = NodeConfig::with_operator("Swarm Control Station".to_string(), binding);
 
@@ -636,13 +636,13 @@ mod tests {
 
         let binding = config.get_operator_binding().unwrap();
         assert_eq!(binding.binding_type, BindingType::OneToMany as i32);
-        assert_eq!(binding.platform_ids.len(), 4);
+        assert_eq!(binding.node_ids.len(), 4);
         assert_eq!(binding.operators.len(), 1);
     }
 
     #[test]
     fn test_node_config_get_capabilities_by_type_multiple() {
-        let mut config = NodeConfig::new("Multi-sensor platform".to_string());
+        let mut config = NodeConfig::new("Multi-sensor node".to_string());
 
         // Add multiple sensors
         for i in 1..=3 {

@@ -20,14 +20,14 @@ use serde_json::{json, Value};
 /// Team moves at the speed of the slowest member. This is critical for
 /// coordinated operations where the team must stay together.
 pub struct TeamSpeedConstraintRule {
-    /// Minimum number of platforms for team movement
-    min_platforms: usize,
+    /// Minimum number of nodes for team movement
+    min_nodes: usize,
 }
 
 impl TeamSpeedConstraintRule {
     /// Create a new team speed constraint rule
-    pub fn new(min_platforms: usize) -> Self {
-        Self { min_platforms }
+    pub fn new(min_nodes: usize) -> Self {
+        Self { min_nodes }
     }
 }
 
@@ -59,7 +59,7 @@ impl CompositionRule for TeamSpeedConstraintRule {
             })
             .count();
 
-        mobility_count >= self.min_platforms
+        mobility_count >= self.min_nodes
     }
 
     async fn compose(
@@ -78,7 +78,7 @@ impl CompositionRule for TeamSpeedConstraintRule {
             })
             .collect();
 
-        if mobility_caps.len() < self.min_platforms {
+        if mobility_caps.len() < self.min_nodes {
             return Ok(CompositionResult::new(vec![], 0.0));
         }
 
@@ -123,8 +123,8 @@ impl CompositionRule for TeamSpeedConstraintRule {
             "composition_type": "constraint",
             "pattern": "team_speed",
             "team_speed": team_speed,
-            "platform_count": mobility_caps.len(),
-            "limiting_platform": slowest.id,
+            "node_count": mobility_caps.len(),
+            "limiting_node": slowest.id,
             "individual_speeds": speeds,
             "description": "Team movement speed constrained by slowest member"
         }))
@@ -300,17 +300,17 @@ impl CompositionRule for CommunicationRangeConstraintRule {
 
 /// Rule for determining mission duration constraint
 ///
-/// Mission duration is limited by the platform with shortest endurance.
+/// Mission duration is limited by the node with shortest endurance.
 /// Critical for planning operations that require the entire team.
 pub struct MissionDurationConstraintRule {
-    /// Minimum number of platforms
-    min_platforms: usize,
+    /// Minimum number of nodes
+    min_nodes: usize,
 }
 
 impl MissionDurationConstraintRule {
     /// Create a new mission duration constraint rule
-    pub fn new(min_platforms: usize) -> Self {
-        Self { min_platforms }
+    pub fn new(min_nodes: usize) -> Self {
+        Self { min_nodes }
     }
 }
 
@@ -327,11 +327,11 @@ impl CompositionRule for MissionDurationConstraintRule {
     }
 
     fn description(&self) -> &str {
-        "Determines maximum mission duration based on shortest platform endurance"
+        "Determines maximum mission duration based on shortest node endurance"
     }
 
     fn applies_to(&self, capabilities: &[Capability]) -> bool {
-        let platforms_with_endurance = capabilities
+        let nodes_with_endurance = capabilities
             .iter()
             .filter(|c| {
                 serde_json::from_str::<Value>(&c.metadata_json)
@@ -341,7 +341,7 @@ impl CompositionRule for MissionDurationConstraintRule {
             })
             .count();
 
-        platforms_with_endurance >= self.min_platforms
+        nodes_with_endurance >= self.min_nodes
     }
 
     async fn compose(
@@ -349,7 +349,7 @@ impl CompositionRule for MissionDurationConstraintRule {
         capabilities: &[Capability],
         _context: &CompositionContext,
     ) -> Result<CompositionResult> {
-        let platforms: Vec<&Capability> = capabilities
+        let nodes: Vec<&Capability> = capabilities
             .iter()
             .filter(|c| {
                 serde_json::from_str::<Value>(&c.metadata_json)
@@ -359,12 +359,12 @@ impl CompositionRule for MissionDurationConstraintRule {
             })
             .collect();
 
-        if platforms.len() < self.min_platforms {
+        if nodes.len() < self.min_nodes {
             return Ok(CompositionResult::new(vec![], 0.0));
         }
 
         // Get endurance values
-        let endurances: Vec<f64> = platforms
+        let endurances: Vec<f64> = nodes
             .iter()
             .filter_map(|c| {
                 serde_json::from_str::<Value>(&c.metadata_json)
@@ -376,8 +376,8 @@ impl CompositionRule for MissionDurationConstraintRule {
         // Mission duration is limited by shortest endurance
         let mission_duration = endurances.iter().cloned().fold(f64::INFINITY, f64::min);
 
-        // Find limiting platform
-        let limiting_platform = platforms
+        // Find limiting node
+        let limiting_node = nodes
             .iter()
             .min_by(|a, b| {
                 let endurance_a = serde_json::from_str::<Value>(&a.metadata_json)
@@ -392,8 +392,8 @@ impl CompositionRule for MissionDurationConstraintRule {
             })
             .unwrap();
 
-        // Confidence based on limiting platform
-        let mission_confidence = limiting_platform.confidence;
+        // Confidence based on limiting node
+        let mission_confidence = limiting_node.confidence;
 
         let mut composed = Capability::new(
             format!("constraint_mission_duration_{}", uuid::Uuid::new_v4()),
@@ -405,14 +405,14 @@ impl CompositionRule for MissionDurationConstraintRule {
             "composition_type": "constraint",
             "pattern": "mission_duration",
             "mission_duration_minutes": mission_duration,
-            "platform_count": platforms.len(),
-            "limiting_platform": limiting_platform.id,
+            "node_count": nodes.len(),
+            "limiting_node": limiting_node.id,
             "individual_endurances": endurances,
             "description": "Mission duration constrained by shortest endurance"
         }))
         .unwrap_or_default();
 
-        let contributor_ids: Vec<String> = platforms.iter().map(|c| c.id.clone()).collect();
+        let contributor_ids: Vec<String> = nodes.iter().map(|c| c.id.clone()).collect();
 
         Ok(CompositionResult::new(vec![composed], mission_confidence)
             .with_contributors(contributor_ids))
@@ -428,25 +428,25 @@ mod tests {
     async fn test_team_speed_constraint() {
         let rule = TeamSpeedConstraintRule::default();
 
-        let mut fast_platform = Capability::new(
+        let mut fast_node = Capability::new(
             "fast1".to_string(),
             "Fast Drone".to_string(),
             CapabilityType::Mobility,
             0.9,
         );
-        fast_platform.metadata_json =
+        fast_node.metadata_json =
             serde_json::to_string(&json!({"max_speed": 20.0})).unwrap_or_default();
 
-        let mut slow_platform = Capability::new(
+        let mut slow_node = Capability::new(
             "slow1".to_string(),
             "Slow Ground Vehicle".to_string(),
             CapabilityType::Mobility,
             0.85,
         );
-        slow_platform.metadata_json =
+        slow_node.metadata_json =
             serde_json::to_string(&json!({"max_speed": 5.0})).unwrap_or_default();
 
-        let caps = vec![fast_platform, slow_platform];
+        let caps = vec![fast_node, slow_node];
         let context = CompositionContext::new(vec!["node1".to_string(), "node2".to_string()]);
 
         assert!(rule.applies_to(&caps));
@@ -459,7 +459,7 @@ mod tests {
         // Team speed should be limited by slowest member (5.0 m/s)
         let metadata: Value = serde_json::from_str(&composed.metadata_json).unwrap();
         assert_eq!(metadata["team_speed"].as_f64().unwrap(), 5.0);
-        assert_eq!(metadata["limiting_platform"].as_str().unwrap(), "slow1");
+        assert_eq!(metadata["limiting_node"].as_str().unwrap(), "slow1");
         // Confidence should match slowest member
         assert_eq!(composed.confidence, 0.85);
     }
@@ -541,7 +541,7 @@ mod tests {
         let rule = MissionDurationConstraintRule::default();
 
         let mut long_endurance = Capability::new(
-            "platform1".to_string(),
+            "node1".to_string(),
             "Fixed-Wing UAV".to_string(),
             CapabilityType::Mobility,
             0.95,
@@ -550,7 +550,7 @@ mod tests {
             serde_json::to_string(&json!({"endurance_minutes": 120.0})).unwrap_or_default(); // 2 hours
 
         let mut short_endurance = Capability::new(
-            "platform2".to_string(),
+            "node2".to_string(),
             "Quadcopter".to_string(),
             CapabilityType::Mobility,
             0.8,
@@ -571,41 +571,41 @@ mod tests {
         // Mission duration limited by shortest endurance (25 minutes)
         let metadata: Value = serde_json::from_str(&composed.metadata_json).unwrap();
         assert_eq!(metadata["mission_duration_minutes"].as_f64().unwrap(), 25.0);
-        assert_eq!(metadata["limiting_platform"].as_str().unwrap(), "platform2");
-        // Confidence matches limiting platform
+        assert_eq!(metadata["limiting_node"].as_str().unwrap(), "node2");
+        // Confidence matches limiting node
         assert_eq!(composed.confidence, 0.8);
     }
 
     #[tokio::test]
-    async fn test_constraint_rules_dont_apply_insufficient_platforms() {
+    async fn test_constraint_rules_dont_apply_insufficient_nodes() {
         let speed_rule = TeamSpeedConstraintRule::default();
         let comm_rule = CommunicationRangeConstraintRule::default();
         let duration_rule = MissionDurationConstraintRule::default();
 
-        // Single platform
-        let mut single_platform = Capability::new(
-            "platform1".to_string(),
-            "Solo Platform".to_string(),
+        // Single node
+        let mut single_node = Capability::new(
+            "node1".to_string(),
+            "Solo Node".to_string(),
             CapabilityType::Mobility,
             0.9,
         );
-        single_platform.metadata_json =
+        single_node.metadata_json =
             serde_json::to_string(&json!({"max_speed": 10.0, "endurance_minutes": 60.0}))
                 .unwrap_or_default();
 
-        let caps = vec![single_platform];
+        let caps = vec![single_node];
 
-        // All rules require at least 2 platforms
+        // All rules require at least 2 nodes
         assert!(!speed_rule.applies_to(&caps));
         assert!(!comm_rule.applies_to(&caps));
         assert!(!duration_rule.applies_to(&caps));
     }
 
     #[tokio::test]
-    async fn test_team_speed_with_three_platforms() {
+    async fn test_team_speed_with_three_nodes() {
         let rule = TeamSpeedConstraintRule::default();
 
-        let platforms: Vec<Capability> = vec![
+        let nodes: Vec<Capability> = vec![
             ("fast", 25.0, 0.95),
             ("medium", 15.0, 0.9),
             ("slow", 8.0, 0.85),
@@ -613,7 +613,7 @@ mod tests {
         .into_iter()
         .map(|(name, speed, confidence)| {
             let mut cap = Capability::new(
-                format!("platform_{}", name),
+                format!("node_{}", name),
                 name.to_string(),
                 CapabilityType::Mobility,
                 confidence,
@@ -630,39 +630,39 @@ mod tests {
             "node3".to_string(),
         ]);
 
-        let result = rule.compose(&platforms, &context).await.unwrap();
+        let result = rule.compose(&nodes, &context).await.unwrap();
         assert!(result.has_compositions());
 
         let composed = &result.composed_capabilities[0];
         // Team speed constrained by slowest (8.0)
         let metadata: Value = serde_json::from_str(&composed.metadata_json).unwrap();
         assert_eq!(metadata["team_speed"].as_f64().unwrap(), 8.0);
-        assert_eq!(metadata["platform_count"].as_u64().unwrap(), 3);
+        assert_eq!(metadata["node_count"].as_u64().unwrap(), 3);
     }
 
     #[tokio::test]
     async fn test_constraint_metadata_accuracy() {
         let rule = TeamSpeedConstraintRule::default();
 
-        let mut platform1 = Capability::new(
+        let mut node1 = Capability::new(
             "p1".to_string(),
-            "Platform 1".to_string(),
+            "Node 1".to_string(),
             CapabilityType::Mobility,
             0.9,
         );
-        platform1.metadata_json =
+        node1.metadata_json =
             serde_json::to_string(&json!({"max_speed": 12.5})).unwrap_or_default();
 
-        let mut platform2 = Capability::new(
+        let mut node2 = Capability::new(
             "p2".to_string(),
-            "Platform 2".to_string(),
+            "Node 2".to_string(),
             CapabilityType::Mobility,
             0.85,
         );
-        platform2.metadata_json =
+        node2.metadata_json =
             serde_json::to_string(&json!({"max_speed": 18.3})).unwrap_or_default();
 
-        let caps = vec![platform1, platform2];
+        let caps = vec![node1, node2];
         let context = CompositionContext::new(vec!["node1".to_string(), "node2".to_string()]);
 
         let result = rule.compose(&caps, &context).await.unwrap();

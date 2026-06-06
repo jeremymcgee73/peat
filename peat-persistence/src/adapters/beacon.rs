@@ -293,7 +293,7 @@ mod tests {
         GeographicBeacon::new(
             node_id.to_string(),
             GeoPosition::new(37.7749, -122.4194), // San Francisco
-            HierarchyLevel::Platform,
+            HierarchyLevel::Node,
         )
     }
 
@@ -306,12 +306,12 @@ mod tests {
         let beacon1 = GeographicBeacon::new(
             "node-1".to_string(),
             GeoPosition::new(37.7749, -122.4194), // San Francisco
-            HierarchyLevel::Platform,
+            HierarchyLevel::Node,
         );
         let beacon2 = GeographicBeacon::new(
             "node-2".to_string(),
             GeoPosition::new(34.0522, -118.2437), // Los Angeles
-            HierarchyLevel::Platform,
+            HierarchyLevel::Node,
         );
 
         // Save beacons

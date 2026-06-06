@@ -8,9 +8,9 @@
 //! # What it does
 //!
 //! 1. Creates a PeatNode with FUNCTEST credentials, BLE enabled, port 42009
-//! 2. Starts sync and publishes a "PI-DUAL" platform
+//! 2. Starts sync and publishes a "PI-DUAL" node
 //! 3. Prints `PEER_NODE_ID=<hex>` so the Makefile can capture it
-//! 4. Polls for the Android's "ANDROID-DUAL" platform (up to 90s)
+//! 4. Polls for the Android's "ANDROID-DUAL" node (up to 90s)
 //! 5. Reports PASS/FAIL and exits
 //!
 //! # Building (aarch64 cross-compile for Raspberry Pi)
@@ -81,11 +81,11 @@ fn main() {
     println!("\nPEER_NODE_ID={}", node_id);
     println!("Endpoint: {}", node.endpoint_addr());
 
-    // Publish our platform so Android can discover it via QUIC sync
-    let platform_json = serde_json::json!({
+    // Publish our node so Android can discover it via QUIC sync
+    let node_json = serde_json::json!({
         "id": "pi-dual-test",
         "name": "PI-DUAL",
-        "platform_type": "SENSOR",
+        "node_type": "SENSOR",
         "lat": 33.749,
         "lon": -84.388,
         "hae": 0.0,
@@ -94,10 +94,10 @@ fn main() {
         "readiness": 1.0
     });
 
-    match node.put_document("platforms", "pi-dual-test", &platform_json.to_string()) {
-        Ok(()) => println!("Published platform: PI-DUAL"),
+    match node.put_document("nodes", "pi-dual-test", &node_json.to_string()) {
+        Ok(()) => println!("Published node: PI-DUAL"),
         Err(e) => {
-            eprintln!("Failed to publish platform: {:?}", e);
+            eprintln!("Failed to publish node: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -109,7 +109,7 @@ fn main() {
     }
     println!("Sync started, waiting for Android peer...\n");
 
-    // Poll for Android's platform (up to 180s — allows time for BLE retries + QUIC handshake)
+    // Poll for Android's node (up to 180s — allows time for BLE retries + QUIC handshake)
     let timeout = std::time::Duration::from_secs(180);
     let start = std::time::Instant::now();
     let poll_interval = std::time::Duration::from_secs(2);
@@ -119,18 +119,18 @@ fn main() {
         std::thread::sleep(poll_interval);
 
         let peers = node.peer_count();
-        let platforms = node.get_platforms().unwrap_or_default();
+        let nodes = node.get_nodes().unwrap_or_default();
 
         print!(
-            "\r[{:.0}s] peers={}, platforms={}",
+            "\r[{:.0}s] peers={}, nodes={}",
             start.elapsed().as_secs_f64(),
             peers,
-            platforms.len()
+            nodes.len()
         );
 
-        for p in &platforms {
+        for p in &nodes {
             if p.name == "ANDROID-DUAL" || p.id == "android-dual-test" {
-                println!("\n\nReceived platform: {} (id={})", p.name, p.id);
+                println!("\n\nReceived node: {} (id={})", p.name, p.id);
                 found = true;
                 break;
             }
@@ -144,14 +144,14 @@ fn main() {
     println!();
     if found {
         println!("Test PASSED");
-        // Stay alive so Android can complete remaining test phases (mDNS, QUIC, platform sync).
-        // The platform may arrive via BLE before mDNS/QUIC establishes — exiting immediately
+        // Stay alive so Android can complete remaining test phases (mDNS, QUIC, node sync).
+        // The node may arrive via BLE before mDNS/QUIC establishes — exiting immediately
         // would kill the Iroh endpoint and mDNS service before the Android test finishes.
         println!("Staying alive for 60s to allow remaining test phases...");
         std::thread::sleep(std::time::Duration::from_secs(60));
         std::process::exit(0);
     } else {
-        println!("Test FAILED — Android platform not received within 180s");
+        println!("Test FAILED — Android node not received within 180s");
         std::process::exit(1);
     }
 }

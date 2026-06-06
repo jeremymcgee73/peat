@@ -1,7 +1,7 @@
 // Actuator definitions for CAP Protocol
 // Version: 1.0.0
 //
-// This module defines actuator specifications for platform control systems.
+// This module defines actuator specifications for node control systems.
 // Actuators include linear/rotary motors, grippers, valves, and other
 // controlled mechanisms. Relevant for port operations (gates, barriers, cranes),
 // robotic systems, and weapon/effector interfaces.
@@ -65,7 +65,7 @@ enum ActuatorType {
 enum ActuatorMount {
   ACTUATOR_MOUNT_UNSPECIFIED = 0;
 
-  // Permanently fixed to structure or platform
+  // Permanently fixed to structure or node
   ACTUATOR_MOUNT_FIXED = 1;
 
   // On an articulated base (can be repositioned)
@@ -305,7 +305,7 @@ message LockState {
 
 // Complete actuator specification
 message ActuatorSpec {
-  // Unique actuator identifier within the platform
+  // Unique actuator identifier within the node
   // Format: lowercase alphanumeric with hyphens, e.g., "gate-main", "crane-hoist"
   string actuator_id = 1;
 
@@ -371,8 +371,8 @@ enum ActuatorStatus {
 
 // Actuator state update message (flows upward with capability advertisements)
 message ActuatorStateUpdate {
-  // Platform this actuator belongs to
-  string platform_id = 1;
+  // Node this actuator belongs to
+  string node_id = 1;
 
   // Actuator specification with current state
   ActuatorSpec actuator = 2;
@@ -425,8 +425,8 @@ message ActuatorCommand {
   // Command identifier
   string command_id = 1;
 
-  // Target platform
-  string platform_id = 2;
+  // Target node
+  string node_id = 2;
 
   // Target actuator
   string actuator_id = 3;

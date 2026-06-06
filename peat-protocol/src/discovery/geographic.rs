@@ -7,13 +7,13 @@
 //! This module implements a two-layer beacon management system:
 //!
 //! ## Ditto Layer (Mesh Network)
-//! - Each platform maintains ONE beacon document: `platform_beacons/{platform_id}`
+//! - Each node maintains ONE beacon document: `node_beacons/{node_id}`
 //! - Documents have a 30-second TTL for automatic expiration
 //! - Updates are LWW-Register CRDTs (no write conflicts)
-//! - Platforms query by geohash for proximity-based discovery
+//! - Nodes query by geohash for proximity-based discovery
 //!
 //! ## Local Memory Layer (GeographicDiscovery)
-//! - Each platform maintains an in-memory cache of received beacons
+//! - Each node maintains an in-memory cache of received beacons
 //! - Janitor service periodically cleans expired beacons from cache
 //! - Provides defense-in-depth against stale data
 //!
@@ -45,7 +45,7 @@ pub const MIN_CELL_SIZE: usize = 2;
 /// Node beacon for geographic discovery
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeographicBeacon {
-    pub platform_id: String,
+    pub node_id: String,
     pub position: GeoCoordinate,
     pub geohash_cell: String,
     pub operational: bool,
@@ -55,11 +55,7 @@ pub struct GeographicBeacon {
 
 impl GeographicBeacon {
     /// Create a new geographic beacon
-    pub fn new(
-        platform_id: String,
-        position: GeoCoordinate,
-        capabilities: Vec<Capability>,
-    ) -> Self {
+    pub fn new(node_id: String, position: GeoCoordinate, capabilities: Vec<Capability>) -> Self {
         let geohash_cell = encode_geohash(&position, DEFAULT_GEOHASH_PRECISION);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -67,7 +63,7 @@ impl GeographicBeacon {
             .as_secs();
 
         Self {
-            platform_id,
+            node_id,
             position,
             geohash_cell,
             operational: true,
@@ -89,7 +85,7 @@ impl GeographicBeacon {
 #[derive(Debug, Clone)]
 pub struct GeographicCluster {
     pub geohash_cell: String,
-    pub platforms: Vec<GeographicBeacon>,
+    pub nodes: Vec<GeographicBeacon>,
     pub center: GeoCoordinate,
 }
 
@@ -99,32 +95,29 @@ impl GeographicCluster {
         let center = decode_geohash(&geohash_cell)?;
         Ok(Self {
             geohash_cell,
-            platforms: Vec::new(),
+            nodes: Vec::new(),
             center,
         })
     }
 
     /// Add a beacon to the cluster
     pub fn add_beacon(&mut self, beacon: GeographicBeacon) {
-        self.platforms.push(beacon);
+        self.nodes.push(beacon);
     }
 
     /// Remove expired beacons
     pub fn remove_expired(&mut self, current_time: u64) {
-        self.platforms.retain(|b| !b.is_expired(current_time));
+        self.nodes.retain(|b| !b.is_expired(current_time));
     }
 
     /// Check if cluster has enough nodes to form a cell
     pub fn can_form_cell(&self, min_size: usize) -> bool {
-        self.platforms.len() >= min_size
+        self.nodes.len() >= min_size
     }
 
-    /// Get platform IDs in this cluster
-    pub fn platform_ids(&self) -> Vec<String> {
-        self.platforms
-            .iter()
-            .map(|b| b.platform_id.clone())
-            .collect()
+    /// Get node IDs in this cluster
+    pub fn node_ids(&self) -> Vec<String> {
+        self.nodes.iter().map(|b| b.node_id.clone()).collect()
     }
 }
 
@@ -171,15 +164,15 @@ pub fn decode_geohash(hash: &str) -> Result<GeoCoordinate, &'static str> {
 /// ```
 pub struct GeographicDiscovery {
     clusters: HashMap<String, GeographicCluster>,
-    my_platform_id: String,
+    my_node_id: String,
 }
 
 impl GeographicDiscovery {
     /// Create a new geographic discovery manager
-    pub fn new(platform_id: String) -> Self {
+    pub fn new(node_id: String) -> Self {
         Self {
             clusters: HashMap::new(),
-            my_platform_id: platform_id,
+            my_node_id: node_id,
         }
     }
 
@@ -205,8 +198,7 @@ impl GeographicDiscovery {
         }
 
         // Remove empty clusters
-        self.clusters
-            .retain(|_, cluster| !cluster.platforms.is_empty());
+        self.clusters.retain(|_, cluster| !cluster.nodes.is_empty());
     }
 
     /// Find clusters that can form cells
@@ -217,23 +209,21 @@ impl GeographicDiscovery {
             .collect()
     }
 
-    /// Get the cluster containing this platform
+    /// Get the cluster containing this node
     pub fn my_cluster(&self) -> Option<&GeographicCluster> {
-        self.clusters.values().find(|c| {
-            c.platforms
-                .iter()
-                .any(|b| b.platform_id == self.my_platform_id)
-        })
+        self.clusters
+            .values()
+            .find(|c| c.nodes.iter().any(|b| b.node_id == self.my_node_id))
     }
 
-    /// Check if this platform should initiate cell formation
-    /// Returns true if this platform is the "leader" (lowest ID) in its cluster
+    /// Check if this node should initiate cell formation
+    /// Returns true if this node is the "leader" (lowest ID) in its cluster
     pub fn should_initiate_cell_formation(&self) -> bool {
         if let Some(cluster) = self.my_cluster() {
             if cluster.can_form_cell(MIN_CELL_SIZE) {
-                // Check if we're the lowest platform ID (deterministic leader selection)
-                if let Some(min_id) = cluster.platforms.iter().map(|b| &b.platform_id).min() {
-                    return min_id == &self.my_platform_id;
+                // Check if we're the lowest node ID (deterministic leader selection)
+                if let Some(min_id) = cluster.nodes.iter().map(|b| &b.node_id).min() {
+                    return min_id == &self.my_node_id;
                 }
             }
         }
@@ -244,7 +234,7 @@ impl GeographicDiscovery {
     pub fn get_cell_members(&self, max_size: usize) -> Option<Vec<String>> {
         if let Some(cluster) = self.my_cluster() {
             if cluster.can_form_cell(MIN_CELL_SIZE) {
-                let mut members = cluster.platform_ids();
+                let mut members = cluster.node_ids();
                 members.sort(); // Deterministic ordering
                 members.truncate(max_size);
                 return Some(members);
@@ -253,9 +243,9 @@ impl GeographicDiscovery {
         None
     }
 
-    /// Get total number of discovered platforms
-    pub fn total_platforms(&self) -> usize {
-        self.clusters.values().map(|c| c.platforms.len()).sum()
+    /// Get total number of discovered nodes
+    pub fn total_nodes(&self) -> usize {
+        self.clusters.values().map(|c| c.nodes.len()).sum()
     }
 
     /// Get number of active clusters
@@ -308,7 +298,7 @@ mod tests {
 
         let beacon = GeographicBeacon::new("node_1".to_string(), pos, caps);
 
-        assert_eq!(beacon.platform_id, "node_1");
+        assert_eq!(beacon.node_id, "node_1");
         assert_eq!(beacon.position, pos);
         assert!(beacon.geohash_cell.starts_with("9q8yy"));
         assert!(beacon.operational);
@@ -331,7 +321,7 @@ mod tests {
     fn test_cluster_creation() {
         let cluster = GeographicCluster::new("9q8yyk8".to_string()).unwrap();
         assert_eq!(cluster.geohash_cell, "9q8yyk8");
-        assert_eq!(cluster.platforms.len(), 0);
+        assert_eq!(cluster.nodes.len(), 0);
         assert!(!cluster.can_form_cell(2));
     }
 
@@ -346,10 +336,10 @@ mod tests {
         cluster.add_beacon(beacon1);
         cluster.add_beacon(beacon2);
 
-        assert_eq!(cluster.platforms.len(), 2);
+        assert_eq!(cluster.nodes.len(), 2);
         assert!(cluster.can_form_cell(2));
 
-        let ids = cluster.platform_ids();
+        let ids = cluster.node_ids();
         assert!(ids.contains(&"node_1".to_string()));
         assert!(ids.contains(&"node_2".to_string()));
     }
@@ -357,7 +347,7 @@ mod tests {
     #[test]
     fn test_discovery_basic_operations() {
         let mut discovery = GeographicDiscovery::new("node_1".to_string());
-        assert_eq!(discovery.total_platforms(), 0);
+        assert_eq!(discovery.total_nodes(), 0);
         assert_eq!(discovery.cluster_count(), 0);
 
         let pos = GeoCoordinate::new(37.7749, -122.4194, 100.0).unwrap();
@@ -365,7 +355,7 @@ mod tests {
 
         discovery.process_beacon(beacon);
 
-        assert_eq!(discovery.total_platforms(), 1);
+        assert_eq!(discovery.total_nodes(), 1);
         assert_eq!(discovery.cluster_count(), 1);
     }
 
@@ -378,17 +368,17 @@ mod tests {
         let beacon1 = GeographicBeacon::new("node_1".to_string(), pos, vec![]);
         discovery.process_beacon(beacon1);
 
-        // Add another platform in same location
+        // Add another node in same location
         let beacon2 = GeographicBeacon::new("node_2".to_string(), pos, vec![]);
         discovery.process_beacon(beacon2);
 
-        assert_eq!(discovery.total_platforms(), 2);
+        assert_eq!(discovery.total_nodes(), 2);
 
         // Should be able to form cells now
         let formable = discovery.find_formable_cells(2);
         assert_eq!(formable.len(), 1);
 
-        // platform_1 should be leader (lowest ID)
+        // node_1 should be leader (lowest ID)
         assert!(discovery.should_initiate_cell_formation());
 
         // Get cell members
@@ -410,14 +400,14 @@ mod tests {
         // Cluster 2: LA (different geohash)
         let pos2 = GeoCoordinate::new(34.0522, -118.2437, 100.0).unwrap();
         let beacon3 = GeographicBeacon::new("node_3".to_string(), pos2, vec![]);
-        let beacon4 = GeographicBeacon::new("platform_4".to_string(), pos2, vec![]);
+        let beacon4 = GeographicBeacon::new("node_4".to_string(), pos2, vec![]);
 
         discovery.process_beacon(beacon1);
         discovery.process_beacon(beacon2);
         discovery.process_beacon(beacon3);
         discovery.process_beacon(beacon4);
 
-        assert_eq!(discovery.total_platforms(), 4);
+        assert_eq!(discovery.total_nodes(), 4);
         assert_eq!(discovery.cluster_count(), 2);
 
         let formable = discovery.find_formable_cells(2);
@@ -433,30 +423,30 @@ mod tests {
         beacon.timestamp = 0; // Set to very old timestamp
 
         discovery.process_beacon(beacon);
-        assert_eq!(discovery.total_platforms(), 1);
+        assert_eq!(discovery.total_nodes(), 1);
 
         discovery.cleanup_expired();
-        assert_eq!(discovery.total_platforms(), 0);
+        assert_eq!(discovery.total_nodes(), 0);
         assert_eq!(discovery.cluster_count(), 0);
     }
 
     #[test]
     fn test_deterministic_leader_selection() {
         // Test that lowest ID is always selected as leader
-        let mut discovery1 = GeographicDiscovery::new("platform_a".to_string());
-        let mut discovery2 = GeographicDiscovery::new("platform_b".to_string());
-        let mut discovery3 = GeographicDiscovery::new("platform_c".to_string());
+        let mut discovery1 = GeographicDiscovery::new("node_a".to_string());
+        let mut discovery2 = GeographicDiscovery::new("node_b".to_string());
+        let mut discovery3 = GeographicDiscovery::new("node_c".to_string());
 
         let pos = GeoCoordinate::new(37.7749, -122.4194, 100.0).unwrap();
 
-        for id in ["platform_a", "platform_b", "platform_c"] {
+        for id in ["node_a", "node_b", "node_c"] {
             let beacon = GeographicBeacon::new(id.to_string(), pos, vec![]);
             discovery1.process_beacon(beacon.clone());
             discovery2.process_beacon(beacon.clone());
             discovery3.process_beacon(beacon);
         }
 
-        // Only platform_a should be leader
+        // Only node_a should be leader
         assert!(discovery1.should_initiate_cell_formation());
         assert!(!discovery2.should_initiate_cell_formation());
         assert!(!discovery3.should_initiate_cell_formation());

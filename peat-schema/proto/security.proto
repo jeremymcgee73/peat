@@ -17,7 +17,7 @@ enum DeviceType {
   DEVICE_TYPE_SOLDIER_SYSTEM = 4; // Soldier/Dismounted System
   DEVICE_TYPE_C2_STATION = 5;     // Command & Control Station
   DEVICE_TYPE_RELAY_NODE = 6;     // Relay/Communication Node
-  DEVICE_TYPE_SENSOR_PLATFORM = 7; // Sensor Platform (static)
+  DEVICE_TYPE_SENSOR_NODE = 7; // Sensor Node (static)
 }
 
 // Hierarchy level for organizational units

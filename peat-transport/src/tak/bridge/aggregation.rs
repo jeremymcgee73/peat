@@ -66,10 +66,10 @@ mod tests {
     use super::*;
     use peat_protocol::cot::{Position, TrackUpdate};
 
-    fn make_track(id: &str, platform: &str) -> PeatMessage {
+    fn make_track(id: &str, node: &str) -> PeatMessage {
         PeatMessage::Track(TrackUpdate {
             track_id: id.to_string(),
-            source_platform: platform.to_string(),
+            source_node: node.to_string(),
             source_model: "test-model".to_string(),
             model_version: "1.0".to_string(),
             cell_id: Some("cell-1".to_string()),

@@ -169,28 +169,28 @@ object PeatJni {
     external fun getTracksJni(handle: Long): String
 
     /**
-     * Get all platforms as JSON array string.
+     * Get all nodes as JSON array string.
      * @param handle Node handle from createNodeJni
-     * @return JSON array of platform objects, or "[]" on error
+     * @return JSON array of node objects, or "[]" on error
      */
     @JvmStatic
-    external fun getPlatformsJni(handle: Long): String
+    external fun getNodesJni(handle: Long): String
 
     /**
-     * Publish a platform (self-position/PLI) to the Peat network.
+     * Publish a node (self-position/PLI) to the Peat network.
      * @param handle Node handle from createNodeJni
-     * @param platformJson JSON string representing the platform data
+     * @param nodeJson JSON string representing the node data
      * @return true if published successfully
      */
     @JvmStatic
-    external fun publishPlatformJni(handle: Long, platformJson: String): Boolean
+    external fun publishNodeJni(handle: Long, nodeJson: String): Boolean
 
     /**
      * Publish a generic document to a named collection on this node.
      *
      * Backed by `peat_mesh::Node::publish` — works for any collection
      * (chats, markers, alerts, custom doc types). Use the typed
-     * `publish<Type>Jni` methods (e.g. `publishPlatformJni`) when they
+     * `publish<Type>Jni` methods (e.g. `publishNodeJni`) when they
      * exist; this is the generic escape hatch.
      *
      * The JSON must be an object. Top-level keys become the document
@@ -497,17 +497,17 @@ class PeatNodeJni private constructor(private val handle: Long) : AutoCloseable 
     fun getTracksJson(): String = PeatJni.getTracksJni(handle)
 
     /**
-     * Get all platforms as JSON array string.
-     * @return JSON array of platform objects
+     * Get all nodes as JSON array string.
+     * @return JSON array of node objects
      */
-    fun getPlatformsJson(): String = PeatJni.getPlatformsJni(handle)
+    fun getNodesJson(): String = PeatJni.getNodesJni(handle)
 
     /**
-     * Publish a platform (self-position/PLI) to the Peat network.
-     * @param platformJson JSON string representing the platform data
+     * Publish a node (self-position/PLI) to the Peat network.
+     * @param nodeJson JSON string representing the node data
      * @return true if published successfully
      */
-    fun publishPlatform(platformJson: String): Boolean = PeatJni.publishPlatformJni(handle, platformJson)
+    fun publishNode(nodeJson: String): Boolean = PeatJni.publishNodeJni(handle, nodeJson)
 
     /**
      * Publish a generic document into a named collection. The JSON's

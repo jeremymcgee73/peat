@@ -36,7 +36,7 @@
 //!
 //! The Peat Protocol implements a three-tier hierarchical structure:
 //!
-//! 1. **Nodes** (Individual platforms): UAVs, UGVs, soldier systems
+//! 1. **Nodes** (Individual nodes): UAVs, UGVs, soldier systems
 //! 2. **Cells** (Tactical squads): Groups of 2-8 nodes with complementary capabilities
 //! 3. **Zones** (Strategic coordination): Multiple cells coordinated by a zone commander
 //!
@@ -49,7 +49,7 @@
 //! // Create a node configuration
 //! let config = NodeConfig {
 //!     id: "node-1".to_string(),
-//!     platform_type: "UAV".to_string(),
+//!     node_type: "UAV".to_string(),
 //!     capabilities: vec![],
 //!     comm_range_m: 1000.0,
 //!     max_speed_mps: 10.0,
@@ -234,7 +234,7 @@ mod tests {
         use capability::v1::{CapabilityAdvertisement, OperationalStatus, ResourceStatus};
 
         let _cap_ad = CapabilityAdvertisement {
-            platform_id: "Alpha-3".to_string(),
+            node_id: "Alpha-3".to_string(),
             advertised_at: None,
             capabilities: vec![],
             resources: None,
@@ -331,7 +331,7 @@ mod tests {
             velocity: None,
             state: TrackState::Confirmed as i32,
             source: Some(TrackSource {
-                platform_id: "Alpha-3".to_string(),
+                node_id: "Alpha-3".to_string(),
                 sensor_id: "camera-1".to_string(),
                 model_version: "1.0.0".to_string(),
                 source_type: SourceType::AiModel as i32,
