@@ -18,7 +18,7 @@ use crate::model::v1::{
 /// - model_url is present and well-formed
 /// - checksum_sha256 is present and valid length
 /// - file_size_bytes is non-zero
-/// - At least one target_platform is specified
+/// - At least one target_node is specified
 /// - deployment_policy is specified
 /// - priority is specified
 /// - deployed_at timestamp is present
@@ -86,10 +86,10 @@ pub fn validate_model_deployment(deployment: &ModelDeployment) -> ValidationResu
         ));
     }
 
-    // At least one target platform is required
-    if deployment.target_platforms.is_empty() {
+    // At least one target node is required
+    if deployment.target_nodes.is_empty() {
         return Err(ValidationError::MissingField(
-            "target_platforms (at least one required)".to_string(),
+            "target_nodes (at least one required)".to_string(),
         ));
     }
 
@@ -124,7 +124,7 @@ pub fn validate_model_deployment(deployment: &ModelDeployment) -> ValidationResu
 ///
 /// Validates:
 /// - deployment_id is present
-/// - platform_id is present
+/// - node_id is present
 /// - state is specified (not unspecified)
 /// - progress_percent is in valid range (0-100)
 /// - updated_at timestamp is present
@@ -136,8 +136,8 @@ pub fn validate_model_deployment_status(status: &ModelDeploymentStatus) -> Valid
         return Err(ValidationError::MissingField("deployment_id".to_string()));
     }
 
-    if status.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if status.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     // State must be specified
@@ -214,7 +214,7 @@ mod tests {
             model_url: "https://models.example.com/yolov8-poi-v2.1.onnx".to_string(),
             checksum_sha256: "a".repeat(64), // Valid SHA256 hex
             file_size_bytes: 45_000_000,
-            target_platforms: vec!["Alpha-3".to_string(), "Bravo-1".to_string()],
+            target_nodes: vec!["Alpha-3".to_string(), "Bravo-1".to_string()],
             deployment_policy: DeploymentPolicy::Rolling as i32,
             priority: DeploymentPriority::Normal as i32,
             deployed_at: Some(Timestamp {
@@ -230,7 +230,7 @@ mod tests {
     fn valid_deployment_status() -> ModelDeploymentStatus {
         ModelDeploymentStatus {
             deployment_id: "deploy-2025-001".to_string(),
-            platform_id: "Alpha-3".to_string(),
+            node_id: "Alpha-3".to_string(),
             state: DeploymentState::Downloading as i32,
             progress_percent: 45,
             error_message: String::new(),
@@ -306,9 +306,9 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_target_platforms() {
+    fn test_empty_target_nodes() {
         let mut deployment = valid_model_deployment();
-        deployment.target_platforms = vec![];
+        deployment.target_nodes = vec![];
         let err = validate_model_deployment(&deployment).unwrap_err();
         assert!(matches!(err, ValidationError::MissingField(_)));
     }
@@ -344,11 +344,11 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_platform_id() {
+    fn test_missing_node_id() {
         let mut status = valid_deployment_status();
-        status.platform_id = String::new();
+        status.node_id = String::new();
         let err = validate_model_deployment_status(&status).unwrap_err();
-        assert!(matches!(err, ValidationError::MissingField(f) if f == "platform_id"));
+        assert!(matches!(err, ValidationError::MissingField(f) if f == "node_id"));
     }
 
     #[test]

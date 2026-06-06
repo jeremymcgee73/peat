@@ -6,9 +6,9 @@
 //! # What it does
 //!
 //! 1. Creates a PeatNode with FUNCTEST credentials and fixed port 42009
-//! 2. Starts sync and publishes a "PI-QUIC" platform
+//! 2. Starts sync and publishes a "PI-QUIC" node
 //! 3. Prints `PEER_NODE_ID=<hex>` so the Makefile can capture it
-//! 4. Polls for the Android's "ANDROID-DUAL" platform (up to 60s)
+//! 4. Polls for the Android's "ANDROID-DUAL" node (up to 60s)
 //! 5. Reports PASS/FAIL and exits
 //!
 //! # Running
@@ -52,11 +52,11 @@ fn main() {
     println!("PEER_NODE_ID={}", node_id);
     println!("Endpoint: {}", node.endpoint_addr());
 
-    // Publish our platform so Android can discover it via QUIC sync
-    let platform_json = serde_json::json!({
+    // Publish our node so Android can discover it via QUIC sync
+    let node_json = serde_json::json!({
         "id": "pi-quic-test",
         "name": "PI-QUIC",
-        "platform_type": "SENSOR",
+        "node_type": "SENSOR",
         "lat": 33.749,
         "lon": -84.388,
         "hae": 0.0,
@@ -65,10 +65,10 @@ fn main() {
         "readiness": 1.0
     });
 
-    match node.put_document("platforms", "pi-quic-test", &platform_json.to_string()) {
-        Ok(()) => println!("Published platform: PI-QUIC"),
+    match node.put_document("nodes", "pi-quic-test", &node_json.to_string()) {
+        Ok(()) => println!("Published node: PI-QUIC"),
         Err(e) => {
-            eprintln!("Failed to publish platform: {:?}", e);
+            eprintln!("Failed to publish node: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -80,7 +80,7 @@ fn main() {
     }
     println!("Sync started, waiting for Android peer...\n");
 
-    // Poll for Android's platform (up to 60s)
+    // Poll for Android's node (up to 60s)
     let timeout = std::time::Duration::from_secs(60);
     let start = std::time::Instant::now();
     let poll_interval = std::time::Duration::from_secs(2);
@@ -90,18 +90,18 @@ fn main() {
         std::thread::sleep(poll_interval);
 
         let peers = node.peer_count();
-        let platforms = node.get_platforms().unwrap_or_default();
+        let nodes = node.get_nodes().unwrap_or_default();
 
         print!(
-            "\r[{:.0}s] peers={}, platforms={}",
+            "\r[{:.0}s] peers={}, nodes={}",
             start.elapsed().as_secs_f64(),
             peers,
-            platforms.len()
+            nodes.len()
         );
 
-        for p in &platforms {
+        for p in &nodes {
             if p.name == "ANDROID-DUAL" || p.id == "android-dual-test" {
-                println!("\n\nReceived platform: {} (id={})", p.name, p.id);
+                println!("\n\nReceived node: {} (id={})", p.name, p.id);
                 found = true;
                 break;
             }
@@ -117,7 +117,7 @@ fn main() {
         println!("Test PASSED");
         std::process::exit(0);
     } else {
-        println!("Test FAILED — Android platform not received within 60s");
+        println!("Test FAILED — Android node not received within 60s");
         std::process::exit(1);
     }
 }

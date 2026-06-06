@@ -199,7 +199,7 @@ mod tests {
         // Node-level message should be filtered
         let track = TrackUpdate {
             track_id: "t1".to_string(),
-            source_platform: "platform-1".to_string(),
+            source_node: "node-1".to_string(),
             source_model: "test-model".to_string(),
             model_version: "1.0".to_string(),
             cell_id: None, // No cell = node level

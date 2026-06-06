@@ -69,10 +69,10 @@ enum AuthorityLevel {
 // Binding type for human-machine pairs
 enum BindingType {
   BINDING_TYPE_UNSPECIFIED = 0;
-  BINDING_TYPE_ONE_TO_ONE = 1;    // One operator, one platform
-  BINDING_TYPE_ONE_TO_MANY = 2;   // One operator, multiple platforms (swarm)
-  BINDING_TYPE_MANY_TO_ONE = 3;   // Multiple operators, one platform
-  BINDING_TYPE_MANY_TO_MANY = 4;  // Multiple operators, multiple platforms
+  BINDING_TYPE_ONE_TO_ONE = 1;    // One operator, one node
+  BINDING_TYPE_ONE_TO_MANY = 2;   // One operator, multiple nodes (swarm)
+  BINDING_TYPE_MANY_TO_ONE = 3;   // Multiple operators, one node
+  BINDING_TYPE_MANY_TO_MANY = 4;  // Multiple operators, multiple nodes
 }
 
 // Human operator information
@@ -101,8 +101,8 @@ message HumanMachinePair {
   // List of operators
   repeated Operator operators = 1;
 
-  // List of platform/node IDs
-  repeated string platform_ids = 2;
+  // List of node IDs
+  repeated string node_ids = 2;
 
   // Binding type
   BindingType binding_type = 3;
@@ -113,11 +113,11 @@ message HumanMachinePair {
 
 // Node static configuration (immutable)
 message NodeConfig {
-  // Unique platform identifier
+  // Unique node identifier
   string id = 1;
 
   // Node type (UAV, UGV, Soldier System, etc.)
-  string platform_type = 2;
+  string node_type = 2;
 
   // Static capabilities (G-Set: grow-only)
   repeated capability.v1.Capability capabilities = 3;

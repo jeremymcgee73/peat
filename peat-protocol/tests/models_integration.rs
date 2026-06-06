@@ -343,7 +343,7 @@ fn test_protobuf_serialization_roundtrip() {
     ));
 
     // Verify all fields are preserved (protobuf fields are public)
-    assert_eq!(node.platform_type, "Test Node");
+    assert_eq!(node.node_type, "Test Node");
     assert!(node.operator_binding.is_some());
     assert_eq!(node.capabilities.len(), 1);
 

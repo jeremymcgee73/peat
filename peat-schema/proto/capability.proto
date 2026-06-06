@@ -18,7 +18,7 @@ enum CapabilityType {
   CAPABILITY_TYPE_EMERGENT = 6;     // Emergent capability from composition
 }
 
-// Represents a platform or squad capability
+// Represents a node or squad capability
 message Capability {
   // Unique capability identifier
   string id = 1;
@@ -64,30 +64,30 @@ message CapabilityResponse {
 // Capability Advertisement (Upward Flow)
 // ============================================================================
 
-// Capability advertisement message - flows upward from platforms
+// Capability advertisement message - flows upward from nodes
 //
-// Platforms periodically advertise their capabilities, allowing the hierarchy
+// Nodes periodically advertise their capabilities, allowing the hierarchy
 // to maintain an up-to-date view of available resources. This is a generic
 // advertisement that can include any capability type (sensors, compute, AI
 // models, mobility, etc.)
 message CapabilityAdvertisement {
-  // Platform identifier (e.g., "Alpha-3", "UAV-001")
-  string platform_id = 1;
+  // Node identifier (e.g., "Alpha-3", "UAV-001")
+  string node_id = 1;
 
   // Timestamp of advertisement
   common.v1.Timestamp advertised_at = 2;
 
-  // List of capabilities available on this platform
+  // List of capabilities available on this node
   repeated Capability capabilities = 3;
 
   // Current resource utilization (optional)
   ResourceStatus resources = 4;
 
-  // Platform operational status
+  // Node operational status
   OperationalStatus operational_status = 5;
 }
 
-// Operational status of a platform
+// Operational status of a node
 enum OperationalStatus {
   OPERATIONAL_STATUS_UNSPECIFIED = 0;
   OPERATIONAL_STATUS_READY = 1;      // Ready to accept tasking

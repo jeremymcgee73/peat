@@ -390,7 +390,7 @@ fn parse_track_document(data: &[u8], doc_id: &str) -> Option<PeatMessage> {
             // Extract fields from JSON
             let track = TrackUpdate {
                 track_id: json["track_id"].as_str().unwrap_or(doc_id).to_string(),
-                source_platform: json["source_platform"]
+                source_node: json["source_node"]
                     .as_str()
                     .unwrap_or("unknown")
                     .to_string(),
@@ -465,8 +465,8 @@ fn parse_capability_document(data: &[u8], doc_id: &str) -> Option<PeatMessage> {
                 .unwrap_or_default();
 
             let cap = CapabilityAdvertisement {
-                platform_id: json["platform_id"].as_str().unwrap_or(doc_id).to_string(),
-                platform_type: json["platform_type"].as_str().unwrap_or("UGV").to_string(),
+                node_id: json["node_id"].as_str().unwrap_or(doc_id).to_string(),
+                node_type: json["node_type"].as_str().unwrap_or("UGV").to_string(),
                 position: Position {
                     lat: json["position"]["lat"].as_f64().unwrap_or(0.0),
                     lon: json["position"]["lon"].as_f64().unwrap_or(0.0),
@@ -575,7 +575,7 @@ async fn demo_messages(bridge: Arc<PeatTakBridge<TakServerTransport>>) {
         // Create a simulated track update
         let track = TrackUpdate {
             track_id: track_id.clone(),
-            source_platform: "Alpha-3".to_string(),
+            source_node: "Alpha-3".to_string(),
             source_model: "YOLOv8".to_string(),
             model_version: "1.3.0".to_string(),
             cell_id: Some("Alpha".to_string()),

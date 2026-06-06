@@ -9,15 +9,15 @@ use crate::validation::core::validate_capability;
 /// Validate a CapabilityAdvertisement message
 ///
 /// Validates:
-/// - platform_id is present
+/// - node_id is present
 /// - advertised_at timestamp is present
 /// - All capabilities pass validation
 /// - Resource status values are in valid range (0.0 - 1.0)
 /// - Operational status is valid (not unspecified)
 pub fn validate_capability_advertisement(ad: &CapabilityAdvertisement) -> ValidationResult<()> {
     // Check required fields
-    if ad.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if ad.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     if ad.advertised_at.is_none() {
@@ -93,7 +93,7 @@ mod tests {
 
     fn valid_capability_advertisement() -> CapabilityAdvertisement {
         CapabilityAdvertisement {
-            platform_id: "Alpha-3".to_string(),
+            node_id: "Alpha-3".to_string(),
             advertised_at: Some(Timestamp {
                 seconds: 1702000000,
                 nanos: 0,
@@ -125,11 +125,11 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_platform_id() {
+    fn test_missing_node_id() {
         let mut ad = valid_capability_advertisement();
-        ad.platform_id = String::new();
+        ad.node_id = String::new();
         let err = validate_capability_advertisement(&ad).unwrap_err();
-        assert!(matches!(err, ValidationError::MissingField(f) if f == "platform_id"));
+        assert!(matches!(err, ValidationError::MissingField(f) if f == "node_id"));
     }
 
     #[test]

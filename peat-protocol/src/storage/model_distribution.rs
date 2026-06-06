@@ -45,7 +45,7 @@
 //!     "4.2.1",
 //! ).await?;
 //!
-//! println!("Converged: {}/{}", status.converged, status.total_platforms);
+//! println!("Converged: {}/{}", status.converged, status.total_nodes);
 //! ```
 
 use super::file_distribution::{DistributionHandle, DistributionScope, TransferPriority};
@@ -82,17 +82,17 @@ pub struct ModelConvergenceStatus {
     pub model_id: String,
     /// Target version we're converging to
     pub target_version: String,
-    /// Total number of target platforms
-    pub total_platforms: usize,
-    /// Platforms that have target version AND it's operational
+    /// Total number of target nodes
+    pub total_nodes: usize,
+    /// Nodes that have target version AND it's operational
     pub converged: usize,
-    /// Platforms currently receiving/deploying the model
+    /// Nodes currently receiving/deploying the model
     pub in_progress: usize,
-    /// Platforms not yet started
+    /// Nodes not yet started
     pub pending: usize,
-    /// Platforms where distribution/deployment failed
+    /// Nodes where distribution/deployment failed
     pub failed: usize,
-    /// Distribution of versions across platforms (version -> count)
+    /// Distribution of versions across nodes (version -> count)
     pub version_distribution: HashMap<String, usize>,
     /// What's blocking convergence on specific nodes
     pub blockers: Vec<ConvergenceBlocker>,
@@ -103,14 +103,14 @@ pub struct ModelConvergenceStatus {
 
 impl ModelConvergenceStatus {
     /// Create new convergence status
-    pub fn new(model_id: &str, target_version: &str, total_platforms: usize) -> Self {
+    pub fn new(model_id: &str, target_version: &str, total_nodes: usize) -> Self {
         Self {
             model_id: model_id.to_string(),
             target_version: target_version.to_string(),
-            total_platforms,
+            total_nodes,
             converged: 0,
             in_progress: 0,
-            pending: total_platforms,
+            pending: total_nodes,
             failed: 0,
             version_distribution: HashMap::new(),
             blockers: Vec::new(),
@@ -118,22 +118,22 @@ impl ModelConvergenceStatus {
         }
     }
 
-    /// Check if convergence is complete (all platforms converged or failed)
+    /// Check if convergence is complete (all nodes converged or failed)
     pub fn is_complete(&self) -> bool {
-        self.converged + self.failed >= self.total_platforms
+        self.converged + self.failed >= self.total_nodes
     }
 
-    /// Check if convergence succeeded (all platforms have target version)
+    /// Check if convergence succeeded (all nodes have target version)
     pub fn is_success(&self) -> bool {
-        self.converged >= self.total_platforms && self.failed == 0
+        self.converged >= self.total_nodes && self.failed == 0
     }
 
     /// Calculate convergence progress (0.0 to 1.0)
     pub fn convergence_progress(&self) -> f64 {
-        if self.total_platforms == 0 {
+        if self.total_nodes == 0 {
             return 1.0;
         }
-        self.converged as f64 / self.total_platforms as f64
+        self.converged as f64 / self.total_nodes as f64
     }
 }
 
@@ -264,7 +264,7 @@ pub struct VariantSelector {
 /// convergence tracking, and rollback capabilities.
 #[async_trait::async_trait]
 pub trait ModelDistribution: Send + Sync {
-    /// Distribute a model version to target platforms
+    /// Distribute a model version to target nodes
     ///
     /// Selects appropriate variant based on target capabilities and initiates
     /// distribution. Variant selection considers GPU memory, CPU architecture,
@@ -274,7 +274,7 @@ pub trait ModelDistribution: Send + Sync {
     ///
     /// * `model_id` - Model identifier (e.g., "target_recognition")
     /// * `version` - Semantic version (e.g., "4.2.1")
-    /// * `scope` - Target platforms (all, formation, specific nodes, capable)
+    /// * `scope` - Target nodes (all, formation, specific nodes, capable)
     /// * `priority` - Transfer priority
     ///
     /// # Returns
@@ -303,7 +303,7 @@ pub trait ModelDistribution: Send + Sync {
     /// Distribute model delta (differential update)
     ///
     /// For large models, only transfer changed chunks between versions.
-    /// Requires target platforms to have `from_version` locally.
+    /// Requires target nodes to have `from_version` locally.
     ///
     /// # Note
     ///
@@ -319,7 +319,7 @@ pub trait ModelDistribution: Send + Sync {
 
     /// Get convergence status for a model version
     ///
-    /// Returns detailed status of how many platforms have converged to
+    /// Returns detailed status of how many nodes have converged to
     /// the target version, what's blocking others, and estimated completion.
     async fn convergence_status(
         &self,
@@ -329,7 +329,7 @@ pub trait ModelDistribution: Send + Sync {
 
     /// Initiate rollback to a previous version
     ///
-    /// Distributes the previous version to all platforms that have the
+    /// Distributes the previous version to all nodes that have the
     /// current (problematic) version.
     async fn rollback(
         &self,
@@ -446,11 +446,11 @@ impl ModelDeploymentTracker {
         &self,
         model_id: &str,
         target_version: &str,
-        total_platforms: usize,
+        total_nodes: usize,
     ) -> ModelConvergenceStatus {
         let statuses = self.node_statuses.read().await;
 
-        let mut status = ModelConvergenceStatus::new(model_id, target_version, total_platforms);
+        let mut status = ModelConvergenceStatus::new(model_id, target_version, total_nodes);
         let mut version_counts: HashMap<String, usize> = HashMap::new();
 
         for (node_id, models) in statuses.iter() {
@@ -510,7 +510,7 @@ mod tests {
 
         assert_eq!(status.model_id, "target_recognition");
         assert_eq!(status.target_version, "4.2.1");
-        assert_eq!(status.total_platforms, 10);
+        assert_eq!(status.total_nodes, 10);
         assert_eq!(status.converged, 0);
         assert_eq!(status.pending, 10);
         assert!(!status.is_complete());

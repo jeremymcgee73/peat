@@ -256,7 +256,7 @@ class PeatJniSurfaceTest {
     @Test
     fun forceStoreErrorForTesting_throwsOnce_thenClears() {
         val handle = createNode("err-fixture")
-        val collection = "platforms"
+        val collection = "nodes"
         val docId = "anything"
 
         // Step 2: arm.
@@ -312,7 +312,7 @@ class PeatJniSurfaceTest {
         // Create a fresh node; getDocumentJni should NOT throw
         // because the prior invalid-handle call didn't arm the flag.
         val handle = createNode("invalid-arm-fixture")
-        val result = PeatJni.getDocumentJni(handle, "platforms", "anything")
+        val result = PeatJni.getDocumentJni(handle, "nodes", "anything")
         assertNull(
             "getDocumentJni must not be in armed state after a 0-handle arm attempt",
             result,
@@ -366,10 +366,10 @@ class PeatJniSurfaceTest {
             // Typed collection accessors
             ::peatJniRefGetCells,
             ::peatJniRefGetTracks,
-            ::peatJniRefGetPlatforms,
+            ::peatJniRefGetNodes,
             ::peatJniRefGetCommands,
             ::peatJniRefGetMarkers,
-            ::peatJniRefPublishPlatform,
+            ::peatJniRefPublishNode,
             ::peatJniRefPublishMarker,
             ::peatJniRefIngestPosition,
             // Blob transfer
@@ -453,14 +453,14 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefGetTracks(h: Long): String = PeatJni.getTracksJni(h)
     @Suppress("unused")
-    private fun peatJniRefGetPlatforms(h: Long): String = PeatJni.getPlatformsJni(h)
+    private fun peatJniRefGetNodes(h: Long): String = PeatJni.getNodesJni(h)
     @Suppress("unused")
     private fun peatJniRefGetCommands(h: Long): String = PeatJni.getCommandsJni(h)
     @Suppress("unused")
     private fun peatJniRefGetMarkers(h: Long): String = PeatJni.getMarkersJni(h)
     @Suppress("unused")
-    private fun peatJniRefPublishPlatform(h: Long, j: String): Boolean =
-        PeatJni.publishPlatformJni(h, j)
+    private fun peatJniRefPublishNode(h: Long, j: String): Boolean =
+        PeatJni.publishNodeJni(h, j)
     @Suppress("unused")
     private fun peatJniRefPublishMarker(h: Long, j: String): Boolean =
         PeatJni.publishMarkerJni(h, j)

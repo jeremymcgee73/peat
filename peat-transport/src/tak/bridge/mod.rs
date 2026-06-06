@@ -50,7 +50,7 @@ use super::traits::{Priority, TakTransport};
 /// Peat message that can be bridged to TAK
 #[derive(Debug, Clone)]
 pub enum PeatMessage {
-    /// Track/platform position update
+    /// Track/node position update
     Track(TrackUpdate),
     /// Capability advertisement
     Capability(CapabilityAdvertisement),
@@ -61,11 +61,11 @@ pub enum PeatMessage {
 }
 
 impl PeatMessage {
-    /// Get the source platform ID for this message
+    /// Get the source node ID for this message
     pub fn source_node(&self) -> &str {
         match self {
-            PeatMessage::Track(t) => &t.source_platform,
-            PeatMessage::Capability(c) => &c.platform_id,
+            PeatMessage::Track(t) => &t.source_node,
+            PeatMessage::Capability(c) => &c.node_id,
             PeatMessage::Handoff(h) => &h.source_cell,
             PeatMessage::FormationSummary(f) => &f.formation_id,
         }
@@ -347,7 +347,7 @@ mod tests {
 
         let track = TrackUpdate {
             track_id: "track-1".to_string(),
-            source_platform: "platform-1".to_string(),
+            source_node: "node-1".to_string(),
             source_model: "test-model".to_string(),
             model_version: "1.0".to_string(),
             cell_id: Some("cell-1".to_string()),

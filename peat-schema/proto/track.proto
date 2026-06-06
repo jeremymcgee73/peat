@@ -97,8 +97,8 @@ enum TrackState {
 
 // Track source information
 message TrackSource {
-  // Platform that produced this track
-  string platform_id = 1;
+  // Node that produced this track
+  string node_id = 1;
 
   // Sensor or capability that detected the entity
   string sensor_id = 2;
@@ -123,7 +123,7 @@ enum SourceType {
 // Track Update (Upward Flow Message)
 // ============================================================================
 
-// Track update message - flows upward from platforms
+// Track update message - flows upward from nodes
 //
 // Used to report new tracks, update existing tracks, or report track drops.
 // This is the primary ISR product message.
@@ -169,8 +169,8 @@ message TrackQuery {
   // Filter by state
   repeated TrackState states = 4;
 
-  // Filter by source platform
-  repeated string source_platforms = 5;
+  // Filter by source node
+  repeated string source_nodes = 5;
 
   // Maximum age in seconds (tracks older than this are excluded)
   uint32 max_age_seconds = 6;

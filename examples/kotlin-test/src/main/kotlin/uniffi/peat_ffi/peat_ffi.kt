@@ -2455,9 +2455,9 @@ data class TrackData (
      */
     var `trackId`: kotlin.String, 
     /**
-     * Source platform ID
+     * Source node ID
      */
-    var `sourcePlatform`: kotlin.String, 
+    var `sourceNode`: kotlin.String, 
     /**
      * Geographic position
      */
@@ -2506,7 +2506,7 @@ public object FfiConverterTypeTrackData: FfiConverterRustBuffer<TrackData> {
 
     override fun allocationSize(value: TrackData) = (
             FfiConverterString.allocationSize(value.`trackId`) +
-            FfiConverterString.allocationSize(value.`sourcePlatform`) +
+            FfiConverterString.allocationSize(value.`sourceNode`) +
             FfiConverterTypePosition.allocationSize(value.`position`) +
             FfiConverterOptionalTypeVelocity.allocationSize(value.`velocity`) +
             FfiConverterString.allocationSize(value.`classification`) +
@@ -2517,7 +2517,7 @@ public object FfiConverterTypeTrackData: FfiConverterRustBuffer<TrackData> {
 
     override fun write(value: TrackData, buf: ByteBuffer) {
             FfiConverterString.write(value.`trackId`, buf)
-            FfiConverterString.write(value.`sourcePlatform`, buf)
+            FfiConverterString.write(value.`sourceNode`, buf)
             FfiConverterTypePosition.write(value.`position`, buf)
             FfiConverterOptionalTypeVelocity.write(value.`velocity`, buf)
             FfiConverterString.write(value.`classification`, buf)

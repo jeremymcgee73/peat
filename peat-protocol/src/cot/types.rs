@@ -73,7 +73,7 @@ impl Velocity {
     }
 }
 
-/// Track update from a Peat platform's sensor
+/// Track update from a Peat node's sensor
 ///
 /// Represents a detected entity (person, vehicle, etc.) being tracked by a Peat sensor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,8 +90,8 @@ pub struct TrackUpdate {
     pub velocity: Option<Velocity>,
     /// Custom attributes (key-value pairs)
     pub attributes: HashMap<String, serde_json::Value>,
-    /// Platform that detected this track
-    pub source_platform: String,
+    /// Node that detected this track
+    pub source_node: String,
     /// AI model that generated detection
     pub source_model: String,
     /// Version of the AI model
@@ -111,7 +111,7 @@ impl TrackUpdate {
         classification: String,
         confidence: f64,
         position: Position,
-        source_platform: String,
+        source_node: String,
         source_model: String,
         model_version: String,
     ) -> Self {
@@ -122,7 +122,7 @@ impl TrackUpdate {
             position,
             velocity: None,
             attributes: HashMap::new(),
-            source_platform,
+            source_node,
             source_model,
             model_version,
             timestamp: Utc::now(),
@@ -156,18 +156,18 @@ impl TrackUpdate {
     }
 }
 
-/// Operational status of a platform or capability
+/// Operational status of a node or capability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationalStatus {
-    /// Platform is ready but not actively processing
+    /// Node is ready but not actively processing
     Ready,
-    /// Platform is actively processing/sensing
+    /// Node is actively processing/sensing
     Active,
-    /// Platform has reduced capability
+    /// Node has reduced capability
     Degraded,
-    /// Platform is offline
+    /// Node is offline
     Offline,
-    /// Platform is loading/initializing
+    /// Node is loading/initializing
     Loading,
 }
 
@@ -184,22 +184,22 @@ impl OperationalStatus {
     }
 }
 
-/// Hardware specification advertised by a Peat platform.
+/// Hardware specification advertised by a Peat node.
 ///
 /// Used by `CapabilityMatcher` to evaluate `CapabilityFilter`'s hardware
 /// bounds (`min_gpu_memory_mb`, `min_memory_mb`, `min_storage_mb`, custom
-/// k/v map) against a candidate platform.
+/// k/v map) against a candidate node.
 ///
-/// All fields are optional: platforms advertise what they can introspect
+/// All fields are optional: nodes advertise what they can introspect
 /// — missing fields are treated as "unknown" by the matcher (a
 /// hardware-bounded filter fails to match when the corresponding bound
 /// is unknown, rather than vacuously matching). This is the conservative
-/// posture and avoids deploying to platforms whose hardware fitness has
+/// posture and avoids deploying to nodes whose hardware fitness has
 /// not been confirmed.
 ///
 /// **Provisional vocabulary for `custom`.** Until the Capability+Labels
 /// ADR formalises the canonical string vocabulary, custom keys/values
-/// are free-form strings agreed between the issuer and the platform
+/// are free-form strings agreed between the issuer and the node
 /// (e.g. `"cpu_arch": "aarch64"`, `"gpu_compute_capability": "8.9"`,
 /// `"tensorrt_version": "10.0"`). Once the ADR lands, this field's
 /// shape will be reconciled to the canonical labels — see peat#773.
@@ -222,31 +222,31 @@ pub struct HardwareSpec {
     pub custom: HashMap<String, String>,
 }
 
-/// Capability advertisement from a Peat platform
+/// Capability advertisement from a Peat node
 ///
-/// Announces what a platform can do (sensor types, compute capabilities, etc.)
+/// Announces what a node can do (sensor types, compute capabilities, etc.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapabilityAdvertisement {
-    /// Platform identifier
-    pub platform_id: String,
-    /// Platform type (UGV, UAV, Soldier System, etc.)
-    pub platform_type: String,
+    /// Node identifier
+    pub node_id: String,
+    /// Node type (UGV, UAV, Soldier System, etc.)
+    pub node_type: String,
     /// Current position
     pub position: Position,
     /// Operational status
     pub status: OperationalStatus,
     /// Readiness level (0.0 - 1.0)
     pub readiness: f64,
-    /// Capabilities offered by this platform
+    /// Capabilities offered by this node
     pub capabilities: Vec<CapabilityInfo>,
     /// Cell membership (if assigned)
     pub cell_id: Option<String>,
     /// Formation membership (if assigned)
     pub formation_id: Option<String>,
-    /// Hardware specification (optional). Populated by platforms that
+    /// Hardware specification (optional). Populated by nodes that
     /// have run hardware introspection; consumed by `CapabilityMatcher`
     /// when evaluating `CapabilityFilter`'s hardware bounds. Backwards-
-    /// compatible: advertisements from older platforms serialise without
+    /// compatible: advertisements from older nodes serialise without
     /// this field and deserialise as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardware: Option<HardwareSpec>,
@@ -272,15 +272,15 @@ pub struct CapabilityInfo {
 impl CapabilityAdvertisement {
     /// Create a new capability advertisement
     pub fn new(
-        platform_id: String,
-        platform_type: String,
+        node_id: String,
+        node_type: String,
         position: Position,
         status: OperationalStatus,
         readiness: f64,
     ) -> Self {
         Self {
-            platform_id,
-            platform_type,
+            node_id,
+            node_type,
             position,
             status,
             readiness: readiness.clamp(0.0, 1.0),
@@ -404,8 +404,8 @@ pub struct FormationCapabilitySummary {
     pub callsign: String,
     /// Center position of formation
     pub center_position: Position,
-    /// Number of active platforms
-    pub platform_count: u32,
+    /// Number of active nodes
+    pub node_count: u32,
     /// Number of cells in formation
     pub cell_count: u32,
     /// Aggregated capabilities
@@ -416,16 +416,16 @@ pub struct FormationCapabilitySummary {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Aggregated capability across multiple platforms
+/// Aggregated capability across multiple nodes
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AggregatedCapability {
     /// Capability type
     pub capability_type: String,
-    /// Number of platforms with this capability
+    /// Number of nodes with this capability
     pub count: u32,
-    /// Average precision across platforms
+    /// Average precision across nodes
     pub avg_precision: f64,
-    /// Percentage of platforms that are active
+    /// Percentage of nodes that are active
     pub availability: f64,
 }
 
@@ -734,7 +734,7 @@ mod tests {
             "person".to_string(),
             1.5, // Should be clamped to 1.0
             Position::new(0.0, 0.0),
-            "platform".to_string(),
+            "node".to_string(),
             "model".to_string(),
             "1.0".to_string(),
         );
@@ -749,7 +749,7 @@ mod tests {
             "person".to_string(),
             0.89,
             Position::new(0.0, 0.0),
-            "platform".to_string(),
+            "node".to_string(),
             "model".to_string(),
             "1.0".to_string(),
         )

@@ -2,7 +2,7 @@
 // Version: 2.0.0 — abstract hierarchy vocabulary per ADR-066
 //
 // Defines aggregated state summaries for hierarchical formations.
-// Four-tier model: Platform → Cell → Cohort → Federation → Coalition.
+// Four-tier model: Node → Cell → Cohort → Federation → Coalition.
 // Tier 5+ is reserved for a future parametric N-tier ADR (see ADR-066).
 
 syntax = "proto3";
@@ -48,7 +48,7 @@ message CellSummary {
   uint32 operational_count = 8;
 
   // Aggregated capabilities (from CapabilityAggregator)
-  // These are cell-level emergent capabilities, not individual platform capabilities
+  // These are cell-level emergent capabilities, not individual node capabilities
   repeated capability.v1.Capability aggregated_capabilities = 9;
 
   // Cell readiness score (0.0-1.0)

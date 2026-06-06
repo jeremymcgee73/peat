@@ -182,12 +182,12 @@ fn test_invalid_transition_error() {
 #[test]
 fn test_not_found_error() {
     let err = Error::NotFound {
-        resource_type: "Platform".to_string(),
+        resource_type: "Node".to_string(),
         id: "uav_001".to_string(),
     };
 
     let display = format!("{}", err);
-    assert!(display.contains("Platform"));
+    assert!(display.contains("Node"));
     assert!(display.contains("uav_001"));
 }
 

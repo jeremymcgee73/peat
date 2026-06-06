@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// Operational domain (altitude layer) for a node or capability
 ///
-/// Domains define where a platform operates and what it can detect/engage.
+/// Domains define where a node operates and what it can detect/engage.
 /// Cross-domain operations require specific capability combinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(i32)]
@@ -25,7 +25,7 @@ pub enum Domain {
     /// - Terrain affects movement and LOS
     /// - Can engage both subsurface (with ASW) and air (with ADA)
     Surface = 2,
-    /// Air operations (airborne platforms)
+    /// Air operations (airborne nodes)
     /// - Aircraft, drones, missiles
     /// - Full visibility, high mobility
     /// - Cannot detect subsurface without specialized sensors

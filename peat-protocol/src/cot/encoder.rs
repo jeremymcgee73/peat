@@ -106,7 +106,7 @@ impl CotEncoder {
         if self.config.include_peat_extension {
             let mut ext = PeatExtension::new()
                 .with_source(PeatSource::new(
-                    &track.source_platform,
+                    &track.source_node,
                     &track.source_model,
                     &track.model_version,
                 ))
@@ -133,10 +133,10 @@ impl CotEncoder {
             builder = builder.peat_extension(ext);
         }
 
-        // Add link to source platform
+        // Add link to source node
         builder = builder.link(
-            CotLink::new(&track.source_platform, "a-f-G-U-C", CotRelation::Observing)
-                .with_remarks("sensor-platform"),
+            CotLink::new(&track.source_node, "a-f-G-U-C", CotRelation::Observing)
+                .with_remarks("sensor-node"),
         );
 
         // Add hierarchy links
@@ -158,10 +158,10 @@ impl CotEncoder {
     pub fn capability_to_event(&self, cap: &CapabilityAdvertisement) -> Result<CotEvent, CotError> {
         let cot_type = self
             .type_mapper
-            .map_platform(&cap.platform_type, self.config.default_affiliation);
+            .map_node(&cap.node_type, self.config.default_affiliation);
 
         let mut builder = CotEvent::builder()
-            .uid(&cap.platform_id)
+            .uid(&cap.node_id)
             .cot_type(cot_type)
             .time(cap.timestamp)
             .stale_duration(Duration::seconds(self.config.capability_stale_secs))
@@ -172,7 +172,7 @@ impl CotEncoder {
                 cap.position.cep_m.unwrap_or(9999999.0),
                 9999999.0,
             ))
-            .callsign(&cap.platform_id)
+            .callsign(&cap.node_id)
             .remarks(&self.format_capability_remarks(cap));
 
         // Add group membership if cell assigned
@@ -315,9 +315,9 @@ impl CotEncoder {
             ))
             .callsign(&summary.callsign)
             .remarks(&format!(
-                "Formation {} - {} platforms, {} cells, {:.0}% ready",
+                "Formation {} - {} nodes, {} cells, {:.0}% ready",
                 summary.callsign,
-                summary.platform_count,
+                summary.node_count,
                 summary.cell_count,
                 summary.readiness * 100.0
             ));
@@ -391,7 +391,7 @@ impl CotEncoder {
 
         format!(
             "{} ({}) - {} ({:.0}% ready)",
-            cap.platform_type,
+            cap.node_type,
             cap_list.join(", "),
             cap.status.as_str(),
             cap.readiness * 100.0
@@ -436,7 +436,7 @@ mod tests {
         assert!(xml.contains("type=\"a-f-G-E-S\""));
         assert!(xml.contains("lat=\"33.7749\""));
         assert!(xml.contains("<_peat_"));
-        assert!(xml.contains("platform=\"Alpha-2\""));
+        assert!(xml.contains("node=\"Alpha-2\""));
         assert!(xml.contains("jacket_color"));
     }
 
@@ -503,7 +503,7 @@ mod tests {
             "person".to_string(),
             0.89,
             Position::new(0.0, 0.0),
-            "platform".to_string(),
+            "node".to_string(),
             "model".to_string(),
             "1.0".to_string(),
         );
@@ -555,7 +555,7 @@ mod tests {
             "special_target".to_string(),
             0.95,
             Position::new(0.0, 0.0),
-            "platform".to_string(),
+            "node".to_string(),
             "model".to_string(),
             "1.0".to_string(),
         );

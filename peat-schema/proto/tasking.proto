@@ -1,8 +1,8 @@
 // AI/ML Tasking definitions for CAP Protocol
 // Version: 1.0.0
 //
-// Defines schema for tasking edge AI platforms with detection and
-// classification requirements. Tasks flow downward from C2 to platforms,
+// Defines schema for tasking edge AI nodes with detection and
+// classification requirements. Tasks flow downward from C2 to nodes,
 // specifying what to detect, how to filter, and what products to return.
 
 syntax = "proto3";
@@ -13,12 +13,12 @@ import "common.proto";
 import "product.proto";
 
 // ============================================================================
-// Detection Task (Downward Flow: C2 -> Platform)
+// Detection Task (Downward Flow: C2 -> Node)
 // ============================================================================
 
-// Detection task - specifies what an AI platform should detect and report
+// Detection task - specifies what an AI node should detect and report
 //
-// This message flows downward from C2 to edge platforms, configuring the
+// This message flows downward from C2 to edge nodes, configuring the
 // detection pipeline with target classes, thresholds, and product delivery.
 message DetectionTask {
   // Unique task identifier (e.g., "TASK-2025-001")
@@ -55,8 +55,8 @@ message DetectionTask {
   // Timestamp when task was issued
   common.v1.Timestamp issued_at = 11;
 
-  // Target platform IDs (empty = broadcast to all capable platforms)
-  repeated string target_platforms = 12;
+  // Target node IDs (empty = broadcast to all capable nodes)
+  repeated string target_nodes = 12;
 }
 
 // Detection filtering parameters
@@ -227,16 +227,16 @@ enum TaskPriority {
 }
 
 // ============================================================================
-// Task Status (Upward Flow: Platform -> C2)
+// Task Status (Upward Flow: Node -> C2)
 // ============================================================================
 
-// Task status report from platform
+// Task status report from node
 message TaskStatus {
   // Reference to the task
   string task_id = 1;
 
-  // Platform reporting status
-  string platform_id = 2;
+  // Node reporting status
+  string node_id = 2;
 
   // Current state of the task
   TaskState state = 3;
@@ -333,8 +333,8 @@ enum TaskControlAction {
 
 // Query for tasks
 message TaskQuery {
-  // Filter by platform ID
-  string platform_id = 1;
+  // Filter by node ID
+  string node_id = 1;
 
   // Filter by task state
   repeated TaskState states = 2;

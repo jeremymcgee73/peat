@@ -212,13 +212,13 @@ object PeatJni {
 
     @JvmStatic external fun getTracksJni(handle: Long): String
 
-    @JvmStatic external fun getPlatformsJni(handle: Long): String
+    @JvmStatic external fun getNodesJni(handle: Long): String
 
     @JvmStatic external fun getCommandsJni(handle: Long): String
 
     @JvmStatic external fun getMarkersJni(handle: Long): String
 
-    @JvmStatic external fun publishPlatformJni(handle: Long, platformJson: String): Boolean
+    @JvmStatic external fun publishNodeJni(handle: Long, nodeJson: String): Boolean
 
     @JvmStatic external fun publishMarkerJni(handle: Long, markerJson: String): Boolean
 

@@ -1,4 +1,4 @@
-//! Capability-based queries for platform and cell discovery
+//! Capability-based queries for node and cell discovery
 //!
 //! Implements the capability query system for finding nodes and cells
 //! based on required capabilities during the bootstrap phase.
@@ -32,7 +32,7 @@
 //!     .min_confidence(0.8)
 //!     .build();
 //!
-//! let matches = engine.query_platforms(&query, &nodes)?;
+//! let matches = engine.query_nodes(&query, &nodes)?;
 //! ```
 
 use crate::models::{cell::CellState, node::NodeConfig, Capability, CapabilityExt, CapabilityType};
@@ -212,7 +212,7 @@ impl CapabilityQueryBuilder {
 /// Result of a capability query with score
 #[derive(Debug, Clone)]
 pub struct QueryMatch<T> {
-    /// The matched entity (platform or cell)
+    /// The matched entity (node or cell)
     pub entity: T,
     /// Relevance score (0.0 - 1.0)
     pub score: f32,
@@ -228,7 +228,7 @@ impl CapabilityQueryEngine {
     }
 
     /// Query nodes by capabilities
-    pub fn query_platforms(
+    pub fn query_nodes(
         &self,
         query: &CapabilityQuery,
         nodes: &[NodeConfig],
@@ -279,8 +279,8 @@ impl CapabilityQueryEngine {
         matches
     }
 
-    /// Get capability statistics for a set of platforms
-    pub fn platform_capability_stats(
+    /// Get capability statistics for a set of nodes
+    pub fn node_capability_stats(
         &self,
         nodes: &[NodeConfig],
     ) -> HashMap<CapabilityType, CapabilityStats> {
@@ -365,17 +365,13 @@ mod tests {
         )
     }
 
-    fn create_test_platform(
-        id: &str,
-        platform_type: &str,
-        capabilities: Vec<Capability>,
-    ) -> NodeConfig {
-        let mut platform = NodeConfig::new(platform_type.to_string());
-        platform.id = id.to_string();
+    fn create_test_node(id: &str, node_type: &str, capabilities: Vec<Capability>) -> NodeConfig {
+        let mut node = NodeConfig::new(node_type.to_string());
+        node.id = id.to_string();
         for cap in capabilities {
-            platform.add_capability(cap);
+            node.add_capability(cap);
         }
-        platform
+        node
     }
 
     #[test]
@@ -463,27 +459,27 @@ mod tests {
         )];
         let score2 = query.score(&caps2);
 
-        // First platform should score higher
+        // First node should score higher
         assert!(score1 > score2);
         assert!(score1 <= 1.0);
         assert!(score2 > 0.0);
     }
 
     #[test]
-    fn test_query_engine_platforms() {
+    fn test_query_engine_nodes() {
         let engine = CapabilityQueryEngine::new();
 
         let nodes = vec![
-            create_test_platform(
-                "platform1",
+            create_test_node(
+                "node1",
                 "UAV",
                 vec![
                     create_test_capability("sensor1", CapabilityType::Sensor, 0.9),
                     create_test_capability("comms1", CapabilityType::Communication, 0.8),
                 ],
             ),
-            create_test_platform(
-                "platform2",
+            create_test_node(
+                "node2",
                 "UAV",
                 vec![create_test_capability(
                     "sensor2",
@@ -491,8 +487,8 @@ mod tests {
                     0.7,
                 )],
             ),
-            create_test_platform(
-                "platform3",
+            create_test_node(
+                "node3",
                 "UAV",
                 vec![
                     create_test_capability("sensor3", CapabilityType::Sensor, 0.95),
@@ -508,13 +504,13 @@ mod tests {
             .min_confidence(0.7)
             .build();
 
-        let matches = engine.query_platforms(&query, &nodes);
+        let matches = engine.query_nodes(&query, &nodes);
 
         // All nodes have sensor capability
         assert_eq!(matches.len(), 3);
 
-        // platform3 should score highest (has all capabilities with high confidence)
-        assert_eq!(matches[0].entity.id, "platform3");
+        // node3 should score highest (has all capabilities with high confidence)
+        assert_eq!(matches[0].entity.id, "node3");
         assert!(matches[0].score > matches[1].score);
     }
 
@@ -523,8 +519,8 @@ mod tests {
         let engine = CapabilityQueryEngine::new();
 
         let nodes = vec![
-            create_test_platform(
-                "platform1",
+            create_test_node(
+                "node1",
                 "UAV",
                 vec![create_test_capability(
                     "sensor1",
@@ -532,8 +528,8 @@ mod tests {
                     0.9,
                 )],
             ),
-            create_test_platform(
-                "platform2",
+            create_test_node(
+                "node2",
                 "UAV",
                 vec![create_test_capability(
                     "sensor2",
@@ -541,8 +537,8 @@ mod tests {
                     0.8,
                 )],
             ),
-            create_test_platform(
-                "platform3",
+            create_test_node(
+                "node3",
                 "UAV",
                 vec![create_test_capability(
                     "sensor3",
@@ -557,7 +553,7 @@ mod tests {
             .limit(2)
             .build();
 
-        let matches = engine.query_platforms(&query, &nodes);
+        let matches = engine.query_nodes(&query, &nodes);
 
         assert_eq!(matches.len(), 2);
         // Should return top 2 by score
@@ -569,16 +565,16 @@ mod tests {
         let engine = CapabilityQueryEngine::new();
 
         let nodes = vec![
-            create_test_platform(
-                "platform1",
+            create_test_node(
+                "node1",
                 "UAV",
                 vec![
                     create_test_capability("sensor1", CapabilityType::Sensor, 0.9),
                     create_test_capability("comms1", CapabilityType::Communication, 0.8),
                 ],
             ),
-            create_test_platform(
-                "platform2",
+            create_test_node(
+                "node2",
                 "UAV",
                 vec![
                     create_test_capability("sensor2", CapabilityType::Sensor, 0.7),
@@ -587,7 +583,7 @@ mod tests {
             ),
         ];
 
-        let stats = engine.platform_capability_stats(&nodes);
+        let stats = engine.node_capability_stats(&nodes);
 
         assert_eq!(stats.len(), 3);
         assert_eq!(stats.get(&CapabilityType::Sensor).unwrap().count, 2);
@@ -609,7 +605,7 @@ mod tests {
             create_test_capability("comms1", CapabilityType::Communication, 0.8),
         ];
 
-        // Empty query should match any platform
+        // Empty query should match any node
         assert!(query.matches(&caps));
         // Score should be non-zero
         assert!(query.score(&caps) > 0.0);

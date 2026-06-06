@@ -16,7 +16,7 @@
 //! │  │                    BLE Translation Layer                        ││
 //! │  │                                                                 ││
 //! │  │   peat-btle Position ←──────────→ TrackInfo document           ││
-//! │  │   peat-btle HealthStatus ←──────→ Platform health fields       ││
+//! │  │   peat-btle HealthStatus ←──────→ Node health fields       ││
 //! │  │   peat-btle EmergencyEvent ←────→ Alert document               ││
 //! │  │   peat-btle CannedMessage ←─────→ CannedMessage document      ││
 //! │  │   peat-btle GCounter ←──────────→ Automerge counter            ││
@@ -54,8 +54,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct TranslationConfig {
     /// Collection name for tracks (default: "tracks")
     pub tracks_collection: String,
-    /// Collection name for platforms/peripherals (default: "platforms")
-    pub platforms_collection: String,
+    /// Collection name for nodes/peripherals (default: "nodes")
+    pub nodes_collection: String,
     /// Collection name for alerts/emergencies (default: "alerts")
     pub alerts_collection: String,
     /// Collection name for canned messages (default: "canned_messages")
@@ -70,7 +70,7 @@ impl Default for TranslationConfig {
     fn default() -> Self {
         Self {
             tracks_collection: "tracks".to_string(),
-            platforms_collection: "platforms".to_string(),
+            nodes_collection: "nodes".to_string(),
             alerts_collection: "alerts".to_string(),
             canned_messages_collection: "canned_messages".to_string(),
             default_classification: "a-f-G-U-C".to_string(), // Friendly ground unit
@@ -95,8 +95,8 @@ pub struct BlePosition {
 /// BLE health status (mirrors peat_btle::HealthStatus on the wire).
 ///
 /// **This struct is postcard-encoded onto the BLE radio** by
-/// [`BleTranslator::encode_outbound`] (`platforms` collection →
-/// `postcard_encode(&self.platform_to_peripheral(...))`), so the
+/// [`BleTranslator::encode_outbound`] (`nodes` collection →
+/// `postcard_encode(&self.node_to_peripheral(...))`), so the
 /// field layout MUST byte-match the peat-btle / GATT receivers
 /// shipped in M5Stack and WearOS watch firmware. `battery_percent`
 /// is `u8` (one postcard byte). Round-5 tried `Option<u8>` for
@@ -107,7 +107,7 @@ pub struct BlePosition {
 /// round-6 review caught the wire-format break.
 ///
 /// The `Option`-style "no sensor" semantics live one layer up, in
-/// [`crate::sync::ble_translation::BleTranslator::peripheral_to_platform`]'s
+/// [`crate::sync::ble_translation::BleTranslator::peripheral_to_node`]'s
 /// JSON output, and in `peat-ffi::parse_battery_percent` (`Option<i32>`)
 /// at the Automerge envelope. The wire-shape vs envelope-shape
 /// asymmetry is intentional and load-bearing: changing the wire
@@ -319,7 +319,7 @@ impl BleTranslator {
 
         let mut track = json!({
             "id": track_id,
-            "source_platform": format!("ble-{:08X}", peripheral_id),
+            "source_node": format!("ble-{:08X}", peripheral_id),
             "lat": position.latitude as f64,
             "lon": position.longitude as f64,
             "hae": position.altitude.map(|a| a as f64),
@@ -357,18 +357,18 @@ impl BleTranslator {
     }
 
     // =========================================================================
-    // Peripheral <-> Platform Translation
+    // Peripheral <-> Node Translation
     // =========================================================================
 
-    /// Convert BLE peripheral to platform document JSON
+    /// Convert BLE peripheral to node document JSON
     ///
-    /// Note: This version does not set cell_id. Use `peripheral_to_platform_in_cell`
+    /// Note: This version does not set cell_id. Use `peripheral_to_node_in_cell`
     /// to include cell membership based on BLE mesh_id.
-    pub fn peripheral_to_platform(&self, peripheral: &BlePeripheral) -> Value {
-        self.peripheral_to_platform_in_cell(peripheral, None)
+    pub fn peripheral_to_node(&self, peripheral: &BlePeripheral) -> Value {
+        self.peripheral_to_node_in_cell(peripheral, None)
     }
 
-    /// Convert BLE peripheral to platform document JSON with cell membership
+    /// Convert BLE peripheral to node document JSON with cell membership
     ///
     /// The `mesh_id` parameter (from BLE mesh configuration) is used as the cell_id,
     /// allowing BLE peripherals to be associated with Peat cells.
@@ -376,15 +376,15 @@ impl BleTranslator {
     /// # Arguments
     /// * `peripheral` - The BLE peripheral data
     /// * `mesh_id` - Optional BLE mesh ID to use as cell_id
-    pub fn peripheral_to_platform_in_cell(
+    pub fn peripheral_to_node_in_cell(
         &self,
         peripheral: &BlePeripheral,
         mesh_id: Option<&str>,
     ) -> Value {
-        let platform_id = format!("{}{:08X}", self.config.ble_id_prefix, peripheral.id);
+        let node_id = format!("{}{:08X}", self.config.ble_id_prefix, peripheral.id);
 
-        let mut platform = json!({
-            "id": platform_id,
+        let mut node = json!({
+            "id": node_id,
             "name": peripheral.callsign,
             "type": match peripheral.peripheral_type {
                 BlePeripheralType::SoldierSensor => "wearable",
@@ -408,20 +408,20 @@ impl BleTranslator {
 
         // Set cell_id from BLE mesh_id (mesh_id == cell_id mapping)
         if let Some(cell_id) = mesh_id {
-            platform["cell_id"] = json!(cell_id);
+            node["cell_id"] = json!(cell_id);
         }
 
         // Add optional health data
         if let Some(hr) = peripheral.health.heart_rate {
-            platform["heart_rate"] = json!(hr);
+            node["heart_rate"] = json!(hr);
         }
 
         // Add position if available
         if let Some(ref pos) = peripheral.position {
-            platform["lat"] = json!(pos.latitude as f64);
-            platform["lon"] = json!(pos.longitude as f64);
+            node["lat"] = json!(pos.latitude as f64);
+            node["lon"] = json!(pos.longitude as f64);
             if let Some(alt) = pos.altitude {
-                platform["hae"] = json!(alt as f64);
+                node["hae"] = json!(alt as f64);
             }
         }
 
@@ -437,25 +437,25 @@ impl BleTranslator {
             if peripheral.health.alerts & BleHealthStatus::ALERT_OUT_OF_RANGE != 0 {
                 alerts.push("out_of_range");
             }
-            platform["alerts"] = json!(alerts);
+            node["alerts"] = json!(alerts);
         }
 
-        platform
+        node
     }
 
-    /// Extract BLE peripheral data from platform document JSON
-    pub fn platform_to_peripheral(&self, platform: &Value) -> Option<BlePeripheral> {
-        let id_str = platform.get("id")?.as_str()?;
+    /// Extract BLE peripheral data from node document JSON
+    pub fn node_to_peripheral(&self, node: &Value) -> Option<BlePeripheral> {
+        let id_str = node.get("id")?.as_str()?;
         let id = self.parse_ble_id(id_str)?;
 
-        let peripheral_type = match platform.get("type").and_then(|v| v.as_str()) {
+        let peripheral_type = match node.get("type").and_then(|v| v.as_str()) {
             Some("wearable") => BlePeripheralType::SoldierSensor,
             Some("sensor") => BlePeripheralType::FixedSensor,
             Some("relay") => BlePeripheralType::Relay,
             _ => BlePeripheralType::Unknown,
         };
 
-        let activity = match platform.get("activity").and_then(|v| v.as_str()) {
+        let activity = match node.get("activity").and_then(|v| v.as_str()) {
             Some("walking") => 1,
             Some("running") => 2,
             Some("vehicle") => 3,
@@ -463,7 +463,7 @@ impl BleTranslator {
         };
 
         let mut alerts: u8 = 0;
-        if let Some(alert_arr) = platform.get("alerts").and_then(|v| v.as_array()) {
+        if let Some(alert_arr) = node.get("alerts").and_then(|v| v.as_array()) {
             for alert in alert_arr {
                 if let Some(s) = alert.as_str() {
                     match s {
@@ -476,18 +476,12 @@ impl BleTranslator {
             }
         }
 
-        let position = if platform.get("lat").is_some() && platform.get("lon").is_some() {
+        let position = if node.get("lat").is_some() && node.get("lon").is_some() {
             Some(BlePosition {
-                latitude: platform.get("lat")?.as_f64()? as f32,
-                longitude: platform.get("lon")?.as_f64()? as f32,
-                altitude: platform
-                    .get("hae")
-                    .and_then(|v| v.as_f64())
-                    .map(|a| a as f32),
-                accuracy: platform
-                    .get("cep")
-                    .and_then(|v| v.as_f64())
-                    .map(|a| a as f32),
+                latitude: node.get("lat")?.as_f64()? as f32,
+                longitude: node.get("lon")?.as_f64()? as f32,
+                altitude: node.get("hae").and_then(|v| v.as_f64()).map(|a| a as f32),
+                accuracy: node.get("cep").and_then(|v| v.as_f64()).map(|a| a as f32),
             })
         } else {
             None
@@ -497,14 +491,13 @@ impl BleTranslator {
             id,
             parent_node: self
                 .parse_ble_id(
-                    platform
-                        .get("parent_node")
+                    node.get("parent_node")
                         .and_then(|v| v.as_str())
                         .unwrap_or("0"),
                 )
                 .unwrap_or(0),
             peripheral_type,
-            callsign: platform
+            callsign: node
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
@@ -532,15 +525,15 @@ impl BleTranslator {
                 //
                 // Cast clamps into `u8` (battery 0..=100, heart_rate
                 // 0..=250) so the cast is total.
-                battery_percent: coerce_metric_to_i64(platform.get("battery_percent"))
+                battery_percent: coerce_metric_to_i64(node.get("battery_percent"))
                     .map(|n| n.clamp(0, 100) as u8)
                     .unwrap_or(100),
-                heart_rate: coerce_metric_to_i64(platform.get("heart_rate"))
+                heart_rate: coerce_metric_to_i64(node.get("heart_rate"))
                     .map(|n| n.clamp(0, 250) as u8),
                 activity,
                 alerts,
             },
-            timestamp: platform
+            timestamp: node
                 .get("last_update")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
@@ -765,9 +758,9 @@ impl BleTranslator {
         &self.config.tracks_collection
     }
 
-    /// Get the collection name for platforms
-    pub fn platforms_collection(&self) -> &str {
-        &self.config.platforms_collection
+    /// Get the collection name for nodes
+    pub fn nodes_collection(&self) -> &str {
+        &self.config.nodes_collection
     }
 
     /// Get the collection name for alerts
@@ -833,13 +826,13 @@ impl Translator for BleTranslator {
         let value = mesh_doc_to_value(doc);
 
         // Dispatch by collection. Configuration is per-translator —
-        // collections aren't hard-coded "tracks"/"platforms"/etc.,
+        // collections aren't hard-coded "tracks"/"nodes"/etc.,
         // but read from `self.config.*_collection` so operators can
         // rename them without breaking the translator.
         let bytes = if collection == self.tracks_collection() {
             postcard_encode(&self.track_to_position(&value)?)
-        } else if collection == self.platforms_collection() {
-            postcard_encode(&self.platform_to_peripheral(&value)?)
+        } else if collection == self.nodes_collection() {
+            postcard_encode(&self.node_to_peripheral(&value)?)
         } else if collection == self.alerts_collection() {
             postcard_encode(&self.alert_to_emergency(&value)?)
         } else if collection == self.canned_messages_collection() {
@@ -888,10 +881,10 @@ impl Translator for BleTranslator {
                 .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
                 .unwrap_or(0);
             self.position_to_track_in_cell(&pos, peripheral_id, callsign, mesh_id)
-        } else if collection == self.platforms_collection() {
+        } else if collection == self.nodes_collection() {
             let per: BlePeripheral =
-                postcard::from_bytes(bytes).context("ble: decode BlePeripheral (platforms)")?;
-            self.peripheral_to_platform_in_cell(&per, mesh_id)
+                postcard::from_bytes(bytes).context("ble: decode BlePeripheral (nodes)")?;
+            self.peripheral_to_node_in_cell(&per, mesh_id)
         } else if collection == self.alerts_collection() {
             let em: BleEmergencyEvent =
                 postcard::from_bytes(bytes).context("ble: decode BleEmergencyEvent (alerts)")?;
@@ -1051,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn test_peripheral_to_platform_roundtrip() {
+    fn test_peripheral_to_node_roundtrip() {
         let translator = test_translator();
 
         let original = BlePeripheral {
@@ -1074,8 +1067,8 @@ mod tests {
             }),
         };
 
-        let platform = translator.peripheral_to_platform(&original);
-        let recovered = translator.platform_to_peripheral(&platform).unwrap();
+        let node = translator.peripheral_to_node(&original);
+        let recovered = translator.node_to_peripheral(&node).unwrap();
 
         assert_eq!(recovered.id, original.id);
         assert_eq!(recovered.callsign, original.callsign);
@@ -1173,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_peripheral_to_platform_with_cell_id() {
+    fn test_peripheral_to_node_with_cell_id() {
         let translator = test_translator();
 
         let peripheral = BlePeripheral {
@@ -1192,13 +1185,13 @@ mod tests {
         };
 
         // Without mesh_id - no cell_id
-        let platform = translator.peripheral_to_platform(&peripheral);
-        assert!(platform.get("cell_id").is_none());
+        let node = translator.peripheral_to_node(&peripheral);
+        assert!(node.get("cell_id").is_none());
 
         // With mesh_id - cell_id set (mesh_id == cell_id mapping)
-        let platform = translator.peripheral_to_platform_in_cell(&peripheral, Some("ALPHA-SQUAD"));
-        assert_eq!(platform["cell_id"], "ALPHA-SQUAD");
-        assert_eq!(platform["ble_origin"], true);
+        let node = translator.peripheral_to_node_in_cell(&peripheral, Some("ALPHA-SQUAD"));
+        assert_eq!(node["cell_id"], "ALPHA-SQUAD");
+        assert_eq!(node["ble_origin"], true);
     }
 
     // =========================================================================
@@ -1557,7 +1550,7 @@ mod tests {
         );
     }
 
-    /// `platform_to_peripheral` accepts both integer and float JSON
+    /// `node_to_peripheral` accepts both integer and float JSON
     /// number forms for `battery_percent` / `heart_rate`. Mirrors the
     /// peat-ffi parser's contract — both read the same publish
     /// envelope, so a Kotlin publisher emitting `Double` (`85.0`) or
@@ -1565,7 +1558,7 @@ mod tests {
     /// integer the publisher meant. Pre-fix the `.as_u64()` shape
     /// silently dropped the float form (peat#835 round-4).
     #[test]
-    fn platform_to_peripheral_accepts_float_form_battery_and_heart() {
+    fn node_to_peripheral_accepts_float_form_battery_and_heart() {
         let translator = test_translator();
         let json = serde_json::json!({
             "id": "ble-CAFE0042",
@@ -1575,7 +1568,7 @@ mod tests {
             "heart_rate": 72.0
         });
         let peripheral = translator
-            .platform_to_peripheral(&json)
+            .node_to_peripheral(&json)
             .expect("float-form battery/heart must parse");
         assert_eq!(peripheral.health.battery_percent, 85);
         assert_eq!(peripheral.health.heart_rate, Some(72));
@@ -1586,7 +1579,7 @@ mod tests {
     /// values; the new clamp routes them to the nearest end (0..=100
     /// for battery, 0..=250 for heart_rate).
     #[test]
-    fn platform_to_peripheral_clamps_out_of_range_metrics() {
+    fn node_to_peripheral_clamps_out_of_range_metrics() {
         let translator = test_translator();
         let json = serde_json::json!({
             "id": "ble-CAFE0043",
@@ -1596,7 +1589,7 @@ mod tests {
             "heart_rate": 500
         });
         let peripheral = translator
-            .platform_to_peripheral(&json)
+            .node_to_peripheral(&json)
             .expect("out-of-range must parse");
         assert_eq!(peripheral.health.battery_percent, 100);
         assert_eq!(peripheral.health.heart_rate, Some(250));
@@ -1644,7 +1637,7 @@ mod tests {
     /// at the JSON envelope), but intentional: this layer must emit a
     /// `u8` for postcard regardless of input.
     #[test]
-    fn platform_to_peripheral_defaults_garbled_battery_to_100() {
+    fn node_to_peripheral_defaults_garbled_battery_to_100() {
         let translator = test_translator();
         let no_battery = serde_json::json!({
             "id": "ble-DEAD0001",
@@ -1652,7 +1645,7 @@ mod tests {
             "type": "wearable"
         });
         let p = translator
-            .platform_to_peripheral(&no_battery)
+            .node_to_peripheral(&no_battery)
             .expect("absent battery must parse");
         assert_eq!(
             p.health.battery_percent, 100,
@@ -1668,7 +1661,7 @@ mod tests {
             "battery_percent": "85"
         });
         let p2 = translator
-            .platform_to_peripheral(&garbled)
+            .node_to_peripheral(&garbled)
             .expect("garbled battery must parse");
         assert_eq!(p2.health.battery_percent, 100);
     }

@@ -172,8 +172,8 @@ pub struct Velocity {
 pub struct TrackData {
     /// Unique track identifier
     pub track_id: String,
-    /// Source platform ID
-    pub source_platform: String,
+    /// Source node ID
+    pub source_node: String,
     /// Geographic position
     pub position: Position,
     /// Optional velocity
@@ -228,7 +228,7 @@ pub fn encode_track_to_cot(track: TrackData) -> Result<String, PeatError> {
 
     let track_update = TrackUpdate {
         track_id: track.track_id,
-        source_platform: track.source_platform,
+        source_node: track.source_node,
         source_model: "peat-ffi".to_string(),
         model_version: peat_version(),
         cell_id: track.cell_id,
@@ -603,7 +603,7 @@ pub struct PeatNode {
     /// sync coordinator state is shared. Do NOT create a separate backend.
     storage_backend: Arc<AutomergeBackend>,
     /// Generic application-level mesh document layer wrapping `sync_backend`.
-    /// Composed alongside the existing typed surface (platforms, cells,
+    /// Composed alongside the existing typed surface (nodes, cells,
     /// tracks, …) so callers can reach generic publish/get/query/observe
     /// without going through type-specific JNI methods. Foundation step 3 of
     /// the peat-mesh-completion / peat-btle-reduction work — see
@@ -1730,8 +1730,8 @@ pub mod collections {
     pub const CELLS: &str = "cells";
     /// Collection for detected tracks (entities being tracked)
     pub const TRACKS: &str = "tracks";
-    /// Collection for platforms (robots, drones, sensors)
-    pub const PLATFORMS: &str = "platforms";
+    /// Collection for nodes (robots, drones, sensors)
+    pub const NODES: &str = "nodes";
     /// Collection for capability advertisements
     pub const CAPABILITIES: &str = "capabilities";
     /// Collection for commands (C2 messages)
@@ -1799,8 +1799,8 @@ pub struct CellInfo {
     pub name: String,
     /// Cell status
     pub status: CellStatus,
-    /// Number of platforms in this cell
-    pub platform_count: u32,
+    /// Number of nodes in this cell
+    pub node_count: u32,
     /// Center latitude (WGS84)
     pub center_lat: f64,
     /// Center longitude (WGS84)
@@ -1809,7 +1809,7 @@ pub struct CellInfo {
     pub capabilities: Vec<String>,
     /// Parent formation ID (if any)
     pub formation_id: Option<String>,
-    /// Cell leader platform ID (if any)
+    /// Cell leader node ID (if any)
     pub leader_id: Option<String>,
     /// Last update timestamp (Unix millis)
     pub last_update: i64,
@@ -1857,8 +1857,8 @@ impl TrackCategory {
 pub struct TrackInfo {
     /// Unique track identifier
     pub id: String,
-    /// Source platform that detected this track
-    pub source_platform: String,
+    /// Source node that detected this track
+    pub source_node: String,
     /// Cell ID that owns this track (if any)
     pub cell_id: Option<String>,
     /// Formation ID (if any)
@@ -1889,22 +1889,22 @@ pub struct TrackInfo {
     pub attributes: HashMap<String, String>,
 }
 
-/// Platform status enumeration
+/// Node status enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum PlatformStatus {
-    /// Platform is ready
+pub enum NodeStatus {
+    /// Node is ready
     Ready,
-    /// Platform is active
+    /// Node is active
     Active,
-    /// Platform has degraded capability
+    /// Node has degraded capability
     Degraded,
-    /// Platform is offline
+    /// Node is offline
     Offline,
-    /// Platform is loading/initializing
+    /// Node is loading/initializing
     Loading,
 }
 
-impl PlatformStatus {
+impl NodeStatus {
     fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "READY" => Self::Ready,
@@ -1927,20 +1927,20 @@ impl PlatformStatus {
     }
 }
 
-/// Platform information for display
+/// Node information for display
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct PlatformInfo {
-    /// Unique platform identifier
+pub struct NodeInfo {
+    /// Unique node identifier
     pub id: String,
-    /// Platform type (e.g., "UGV", "UAV", "Soldier System")
-    pub platform_type: String,
-    /// Platform name/callsign
+    /// Node type (e.g., "UGV", "UAV", "Soldier System")
+    pub node_type: String,
+    /// Node name/callsign
     pub name: String,
-    /// Platform status
-    pub status: PlatformStatus,
-    /// Platform latitude (WGS84)
+    /// Node status
+    pub status: NodeStatus,
+    /// Node latitude (WGS84)
     pub lat: f64,
-    /// Platform longitude (WGS84)
+    /// Node longitude (WGS84)
     pub lon: f64,
     /// Height above ellipsoid (meters, optional)
     pub hae: Option<f64>,
@@ -1951,14 +1951,14 @@ pub struct PlatformInfo {
     /// Cell membership (if any)
     pub cell_id: Option<String>,
     /// Battery / fuel percentage (0–100). Optional because not every
-    /// platform has a measurable battery (fixed sensors, pre-lock
+    /// node has a measurable battery (fixed sensors, pre-lock
     /// watches), and legacy publishes from pre-2026-05-08 hosts didn't
     /// carry the field. Wire key: `battery_percent`. See
     /// [`parse_battery_percent`] for the clamp + None semantics.
     pub battery_percent: Option<i32>,
     /// Heart rate in BPM, sourced from wearable sensors (WearOS watch,
     /// M5Stack health). Wire key: `heart_rate`. Required to surface a
-    /// vitals indicator on the operator card; absent on platform types
+    /// vitals indicator on the operator card; absent on node types
     /// that don't carry a wearable. See [`parse_heart_rate`] for the
     /// clamp + None semantics.
     pub heart_rate: Option<i32>,
@@ -1967,7 +1967,7 @@ pub struct PlatformInfo {
     /// "1970-01-01 stale" — different intent from `battery_percent`'s
     /// `None` ("unknown sensor state"). Don't fold this into the same
     /// `Option<T>` shape: a missing heartbeat *is* a stale-record
-    /// signal, not absence-of-data, and the platform-overlay code uses
+    /// signal, not absence-of-data, and the node-overlay code uses
     /// the time delta directly without a None-check branch.
     pub last_heartbeat: i64,
 }
@@ -2003,7 +2003,7 @@ pub struct MarkerInfo {
     pub hae: Option<f64>,
     /// Unix epoch milliseconds — the publisher's clock at marker
     /// drop time. Receivers DON'T treat this as a presence-staleness
-    /// timestamp (markers persist until deleted, unlike platforms);
+    /// timestamp (markers persist until deleted, unlike nodes);
     /// it's purely "when did the operator drop this pin."
     pub ts: i64,
     /// Operator callsign of the publisher. `None` when the publisher
@@ -2028,15 +2028,15 @@ pub struct MarkerInfo {
     pub deleted: bool,
 }
 
-// Wire-shape contract for `Option<T>` fields on `PlatformInfo`
+// Wire-shape contract for `Option<T>` fields on `NodeInfo`
 // (Rust-side emit/parse only; downstream consumers in other repos
 // have their own contracts).
 //
-// - **Emit:** `serialize_platform_json` and `serialize_platforms_get_json`
+// - **Emit:** `serialize_node_json` and `serialize_nodes_get_json`
 //   both render `Option::None` as JSON `null` via `serde_json::json!`
 //   macro semantics. There is no second emit shape from this codec.
 //
-// - **Parse:** `parse_platform_json` and `parse_platform_publish_json`
+// - **Parse:** `parse_node_json` and `parse_node_publish_json`
 //   both treat JSON `null` AND a missing key the same way — both yield
 //   `None`. `serde_json::Value` indexing returns `Value::Null` for
 //   missing keys, and the typed accessors (`as_i64`, `as_str`, …)
@@ -2094,7 +2094,7 @@ pub struct CommandInfo {
     pub id: String,
     /// Command type (e.g., "TRACK_TARGET", "MOVE", "ABORT")
     pub command_type: String,
-    /// Target cell or platform ID
+    /// Target cell or node ID
     pub target_id: String,
     /// Command parameters as JSON string
     pub parameters: String,
@@ -2254,38 +2254,38 @@ impl PeatNode {
     }
 
     // -------------------------------------------------------------------------
-    // Platform Operations
+    // Node Operations
     // -------------------------------------------------------------------------
 
-    /// Get all platforms from the sync document
-    pub fn get_platforms(&self) -> Result<Vec<PlatformInfo>, PeatError> {
+    /// Get all nodes from the sync document
+    pub fn get_nodes(&self) -> Result<Vec<NodeInfo>, PeatError> {
         self.runtime.block_on(async {
             let backend = &self.storage_backend;
-            let coll = backend.collection(collections::PLATFORMS);
+            let coll = backend.collection(collections::NODES);
 
             let docs = coll
                 .scan()
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
 
-            let mut platforms = Vec::new();
+            let mut nodes = Vec::new();
             for (id, data) in docs {
                 if let Ok(json) = String::from_utf8(data) {
-                    if let Ok(platform) = parse_platform_json(&id, &json) {
-                        platforms.push(platform);
+                    if let Ok(node) = parse_node_json(&id, &json) {
+                        nodes.push(node);
                     }
                 }
             }
-            Ok(platforms)
+            Ok(nodes)
         })
     }
 
-    /// Store a platform
-    pub fn put_platform(&self, platform: PlatformInfo) -> Result<(), PeatError> {
-        let json = serialize_platform_json(&platform)?;
+    /// Store a node
+    pub fn put_node(&self, node: NodeInfo) -> Result<(), PeatError> {
+        let json = serialize_node_json(&node)?;
         self.runtime.block_on(async {
             let backend = &self.storage_backend;
-            let coll = backend.collection(collections::PLATFORMS);
-            coll.upsert(&platform.id, json.into_bytes())
+            let coll = backend.collection(collections::NODES);
+            coll.upsert(&node.id, json.into_bytes())
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })
         })
     }
@@ -2319,7 +2319,7 @@ impl PeatNode {
                     Ok(m) => markers.push(m),
                     Err(_) => {
                         // Malformed entry — skip silently. Same shape
-                        // as get_platforms / get_commands handle parse
+                        // as get_nodes / get_commands handle parse
                         // errors: don't poison the whole list with one
                         // bad doc.
                     }
@@ -2566,7 +2566,7 @@ fn parse_cell_json(id: &str, json: &str) -> Result<CellInfo, PeatError> {
         id: id.to_string(),
         name: v["name"].as_str().unwrap_or(id).to_string(),
         status: CellStatus::from_str(v["status"].as_str().unwrap_or("OFFLINE")),
-        platform_count: v["platform_count"].as_u64().unwrap_or(0) as u32,
+        node_count: v["node_count"].as_u64().unwrap_or(0) as u32,
         center_lat: v["center_lat"].as_f64().unwrap_or(0.0),
         center_lon: v["center_lon"].as_f64().unwrap_or(0.0),
         capabilities: v["capabilities"]
@@ -2588,7 +2588,7 @@ fn serialize_cell_json(cell: &CellInfo) -> Result<String, PeatError> {
     let v = serde_json::json!({
         "name": cell.name,
         "status": cell.status.as_str(),
-        "platform_count": cell.platform_count,
+        "node_count": cell.node_count,
         "center_lat": cell.center_lat,
         "center_lon": cell.center_lon,
         "capabilities": cell.capabilities,
@@ -2633,7 +2633,7 @@ fn track_to_document(track: &TrackInfo) -> Result<peat_mesh::sync::types::Docume
 /// a one-step adapter rather than a full reimplementation. The cost
 /// is one extra serde_json round-trip per track on read; acceptable
 /// for the consumer counts the plugin handles (single-digit
-/// platforms × tens of tracks).
+/// nodes × tens of tracks).
 fn track_from_document(
     id: &str,
     doc: &peat_mesh::sync::types::Document,
@@ -2655,10 +2655,7 @@ fn parse_track_json(id: &str, json: &str) -> Result<TrackInfo, PeatError> {
 
     Ok(TrackInfo {
         id: id.to_string(),
-        source_platform: v["source_platform"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string(),
+        source_node: v["source_node"].as_str().unwrap_or("unknown").to_string(),
         cell_id: v["cell_id"].as_str().map(|s| s.to_string()),
         formation_id: v["formation_id"].as_str().map(|s| s.to_string()),
         lat: v["lat"].as_f64().unwrap_or(0.0),
@@ -2685,7 +2682,7 @@ fn parse_track_json(id: &str, json: &str) -> Result<TrackInfo, PeatError> {
 
 fn serialize_track_json(track: &TrackInfo) -> Result<String, PeatError> {
     let v = serde_json::json!({
-        "source_platform": track.source_platform,
+        "source_node": track.source_node,
         "cell_id": track.cell_id,
         "formation_id": track.formation_id,
         "lat": track.lat,
@@ -2704,16 +2701,16 @@ fn serialize_track_json(track: &TrackInfo) -> Result<String, PeatError> {
     serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
 }
 
-fn parse_platform_json(id: &str, json: &str) -> Result<PlatformInfo, PeatError> {
+fn parse_node_json(id: &str, json: &str) -> Result<NodeInfo, PeatError> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
         msg: format!("Invalid JSON: {}", e),
     })?;
 
-    Ok(PlatformInfo {
+    Ok(NodeInfo {
         id: id.to_string(),
-        platform_type: v["platform_type"].as_str().unwrap_or("unknown").to_string(),
+        node_type: v["node_type"].as_str().unwrap_or("unknown").to_string(),
         name: v["name"].as_str().unwrap_or(id).to_string(),
-        status: PlatformStatus::from_str(v["status"].as_str().unwrap_or("OFFLINE")),
+        status: NodeStatus::from_str(v["status"].as_str().unwrap_or("OFFLINE")),
         lat: v["lat"].as_f64().unwrap_or(0.0),
         lon: v["lon"].as_f64().unwrap_or(0.0),
         hae: v["hae"].as_f64(),
@@ -2733,11 +2730,11 @@ fn parse_platform_json(id: &str, json: &str) -> Result<PlatformInfo, PeatError> 
     })
 }
 
-/// Parse a Kotlin-side `publishPlatformJni` payload into a
-/// `PlatformInfo`.
+/// Parse a Kotlin-side `publishNodeJni` payload into a
+/// `NodeInfo`.
 ///
-/// Distinct from `parse_platform_json` because the JNI publish path
-/// supplies a few different defaults: `platform_type` defaults to
+/// Distinct from `parse_node_json` because the JNI publish path
+/// supplies a few different defaults: `node_type` defaults to
 /// `"SOLDIER"` here vs `"unknown"` in the storage parser; `status`
 /// defaults to `"ACTIVE"` here vs `"OFFLINE"` for storage; `readiness`
 /// defaults to `1.0` here vs `0.0`. The `last_heartbeat` field is
@@ -2754,27 +2751,27 @@ fn parse_platform_json(id: &str, json: &str) -> Result<PlatformInfo, PeatError> 
 /// Errors:
 /// - `InvalidInput` if the JSON is malformed or `id` is missing/empty
 ///   (consumed as the storage key downstream; an empty id would
-///   collide with `getPlatformsJni`'s scan results).
-fn parse_platform_publish_json(json_str: &str) -> Result<PlatformInfo, PeatError> {
+///   collide with `getNodesJni`'s scan results).
+fn parse_node_publish_json(json_str: &str) -> Result<NodeInfo, PeatError> {
     let v: serde_json::Value =
         serde_json::from_str(json_str).map_err(|e| PeatError::InvalidInput {
-            msg: format!("publishPlatform: invalid JSON: {}", e),
+            msg: format!("publishNode: invalid JSON: {}", e),
         })?;
 
     let id = match v["id"].as_str() {
         Some(id) if !id.is_empty() => id.to_string(),
         _ => {
             return Err(PeatError::InvalidInput {
-                msg: "publishPlatform: missing or empty 'id' field".to_string(),
+                msg: "publishNode: missing or empty 'id' field".to_string(),
             });
         }
     };
 
-    Ok(PlatformInfo {
+    Ok(NodeInfo {
         id,
-        platform_type: v["platform_type"].as_str().unwrap_or("SOLDIER").to_string(),
+        node_type: v["node_type"].as_str().unwrap_or("SOLDIER").to_string(),
         name: v["name"].as_str().unwrap_or("Unknown").to_string(),
-        status: PlatformStatus::from_str(v["status"].as_str().unwrap_or("ACTIVE")),
+        status: NodeStatus::from_str(v["status"].as_str().unwrap_or("ACTIVE")),
         lat: v["lat"].as_f64().unwrap_or(0.0),
         lon: v["lon"].as_f64().unwrap_or(0.0),
         hae: v["hae"].as_f64(),
@@ -2800,7 +2797,7 @@ fn parse_platform_publish_json(json_str: &str) -> Result<PlatformInfo, PeatError
 /// 1. **Wire absent → stamp `now()`.** Real publishers (Kotlin
 ///    self-PLI, BLE-bridged peripheral relay) don't carry a
 ///    timestamp; the JNI surface always meant "this publish is fresh."
-/// 2. **Wire `0` → preserve `0`.** Per `PlatformInfo`'s field doc,
+/// 2. **Wire `0` → preserve `0`.** Per `NodeInfo`'s field doc,
 ///    `last_heartbeat = 0` is the documented stale-record sentinel
 ///    ("1970-01-01 stale"). The earlier `> 0` filter silently
 ///    overrode this — a publisher sending the documented stale
@@ -2811,7 +2808,7 @@ fn parse_platform_publish_json(json_str: &str) -> Result<PlatformInfo, PeatError
 ///    with a future-skewed clock can publish `i64::MAX` or any
 ///    timestamp ahead of local time; downstream Kotlin staleness UI
 ///    consumes the value raw via `getStalenessString` and would
-///    show the platform as "always fresh." Cap acceptance at
+///    show the node as "always fresh." Cap acceptance at
 ///    `now() + 60_000ms` (60 s grace for legitimate clock drift in
 ///    distributed systems); beyond that, treat as adversarial /
 ///    misconfigured and stamp local `now()`.
@@ -2843,32 +2840,32 @@ fn parse_publish_last_heartbeat(v: &serde_json::Value) -> i64 {
     }
 }
 
-/// Serialize a slice of `PlatformInfo` into the JSON-array shape
-/// `getPlatformsJni` returns to Kotlin.
+/// Serialize a slice of `NodeInfo` into the JSON-array shape
+/// `getNodesJni` returns to Kotlin.
 ///
-/// Mirror of [`parse_platform_publish_json`] for the read-back path.
+/// Mirror of [`parse_node_publish_json`] for the read-back path.
 /// Pre-round-3 this was inlined inside the JNI function — that's the
 /// duplicated-codec class peat#835 was opened to lock; extracting it
 /// here makes the emit-side schema directly testable and keeps
 /// writer/reader symmetry single-sourced.
 ///
 /// Falls through to `"[]"` on serializer failure (the JNI surface
-/// returned the same string on `get_platforms` errors before the
+/// returned the same string on `get_nodes` errors before the
 /// extraction; preserving that for back-compat).
 ///
 /// Not gated on `feature = "sync"` even though the only caller
-/// (`getPlatformsJni`) is — the body operates on `PlatformInfo` and
-/// `serde_json` only, and the mirror parser `serialize_platform_json`
+/// (`getNodesJni`) is — the body operates on `NodeInfo` and
+/// `serde_json` only, and the mirror parser `serialize_node_json`
 /// is unconditional. Asymmetric gating between the pair would be
 /// confusing to maintainers and `cargo check --no-default-features`
 /// wouldn't catch the inconsistency.
-fn serialize_platforms_get_json(platforms: &[PlatformInfo]) -> String {
-    let json_array: Vec<serde_json::Value> = platforms
+fn serialize_nodes_get_json(nodes: &[NodeInfo]) -> String {
+    let json_array: Vec<serde_json::Value> = nodes
         .iter()
         .map(|p| {
             serde_json::json!({
                 "id": p.id,
-                "platform_type": p.platform_type,
+                "node_type": p.node_type,
                 "name": p.name,
                 "status": p.status.as_str(),
                 "lat": p.lat,
@@ -2897,7 +2894,7 @@ fn serialize_platforms_get_json(platforms: &[PlatformInfo]) -> String {
 /// internal representations (i64 / u64 / f64), and `Value::as_i64`
 /// only matches the first. A Kotlin publisher serializing
 /// `Int.toDouble().toString()` (i.e. `"85.0"` reaches the parser as
-/// the float variant), or any platform whose JSON serializer renders
+/// the float variant), or any node whose JSON serializer renders
 /// integers with a trailing `.0`, would silently drop the field
 /// through the int-only path. That's the **same data-loss bug class
 /// peat#835 was opened to lock**: a publisher writes a value and the
@@ -3128,20 +3125,20 @@ fn serialize_marker_json(marker: &MarkerInfo) -> Result<String, PeatError> {
     serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
 }
 
-fn serialize_platform_json(platform: &PlatformInfo) -> Result<String, PeatError> {
+fn serialize_node_json(node: &NodeInfo) -> Result<String, PeatError> {
     let v = serde_json::json!({
-        "platform_type": platform.platform_type,
-        "name": platform.name,
-        "status": platform.status.as_str(),
-        "lat": platform.lat,
-        "lon": platform.lon,
-        "hae": platform.hae,
-        "readiness": platform.readiness,
-        "capabilities": platform.capabilities,
-        "cell_id": platform.cell_id,
-        "battery_percent": platform.battery_percent,
-        "heart_rate": platform.heart_rate,
-        "last_heartbeat": platform.last_heartbeat,
+        "node_type": node.node_type,
+        "name": node.name,
+        "status": node.status.as_str(),
+        "lat": node.lat,
+        "lon": node.lon,
+        "hae": node.hae,
+        "readiness": node.readiness,
+        "capabilities": node.capabilities,
+        "cell_id": node.cell_id,
+        "battery_percent": node.battery_percent,
+        "heart_rate": node.heart_rate,
+        "last_heartbeat": node.last_heartbeat,
     });
     serde_json::to_string(&v).map_err(|e| PeatError::EncodingError { msg: e.to_string() })
 }
@@ -3197,7 +3194,7 @@ mod tests {
     fn test_encode_track() {
         let track = TrackData {
             track_id: "track-001".to_string(),
-            source_platform: "platform-1".to_string(),
+            source_node: "node-1".to_string(),
             position: Position {
                 lat: 34.0522,
                 lon: -118.2437,
@@ -3225,7 +3222,7 @@ mod tests {
     fn test_encode_minimal_track() {
         let track = TrackData {
             track_id: "t1".to_string(),
-            source_platform: "p1".to_string(),
+            source_node: "p1".to_string(),
             position: Position {
                 lat: 0.0,
                 lon: 0.0,
@@ -3246,7 +3243,7 @@ mod tests {
     fn test_invalid_track_id() {
         let track = TrackData {
             track_id: "".to_string(), // Empty - should fail
-            source_platform: "p1".to_string(),
+            source_node: "p1".to_string(),
             position: Position {
                 lat: 0.0,
                 lon: 0.0,
@@ -3849,7 +3846,7 @@ mod tests {
                 f.insert("lat".to_string(), serde_json::json!(40.0));
                 f.insert("lon".to_string(), serde_json::json!(-74.0));
                 f.insert(
-                    "source_platform".to_string(),
+                    "source_node".to_string(),
                     serde_json::json!("iroh-00000001"),
                 );
                 f.insert("hae".to_string(), serde_json::json!(100.0));
@@ -3933,7 +3930,7 @@ mod tests {
                         let mut f = std::collections::HashMap::new();
                         f.insert("lat".to_string(), serde_json::json!(40.0));
                         f.insert("lon".to_string(), serde_json::json!(-74.0));
-                        f.insert("source_platform".to_string(), serde_json::json!("iroh-1"));
+                        f.insert("source_node".to_string(), serde_json::json!("iroh-1"));
                         f.insert("callsign".to_string(), serde_json::json!("A"));
                         f.insert("hae".to_string(), serde_json::json!(0.0));
                         f.insert("cep".to_string(), serde_json::json!(0.0));
@@ -3979,7 +3976,7 @@ mod tests {
                         let mut f = std::collections::HashMap::new();
                         f.insert("lat".to_string(), serde_json::json!(41.0));
                         f.insert("lon".to_string(), serde_json::json!(-75.0));
-                        f.insert("source_platform".to_string(), serde_json::json!("iroh-2"));
+                        f.insert("source_node".to_string(), serde_json::json!("iroh-2"));
                         f.insert("callsign".to_string(), serde_json::json!("B"));
                         f.insert("hae".to_string(), serde_json::json!(0.0));
                         f.insert("cep".to_string(), serde_json::json!(0.0));
@@ -4156,7 +4153,7 @@ mod tests {
             // matches the production `subscribeOutboundFramesJni` shape.
             let mut collections = vec![
                 ble_translator.tracks_collection().to_string(),
-                ble_translator.platforms_collection().to_string(),
+                ble_translator.nodes_collection().to_string(),
             ];
             for c in LITE_BRIDGE_COLLECTIONS {
                 collections.push((*c).to_string());
@@ -4190,7 +4187,7 @@ mod tests {
             let mut f = std::collections::HashMap::new();
             f.insert("lat".to_string(), serde_json::json!(40.0));
             f.insert("lon".to_string(), serde_json::json!(-74.0));
-            f.insert("source_platform".to_string(), serde_json::json!("iroh-1"));
+            f.insert("source_node".to_string(), serde_json::json!("iroh-1"));
             f.insert("hae".to_string(), serde_json::json!(0.0));
             f.insert("cep".to_string(), serde_json::json!(0.0));
             f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
@@ -4667,7 +4664,7 @@ mod tests {
             // 2. Sim publishes a contact report (TrackUpdate) to the tracks collection
             let track_json = serde_json::json!({
                 "id": "red-track-1",
-                "source_platform": "LightFish-3",
+                "source_node": "LightFish-3",
                 "source_model": "FLIR Vue Pro R 640",
                 "model_version": "1.0",
                 "cell_id": "company-CHARLIE",
@@ -4710,7 +4707,7 @@ mod tests {
             // primitive works; this test extends coverage to the doc layer.
             if let Some((_id, data)) = track_doc.into_iter().find(|(id, _)| id == "red-track-1") {
                 let parsed: serde_json::Value = serde_json::from_slice(&data).expect("valid JSON");
-                assert_eq!(parsed["source_platform"], "LightFish-3");
+                assert_eq!(parsed["source_node"], "LightFish-3");
                 assert_eq!(parsed["classification"], "a-h-S");
                 assert_eq!(parsed["attributes"]["callsign"], "SKUNK-1");
                 assert_eq!(parsed["attributes"]["image_chip_hash"], image_hash);
@@ -4882,7 +4879,7 @@ mod tests {
         /// contract that `publishDocumentJni` + `getDocumentJni`
         /// expose: both go through `peat_mesh::Node`'s document API,
         /// not the older raw-bytes Collection path used by typed
-        /// helpers like `publish_platform`.
+        /// helpers like `publish_node`.
         ///
         /// The in-process variant locks in the publish+get half on a
         /// single instance; cross-node sync is exercised by M4b on
@@ -5034,15 +5031,15 @@ mod tests {
         }
     }
 
-    /// Round-trip tests for the `PlatformInfo` JSON wire schema.
+    /// Round-trip tests for the `NodeInfo` JSON wire schema.
     ///
-    /// Locks in the symmetry contract between `parse_platform_json`
-    /// (storage → struct) and `serialize_platform_json` (struct →
+    /// Locks in the symmetry contract between `parse_node_json`
+    /// (storage → struct) and `serialize_node_json` (struct →
     /// storage), and the parallel JNI inline encode/decode in
-    /// `Java_..._publishPlatformJni` / `Java_..._getPlatformsJni`. The
+    /// `Java_..._publishNodeJni` / `Java_..._getNodesJni`. The
     /// pre-2026-05-08 schema dropped `battery_percent` and `heart_rate`
     /// silently across the FFI boundary: Kotlin published them, Rust
-    /// didn't extract them, the receiver's `getPlatformsJni` didn't
+    /// didn't extract them, the receiver's `getNodesJni` didn't
     /// emit them, the Kotlin parser saw them as `null`, and operator
     /// cards on remote peers showed no battery/heart indicators.
     /// Without a Rust-side test the bug compile-cleaned and only
@@ -5052,15 +5049,15 @@ mod tests {
     /// `every_optional_field_round_trips_through_storage` so the
     /// matrix stays exhaustive.
     #[cfg(feature = "sync")]
-    mod platform_tests {
+    mod node_tests {
         use super::*;
 
-        fn fixture(battery: Option<i32>, heart: Option<i32>) -> PlatformInfo {
-            PlatformInfo {
+        fn fixture(battery: Option<i32>, heart: Option<i32>) -> NodeInfo {
+            NodeInfo {
                 id: "ANDROID-fixture".to_string(),
-                platform_type: "SOLDIER".to_string(),
+                node_type: "SOLDIER".to_string(),
                 name: "HOBO".to_string(),
-                status: PlatformStatus::Active,
+                status: NodeStatus::Active,
                 lat: 33.71576,
                 lon: -84.41152,
                 hae: Some(305.0),
@@ -5073,20 +5070,20 @@ mod tests {
             }
         }
 
-        /// `serialize_platform_json` → `parse_platform_json` is the
-        /// path `put_platform` / `get_platforms` traverse via the
-        /// AutomergeBackend storage. Every field a `PlatformInfo`
+        /// `serialize_node_json` → `parse_node_json` is the
+        /// path `put_node` / `get_nodes` traverse via the
+        /// AutomergeBackend storage. Every field a `NodeInfo`
         /// carries today must round-trip; if a future field is added
         /// to the struct without being added to either codec function,
         /// this assertion catches it before the FFI consumer does.
         #[test]
         fn every_optional_field_round_trips_through_storage_codec() {
             let original = fixture(Some(85), Some(72));
-            let json = serialize_platform_json(&original).expect("serialize");
-            let parsed = parse_platform_json(&original.id, &json).expect("parse");
+            let json = serialize_node_json(&original).expect("serialize");
+            let parsed = parse_node_json(&original.id, &json).expect("parse");
 
             assert_eq!(parsed.id, original.id);
-            assert_eq!(parsed.platform_type, original.platform_type);
+            assert_eq!(parsed.node_type, original.node_type);
             assert_eq!(parsed.name, original.name);
             assert_eq!(parsed.lat, original.lat);
             assert_eq!(parsed.lon, original.lon);
@@ -5102,13 +5099,13 @@ mod tests {
         /// `battery_percent: None` must serialize to a JSON `null` (or
         /// absent) and parse back to `None` — not silently fill 0,
         /// which the dropdown UI would render as "battery dead" on
-        /// platforms that simply have no battery sensor (fixed
+        /// nodes that simply have no battery sensor (fixed
         /// sensors, demo nodes).
         #[test]
         fn battery_none_round_trips_as_none() {
             let original = fixture(None, None);
-            let json = serialize_platform_json(&original).expect("serialize");
-            let parsed = parse_platform_json(&original.id, &json).expect("parse");
+            let json = serialize_node_json(&original).expect("serialize");
+            let parsed = parse_node_json(&original.id, &json).expect("parse");
 
             assert!(parsed.battery_percent.is_none());
             assert!(parsed.heart_rate.is_none());
@@ -5122,7 +5119,7 @@ mod tests {
         #[test]
         fn legacy_json_without_battery_or_heart_parses_with_none() {
             let legacy_json = serde_json::json!({
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "name": "LEGACY-PEER",
                 "status": "ACTIVE",
                 "lat": 33.71,
@@ -5136,26 +5133,26 @@ mod tests {
             .to_string();
 
             let parsed =
-                parse_platform_json("LEGACY-PEER", &legacy_json).expect("legacy json must parse");
+                parse_node_json("LEGACY-PEER", &legacy_json).expect("legacy json must parse");
 
             assert!(parsed.battery_percent.is_none());
             assert!(parsed.heart_rate.is_none());
             assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
         }
 
-        /// `put_platform` → `get_platforms` is the actual storage
+        /// `put_node` → `get_nodes` is the actual storage
         /// path the JNI layer exposes. Bypassing the codec helpers
-        /// and going through `node.put_platform(...)` exercises the
+        /// and going through `node.put_node(...)` exercises the
         /// AutomergeBackend serialize/scan/deserialize loop end-to-end
         /// — which is exactly where peat#832 (BLE-bridged tracks
         /// losing body fields) demonstrated the codec helpers can
         /// look correct in isolation while still dropping data
         /// across the storage round-trip.
         #[test]
-        fn put_platform_get_platforms_preserves_battery_and_heart() {
+        fn put_node_get_nodes_preserves_battery_and_heart() {
             let tmp = tempfile::tempdir().unwrap();
             let node = create_node(NodeConfig {
-                app_id: "platform-rt-test".to_string(),
+                app_id: "node-rt-test".to_string(),
                 shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
                 bind_address: Some("127.0.0.1:0".to_string()),
                 storage_path: tmp.path().to_str().unwrap().to_string(),
@@ -5164,23 +5161,23 @@ mod tests {
             .expect("create_node");
 
             let original = fixture(Some(85), Some(72));
-            node.put_platform(original.clone()).expect("put_platform");
+            node.put_node(original.clone()).expect("put_node");
 
-            let listed = node.get_platforms().expect("get_platforms");
+            let listed = node.get_nodes().expect("get_nodes");
             let found = listed
                 .iter()
                 .find(|p| p.id == original.id)
-                .expect("published platform must appear in get_platforms");
+                .expect("published node must appear in get_nodes");
 
             assert_eq!(
                 found.battery_percent,
                 Some(85),
-                "battery_percent dropped between put_platform and get_platforms"
+                "battery_percent dropped between put_node and get_nodes"
             );
             assert_eq!(
                 found.heart_rate,
                 Some(72),
-                "heart_rate dropped between put_platform and get_platforms"
+                "heart_rate dropped between put_node and get_nodes"
             );
             assert_eq!(found.cell_id.as_deref(), Some("BRAVO"));
         }
@@ -5188,9 +5185,9 @@ mod tests {
         /// JNI inline-parser path: the publish surface consumers
         /// actually hit. Builds a JSON envelope shaped exactly like
         /// a typical self-position broadcaster would publish, runs
-        /// it through the same `parse_platform_publish_json` helper
-        /// `publishPlatformJni` invokes, and verifies battery + heart
-        /// land in the resulting `PlatformInfo`. Locks the duplicated
+        /// it through the same `parse_node_publish_json` helper
+        /// `publishNodeJni` invokes, and verifies battery + heart
+        /// land in the resulting `NodeInfo`. Locks the duplicated
         /// codec — pre-2026-05-08 this was inlined inside the JNI
         /// function and unit tests couldn't reach it, which is how
         /// peat#835's bug class (silent field drop on the publish
@@ -5200,7 +5197,7 @@ mod tests {
             let json = r#"{
                 "id": "ANDROID-abc123",
                 "name": "HOBO",
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "lat": 33.71576,
                 "lon": -84.41152,
                 "hae": 305.0,
@@ -5212,7 +5209,7 @@ mod tests {
                 "heart_rate": 72
             }"#;
 
-            let parsed = parse_platform_publish_json(json).expect("parse");
+            let parsed = parse_node_publish_json(json).expect("parse");
 
             assert_eq!(parsed.id, "ANDROID-abc123");
             assert_eq!(parsed.battery_percent, Some(85));
@@ -5227,11 +5224,11 @@ mod tests {
         /// equivalent error contract.
         #[test]
         fn publish_json_rejects_missing_id() {
-            let json = r#"{"name":"HOBO","platform_type":"SOLDIER","lat":33.7,"lon":-84.4}"#;
-            assert!(parse_platform_publish_json(json).is_err());
+            let json = r#"{"name":"HOBO","node_type":"SOLDIER","lat":33.7,"lon":-84.4}"#;
+            assert!(parse_node_publish_json(json).is_err());
 
             let empty_id = r#"{"id":"","name":"HOBO","lat":33.7,"lon":-84.4}"#;
-            assert!(parse_platform_publish_json(empty_id).is_err());
+            assert!(parse_node_publish_json(empty_id).is_err());
         }
 
         /// Out-of-range numeric values clamp to the logical end of
@@ -5298,7 +5295,7 @@ mod tests {
         #[test]
         fn parse_silently_drops_unknown_future_fields() {
             let json = r#"{
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "name": "FUTURE-PEER",
                 "status": "ACTIVE",
                 "lat": 33.71,
@@ -5315,7 +5312,7 @@ mod tests {
             }"#;
 
             let parsed =
-                parse_platform_json("FUTURE-PEER", json).expect("future-shaped json must parse");
+                parse_node_json("FUTURE-PEER", json).expect("future-shaped json must parse");
             assert_eq!(parsed.battery_percent, Some(90));
             assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
             // No assertion about the unknown fields — they're
@@ -5329,7 +5326,7 @@ mod tests {
         /// pre-round-3 implementation used `as_i64()?` which returns
         /// `None` for any JSON Number stored as float — a Kotlin
         /// publisher serializing `battery_percent` as `Double`
-        /// (`85.0`), or any platform whose JSON serializer renders
+        /// (`85.0`), or any node whose JSON serializer renders
         /// integers with a trailing `.0`, would silently lose the
         /// field. That's the same data-loss bug class peat#835 was
         /// opened to lock in the first place.
@@ -5367,19 +5364,19 @@ mod tests {
         }
 
         /// **Round-3**: extracted emit-side codec
-        /// `serialize_platforms_get_json` mirrors the parse-side
-        /// extraction (`parse_platform_publish_json`). Without the
-        /// extraction, the inline `getPlatformsJni` json! macro was a
+        /// `serialize_nodes_get_json` mirrors the parse-side
+        /// extraction (`parse_node_publish_json`). Without the
+        /// extraction, the inline `getNodesJni` json! macro was a
         /// duplicated codec the test suite couldn't reach — same
         /// drift class peat#835 originally exposed on the parse side.
         /// This test pins the emit shape end-to-end.
         #[test]
-        fn serialize_platforms_get_json_round_trips_through_parser() {
-            let original = PlatformInfo {
+        fn serialize_nodes_get_json_round_trips_through_parser() {
+            let original = NodeInfo {
                 id: "ANDROID-emit".to_string(),
-                platform_type: "SOLDIER".to_string(),
+                node_type: "SOLDIER".to_string(),
                 name: "EMIT-TEST".to_string(),
-                status: PlatformStatus::Active,
+                status: NodeStatus::Active,
                 lat: 33.71576,
                 lon: -84.41152,
                 hae: Some(305.0),
@@ -5391,15 +5388,15 @@ mod tests {
                 last_heartbeat: 1_700_000_000_000,
             };
 
-            let emitted = serialize_platforms_get_json(std::slice::from_ref(&original));
+            let emitted = serialize_nodes_get_json(std::slice::from_ref(&original));
             let arr: Vec<serde_json::Value> = serde_json::from_str(&emitted).expect("array");
             assert_eq!(arr.len(), 1);
 
             // Parse the emitted JSON back through the storage parser
-            // (the path `getPlatforms` consumers' downstream Kotlin
+            // (the path `getNodes` consumers' downstream Kotlin
             // parsers mirror) and assert symmetry.
             let obj_str = serde_json::to_string(&arr[0]).expect("obj");
-            let parsed = parse_platform_json(&original.id, &obj_str).expect("parse");
+            let parsed = parse_node_json(&original.id, &obj_str).expect("parse");
             assert_eq!(parsed.battery_percent, Some(85));
             assert_eq!(parsed.heart_rate, Some(72));
             assert_eq!(parsed.cell_id.as_deref(), Some("BRAVO"));
@@ -5419,14 +5416,14 @@ mod tests {
                 r#"{{
                     "id": "ANDROID-replay",
                     "name": "REPLAY",
-                    "platform_type": "SOLDIER",
+                    "node_type": "SOLDIER",
                     "lat": 0.0, "lon": 0.0,
                     "status": "ACTIVE",
                     "last_heartbeat": {}
                 }}"#,
                 supplied
             );
-            let parsed = parse_platform_publish_json(&json).expect("parse");
+            let parsed = parse_node_publish_json(&json).expect("parse");
             assert_eq!(parsed.last_heartbeat, supplied);
         }
 
@@ -5439,11 +5436,11 @@ mod tests {
             let json = r#"{
                 "id": "ANDROID-no-stamp",
                 "name": "FRESH",
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "lat": 0.0, "lon": 0.0,
                 "status": "ACTIVE"
             }"#;
-            let parsed = parse_platform_publish_json(json).expect("parse");
+            let parsed = parse_node_publish_json(json).expect("parse");
             let after = chrono::Utc::now().timestamp_millis();
             assert!(
                 parsed.last_heartbeat >= before && parsed.last_heartbeat <= after,
@@ -5455,7 +5452,7 @@ mod tests {
         }
 
         /// **Round-4 P1**: wire `last_heartbeat: 0` is the documented
-        /// stale-record sentinel per the `PlatformInfo` field doc;
+        /// stale-record sentinel per the `NodeInfo` field doc;
         /// must round-trip unchanged. Round-3's `> 0` filter
         /// inverted this contract, silently replacing the
         /// stale-marker with `Utc::now()`. Test pins the corrected
@@ -5465,12 +5462,12 @@ mod tests {
             let json = r#"{
                 "id": "ANDROID-stale",
                 "name": "STALE",
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "lat": 0.0, "lon": 0.0,
                 "status": "ACTIVE",
                 "last_heartbeat": 0
             }"#;
-            let parsed = parse_platform_publish_json(json).expect("parse");
+            let parsed = parse_node_publish_json(json).expect("parse");
             assert_eq!(
                 parsed.last_heartbeat, 0,
                 "wire `last_heartbeat: 0` must pass through as the stale-record sentinel"
@@ -5486,10 +5483,10 @@ mod tests {
         fn publish_json_preserves_small_positive_last_heartbeat() {
             for wire in [1_i64, 12_345, 1_700_000_000_000] {
                 let json = format!(
-                    r#"{{"id":"ANDROID-{w}","name":"X","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{w}}}"#,
+                    r#"{{"id":"ANDROID-{w}","name":"X","node_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{w}}}"#,
                     w = wire,
                 );
-                let parsed = parse_platform_publish_json(&json).expect("parse");
+                let parsed = parse_node_publish_json(&json).expect("parse");
                 assert_eq!(
                     parsed.last_heartbeat, wire,
                     "wire `{}` must round-trip",
@@ -5509,13 +5506,13 @@ mod tests {
             let json = r#"{
                 "id": "ANDROID-malicious",
                 "name": "MALICIOUS",
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "lat": 0.0, "lon": 0.0,
                 "status": "ACTIVE",
                 "last_heartbeat": 9223372036854775807
             }"#;
             let before = chrono::Utc::now().timestamp_millis();
-            let parsed = parse_platform_publish_json(json).expect("parse");
+            let parsed = parse_node_publish_json(json).expect("parse");
             let after = chrono::Utc::now().timestamp_millis();
             assert!(
                 parsed.last_heartbeat >= before && parsed.last_heartbeat <= after,
@@ -5538,10 +5535,10 @@ mod tests {
         fn publish_json_clamps_negative_last_heartbeat_to_zero() {
             for wire in [-1_i64, -1_700_000_000_000, i64::MIN] {
                 let json = format!(
-                    r#"{{"id":"ANDROID-neg-{w}","name":"NEG","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{w}}}"#,
+                    r#"{{"id":"ANDROID-neg-{w}","name":"NEG","node_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{w}}}"#,
                     w = wire,
                 );
-                let parsed = parse_platform_publish_json(&json)
+                let parsed = parse_node_publish_json(&json)
                     .unwrap_or_else(|e| panic!("wire {} must parse: {:?}", wire, e));
                 assert_eq!(
                     parsed.last_heartbeat, 0,
@@ -5560,19 +5557,19 @@ mod tests {
             // 30 s in the future — within grace.
             let in_grace = now + 30_000;
             let json = format!(
-                r#"{{"id":"ANDROID-grace","name":"G","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{}}}"#,
+                r#"{{"id":"ANDROID-grace","name":"G","node_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{}}}"#,
                 in_grace
             );
-            let parsed = parse_platform_publish_json(&json).expect("parse");
+            let parsed = parse_node_publish_json(&json).expect("parse");
             assert_eq!(parsed.last_heartbeat, in_grace);
 
             // 5 minutes in the future — beyond 60 s grace, clamp.
             let beyond = chrono::Utc::now().timestamp_millis() + 5 * 60 * 1000;
             let json2 = format!(
-                r#"{{"id":"ANDROID-skew","name":"S","platform_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{}}}"#,
+                r#"{{"id":"ANDROID-skew","name":"S","node_type":"SOLDIER","lat":0.0,"lon":0.0,"status":"ACTIVE","last_heartbeat":{}}}"#,
                 beyond
             );
-            let parsed2 = parse_platform_publish_json(&json2).expect("parse");
+            let parsed2 = parse_node_publish_json(&json2).expect("parse");
             assert!(
                 parsed2.last_heartbeat < beyond,
                 "5min-future must clamp ({} should be << {})",
@@ -5606,7 +5603,7 @@ mod tests {
             let json = r#"{
                 "id": "ANDROID-future",
                 "name": "FUTURE",
-                "platform_type": "SOLDIER",
+                "node_type": "SOLDIER",
                 "lat": 33.71, "lon": -84.41,
                 "status": "ACTIVE",
                 "battery_percent": 90,
@@ -5615,8 +5612,7 @@ mod tests {
                 "future_v2_struct": { "nested": 42 },
                 "future_v2_array": [1, 2, 3]
             }"#;
-            let parsed =
-                parse_platform_publish_json(json).expect("future-shaped publish must parse");
+            let parsed = parse_node_publish_json(json).expect("future-shaped publish must parse");
             assert_eq!(parsed.battery_percent, Some(90));
             assert_eq!(parsed.id, "ANDROID-future");
         }
@@ -5629,7 +5625,7 @@ mod tests {
     /// peat#832 (open as of 2026-05-08) reports the BLE-bridged tracks
     /// surface every body field at `parse_track_json`'s `unwrap_or`
     /// default (lat/lon=0.0, classification="a-u-G", confidence=0.5,
-    /// source_platform="unknown") even though `ingest_position_via_translator`
+    /// source_node="unknown") even though `ingest_position_via_translator`
     /// publishes valid coordinates. The hypothesis the issue records:
     /// the writer publishes via `peat_mesh::Node::publish_with_origin`
     /// (Document API → Automerge map storage), but the reader uses
@@ -5707,7 +5703,7 @@ mod tests {
 
             let original = TrackInfo {
                 id: "manual-001".to_string(),
-                source_platform: "ANDROID-tablet".to_string(),
+                source_node: "ANDROID-tablet".to_string(),
                 cell_id: Some("BRAVO".to_string()),
                 formation_id: None,
                 lat: 33.71576,
@@ -5742,7 +5738,7 @@ mod tests {
                 found.lon
             );
             assert_eq!(found.cell_id.as_deref(), Some("BRAVO"));
-            assert_eq!(found.source_platform, original.source_platform);
+            assert_eq!(found.source_node, original.source_node);
             assert_eq!(found.classification, original.classification);
         }
 
@@ -5753,7 +5749,7 @@ mod tests {
         /// `AutomergeBackend::collection().scan()` (flat-JSON API),
         /// and the two storage-API namespaces disagreed — every body
         /// field came back as a `parse_track_json` `unwrap_or`
-        /// default (lat/lon=0.0, source_platform="unknown",
+        /// default (lat/lon=0.0, source_node="unknown",
         /// classification="a-u-G"). Fix routes `get_tracks` through
         /// `Node::query` so writer and reader share the Document API,
         /// and `put_track` was migrated to `Node::publish` to keep
@@ -5813,9 +5809,9 @@ mod tests {
                 "peat#832: cell_id dropped"
             );
             assert!(
-                !found.source_platform.is_empty() && found.source_platform != "unknown",
-                "peat#832: source_platform reverted to default — got {:?}",
-                found.source_platform
+                !found.source_node.is_empty() && found.source_node != "unknown",
+                "peat#832: source_node reverted to default — got {:?}",
+                found.source_node
             );
             assert_ne!(
                 found.classification, "a-u-G",
@@ -5902,7 +5898,7 @@ mod tests {
             // any *parse* error that fires would be in the Document
             // deserialization step, not in JSON tokenization.
             let legacy = serde_json::json!({
-                "source_platform": "ble-DEAD0001",
+                "source_node": "ble-DEAD0001",
                 "lat": 33.0,
                 "lon": -84.0,
                 "classification": "a-f-G-U-C-I",
@@ -6114,8 +6110,8 @@ mod tests {
     /// codec tests in [`marker_tombstone`] don't catch wrapper-vs-
     /// internal drift (renamed UniFFI field, doc-store key mismatch,
     /// JNI handle lifecycle regression). Storage-side tests follow
-    /// the `put_platform_get_platforms_preserves_battery_and_heart`
-    /// pattern in [`platform_tests`]: `create_node` against
+    /// the `put_node_get_nodes_preserves_battery_and_heart`
+    /// pattern in [`node_tests`]: `create_node` against
     /// `AutomergeBackend` (not `InMemoryBackend`, which silently
     /// papers over the publish-vs-scan storage-API asymmetry — see
     /// the InMemoryBackend test gap memory).
@@ -6255,7 +6251,7 @@ mod tests {
         /// the wire and verifies every field lands in the resulting
         /// `MarkerInfo`. Locks the duplicated codec — same pattern as
         /// `publish_json_inline_parser_extracts_battery_and_heart` in
-        /// [`platform_tests`], same rationale (silent field drop on
+        /// [`node_tests`], same rationale (silent field drop on
         /// the publish path).
         #[test]
         fn publish_json_inline_parser_extracts_live_marker_fields() {
@@ -7360,7 +7356,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getCellsJni(
                         "id": c.id,
                         "name": c.name,
                         "status": c.status.as_str(),
-                        "platform_count": c.platform_count,
+                        "node_count": c.node_count,
                         "center_lat": c.center_lat,
                         "center_lon": c.center_lon,
                         "capabilities": c.capabilities,
@@ -7410,7 +7406,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getTracksJni(
                 .map(|t| {
                     serde_json::json!({
                         "id": t.id,
-                        "source_platform": t.source_platform,
+                        "source_node": t.source_node,
                         "cell_id": t.cell_id,
                         "formation_id": t.formation_id,
                         "lat": t.lat,
@@ -7441,13 +7437,13 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getTracksJni(
         .into_raw()
 }
 
-/// JNI: Get all platforms as JSON array string
+/// JNI: Get all nodes as JSON array string
 ///
-/// Kotlin signature: external fun getPlatformsJni(handle: Long): String
-/// Returns JSON array of platform objects, or "[]" on error
+/// Kotlin signature: external fun getNodesJni(handle: Long): String
+/// Returns JSON array of node objects, or "[]" on error
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getNodesJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -7460,8 +7456,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni(
     }
 
     let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
-    let result = match node.get_platforms() {
-        Ok(platforms) => serialize_platforms_get_json(&platforms),
+    let result = match node.get_nodes() {
+        Ok(nodes) => serialize_nodes_get_json(&nodes),
         Err(_) => "[]".to_string(),
     };
 
@@ -7523,17 +7519,17 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getCommandsJni(
         .into_raw()
 }
 
-/// JNI: Publish a platform (self-position/PLI) to the Peat network
+/// JNI: Publish a node (self-position/PLI) to the Peat network
 ///
-/// Kotlin signature: external fun publishPlatformJni(handle: Long, platformJson: String): Boolean
-/// Stores the platform in the "platforms" collection for sync to peers.
+/// Kotlin signature: external fun publishNodeJni(handle: Long, nodeJson: String): Boolean
+/// Stores the node in the "nodes" collection for sync to peers.
 ///
 /// Expected JSON format:
 /// ```json
 /// {
 ///   "id": "consumer-device-uid",
 ///   "name": "CALLSIGN",
-///   "platform_type": "SOLDIER",
+///   "node_type": "SOLDIER",
 ///   "lat": 33.7490,
 ///   "lon": -84.3880,
 ///   "hae": 320.0,
@@ -7547,25 +7543,25 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getCommandsJni(
 /// ```
 #[cfg(feature = "sync")]
 #[no_mangle]
-pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni(
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishNodeJni(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    platform_json: JString,
+    node_json: JString,
 ) -> jboolean {
     if handle == 0 {
         #[cfg(target_os = "android")]
-        android_log("publishPlatformJni: Invalid handle (0)");
+        android_log("publishNodeJni: Invalid handle (0)");
         return 0; // JNI_FALSE
     }
 
-    // Get platform JSON string from Java
-    let json_str: String = match env.get_string(&platform_json) {
+    // Get node JSON string from Java
+    let json_str: String = match env.get_string(&node_json) {
         Ok(s) => s.into(),
         Err(e) => {
             #[cfg(target_os = "android")]
             android_log(&format!(
-                "publishPlatformJni: Failed to get JSON string: {:?}",
+                "publishNodeJni: Failed to get JSON string: {:?}",
                 e
             ));
             return 0; // JNI_FALSE
@@ -7573,45 +7569,45 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni(
     };
 
     #[cfg(target_os = "android")]
-    android_log(&format!("publishPlatformJni: Received JSON: {}", json_str));
+    android_log(&format!("publishNodeJni: Received JSON: {}", json_str));
 
     // Parse JSON via the shared helper so the test suite exercises the
     // same code the JNI surface does. Pre-2026-05-08 this was inlined
     // here, which made it a duplicated codec the unit tests didn't
     // reach — the silent-field-drop bug class peat#835 exists to lock
     // in came in through this exact site.
-    let platform: PlatformInfo = match parse_platform_publish_json(&json_str) {
+    let node: NodeInfo = match parse_node_publish_json(&json_str) {
         Ok(p) => p,
         Err(e) => {
             #[cfg(target_os = "android")]
-            android_log(&format!("publishPlatformJni: {}", e));
+            android_log(&format!("publishNodeJni: {}", e));
             return 0; // JNI_FALSE
         }
     };
 
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "publishPlatformJni: Publishing platform id={}, name={}, lat={}, lon={}",
-        platform.id, platform.name, platform.lat, platform.lon
+        "publishNodeJni: Publishing node id={}, name={}, lat={}, lon={}",
+        node.id, node.name, node.lat, node.lon
     ));
 
-    // Get node from handle and store platform
-    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
-    let result = match node.put_platform(platform) {
+    // Get node from handle and store node
+    let peat_node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = match peat_node.put_node(node) {
         Ok(_) => {
             #[cfg(target_os = "android")]
-            android_log("publishPlatformJni: Platform published successfully");
+            android_log("publishNodeJni: Node published successfully");
             1 // JNI_TRUE
         }
         Err(e) => {
             #[cfg(target_os = "android")]
-            android_log(&format!("publishPlatformJni: Failed to publish: {:?}", e));
+            android_log(&format!("publishNodeJni: Failed to publish: {:?}", e));
             0 // JNI_FALSE
         }
     };
 
     // Don't drop the Arc - we're just borrowing
-    std::mem::forget(node);
+    std::mem::forget(peat_node);
 
     result
 }
@@ -7668,7 +7664,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getMarkersJni(
 /// (invalid handle, malformed JSON, missing required fields, storage
 /// error). The Kotlin caller maps the boolean return back to a
 /// success / "publish failed" log path — same shape as
-/// `publishPlatformJni`.
+/// `publishNodeJni`.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni(
@@ -8539,7 +8535,7 @@ struct JniOutboundSink {
 /// collections explicitly opted in.
 ///
 /// Without this wrapper, registering both the typed `BleTranslator`
-/// (which encodes `"tracks"`/`"platforms"`/`"alerts"`/`"canned_messages"`
+/// (which encodes `"tracks"`/`"nodes"`/`"alerts"`/`"canned_messages"`
 /// to compact 0xB6 frames) AND the catch-all `LiteBridgeTranslator` on
 /// the same `TransportManager` would cause **double emission** for the
 /// typed collections — both translators would encode the same doc and
@@ -8701,7 +8697,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFr
     // names change or new ones (e.g. chat) are added.
     let mut collections = vec![
         node_owner.ble_translator.tracks_collection().to_string(),
-        node_owner.ble_translator.platforms_collection().to_string(),
+        node_owner.ble_translator.nodes_collection().to_string(),
         node_owner.ble_translator.alerts_collection().to_string(),
         node_owner
             .ble_translator
@@ -9298,9 +9294,9 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
-            name: "getPlatformsJni".into(),
+            name: "getNodesJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
-            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getNodesJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -9310,9 +9306,9 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
-            name: "publishPlatformJni".into(),
+            name: "publishNodeJni".into(),
             sig: "(JLjava/lang/String;)Z".into(),
-            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni as *mut c_void,
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishNodeJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -9943,9 +9939,9 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
-                    name: "getPlatformsJni".into(),
+                    name: "getNodesJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
-                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getPlatformsJni as *mut c_void,
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getNodesJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
@@ -9968,9 +9964,9 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
-                    name: "publishPlatformJni".into(),
+                    name: "publishNodeJni".into(),
                     sig: "(JLjava/lang/String;)Z".into(),
-                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishPlatformJni
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_publishNodeJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]

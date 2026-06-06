@@ -36,8 +36,8 @@ impl PhaseExt for Phase {
 
 /// Node lifecycle management
 #[async_trait]
-pub trait Platform: Send + Sync + Debug {
-    /// Initialize the platform with configuration
+pub trait Node: Send + Sync + Debug {
+    /// Initialize the node with configuration
     async fn initialize(&mut self) -> Result<()>;
 
     /// Update node state (called at regular intervals)
@@ -49,20 +49,20 @@ pub trait Platform: Send + Sync + Debug {
     /// Transition to a new phase
     async fn transition_to(&mut self, phase: Phase) -> Result<()>;
 
-    /// Shutdown the platform gracefully
+    /// Shutdown the node gracefully
     async fn shutdown(&mut self) -> Result<()>;
 }
 
 /// Capability provider trait
 #[async_trait]
 pub trait CapabilityProvider: Send + Sync + Debug {
-    /// Get the platform's static capabilities
+    /// Get the node's static capabilities
     fn static_capabilities(&self) -> Vec<String>;
 
-    /// Get the platform's dynamic capabilities (may change over time)
+    /// Get the node's dynamic capabilities (may change over time)
     fn dynamic_capabilities(&self) -> Vec<String>;
 
-    /// Check if the platform has a specific capability
+    /// Check if the node has a specific capability
     fn has_capability(&self, capability: &str) -> bool;
 
     /// Get confidence score for a capability (0.0 - 1.0)
@@ -78,14 +78,14 @@ pub trait MessageRouter: Send + Sync + Debug {
     /// Check if a route is valid for the current phase
     fn is_route_valid(&self, from: &str, to: &str) -> bool;
 
-    /// Get valid routing targets for this platform
+    /// Get valid routing targets for this node
     fn valid_targets(&self) -> Vec<String>;
 }
 
 /// Phase transition logic
 #[async_trait]
 pub trait PhaseTransition: Send + Sync + Debug {
-    /// Check if the platform can transition to a new phase
+    /// Check if the node can transition to a new phase
     fn can_transition_to(&self, phase: Phase) -> bool;
 
     /// Perform the phase transition

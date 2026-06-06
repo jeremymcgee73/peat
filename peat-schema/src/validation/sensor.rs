@@ -247,13 +247,13 @@ pub fn validate_sensor_spec(spec: &SensorSpec) -> ValidationResult<()> {
 /// Validate a sensor state update message
 ///
 /// Validates:
-/// - platform_id is present
+/// - node_id is present
 /// - sensor spec is valid
 /// - status is specified
 /// - timestamp is present
 pub fn validate_sensor_state_update(update: &SensorStateUpdate) -> ValidationResult<()> {
-    if update.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    if update.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     // Sensor spec is required
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn test_valid_sensor_state_update() {
         let update = SensorStateUpdate {
-            platform_id: "UGV-Alpha-1".to_string(),
+            node_id: "UGV-Alpha-1".to_string(),
             sensor: Some(valid_fixed_sensor()),
             status: SensorStatus::Operational as i32,
             timestamp: Some(Timestamp {
@@ -492,9 +492,9 @@ mod tests {
     }
 
     #[test]
-    fn test_sensor_update_missing_platform_id() {
+    fn test_sensor_update_missing_node_id() {
         let update = SensorStateUpdate {
-            platform_id: String::new(),
+            node_id: String::new(),
             sensor: Some(valid_fixed_sensor()),
             status: SensorStatus::Operational as i32,
             timestamp: Some(Timestamp {
@@ -503,13 +503,13 @@ mod tests {
             }),
         };
         let err = validate_sensor_state_update(&update).unwrap_err();
-        assert!(matches!(err, ValidationError::MissingField(f) if f == "platform_id"));
+        assert!(matches!(err, ValidationError::MissingField(f) if f == "node_id"));
     }
 
     #[test]
     fn test_sensor_update_unspecified_status() {
         let update = SensorStateUpdate {
-            platform_id: "UGV-Alpha-1".to_string(),
+            node_id: "UGV-Alpha-1".to_string(),
             sensor: Some(valid_fixed_sensor()),
             status: SensorStatus::Unspecified as i32,
             timestamp: Some(Timestamp {

@@ -55,7 +55,7 @@ pub enum MissionContext {
 
     /// Returning from objective
     ///
-    /// Priority focus: Platform health, safe return
+    /// Priority focus: Node health, safe return
     /// - Health updates: elevated (P3 → P2)
     /// - Capability changes: elevated (P3 → P2)
     Egress,

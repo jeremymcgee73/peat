@@ -1,7 +1,7 @@
 //! Zone model for hierarchical coordination (E5 Phase 2)
 //!
 //! Zones represent the highest level of the three-tier hierarchy:
-//! - Nodes: Individual platforms with capabilities
+//! - Nodes: Individual devices with capabilities
 //! - Cells: Tactical groups of nodes working together
 //! - Zones: Strategic coordination across multiple cells
 //!

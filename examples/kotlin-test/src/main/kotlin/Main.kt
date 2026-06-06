@@ -45,7 +45,7 @@ fun main() {
     println("4. Testing encodeTrackToCot()...")
     val track = TrackData(
         trackId = "track-001",
-        sourcePlatform = "UAV-Alpha",
+        sourceNode = "UAV-Alpha",
         position = pos,
         velocity = vel,
         classification = "a-f-G-U-C",
@@ -70,7 +70,7 @@ fun main() {
     println("5. Testing error handling...")
     val badTrack = TrackData(
         trackId = "",  // Empty - should fail validation
-        sourcePlatform = "test",
+        sourceNode = "test",
         position = pos,
         velocity = null,
         classification = "a-u-G",

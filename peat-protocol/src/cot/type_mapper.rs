@@ -193,17 +193,17 @@ impl CotTypeMapper {
         CotType::new(&type_code)
     }
 
-    /// Map a Peat platform type to CoT type
-    pub fn map_platform(&self, platform_type: &str, affiliation: Affiliation) -> CotType {
+    /// Map a Peat node type to CoT type
+    pub fn map_node(&self, node_type: &str, affiliation: Affiliation) -> CotType {
         let aff = affiliation.cot_char();
 
-        let type_code = match platform_type.to_lowercase().as_str() {
+        let type_code = match node_type.to_lowercase().as_str() {
             "uav" | "drone" | "uas" => format!("a-{}-A-M-F-Q", aff), // UAV
             "ugv" | "robot" | "ground_robot" => format!("a-{}-G-U-C", aff), // UGV
             "soldier" | "operator" | "dismount" => format!("a-{}-G-U-C-I", aff), // Infantry
             "vehicle" | "humvee" | "mrap" => format!("a-{}-G-U-C-V", aff), // Combat Vehicle
             "command_vehicle" | "toc" => format!("a-{}-G-U-C-V-H", aff), // HQ Vehicle
-            "sensor_platform" => format!("a-{}-G-E-S", aff),         // Sensor
+            "sensor_node" => format!("a-{}-G-E-S", aff),             // Sensor
             _ => format!("a-{}-G-U-C", aff),                         // Default to ground unit
         };
 
@@ -332,13 +332,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cot_type_mapper_platform() {
+    fn test_cot_type_mapper_node() {
         let mapper = CotTypeMapper::new();
 
-        let ugv = mapper.map_platform("UGV", Affiliation::Friendly);
+        let ugv = mapper.map_node("UGV", Affiliation::Friendly);
         assert_eq!(ugv.as_str(), "a-f-G-U-C");
 
-        let operator = mapper.map_platform("operator", Affiliation::Friendly);
+        let operator = mapper.map_node("operator", Affiliation::Friendly);
         assert_eq!(operator.as_str(), "a-f-G-U-C-I");
     }
 

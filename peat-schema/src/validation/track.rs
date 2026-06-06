@@ -74,10 +74,8 @@ pub fn validate_track(track: &Track) -> ValidationResult<()> {
         .as_ref()
         .ok_or_else(|| ValidationError::MissingField("source".to_string()))?;
 
-    if source.platform_id.is_empty() {
-        return Err(ValidationError::MissingField(
-            "source.platform_id".to_string(),
-        ));
+    if source.node_id.is_empty() {
+        return Err(ValidationError::MissingField("source.node_id".to_string()));
     }
 
     Ok(())
@@ -133,7 +131,7 @@ mod tests {
             velocity: None,
             state: TrackState::Confirmed as i32,
             source: Some(TrackSource {
-                platform_id: "Alpha-3".to_string(),
+                node_id: "Alpha-3".to_string(),
                 sensor_id: "camera-1".to_string(),
                 model_version: "1.2.0".to_string(),
                 source_type: SourceType::AiModel as i32,

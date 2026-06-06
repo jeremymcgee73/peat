@@ -63,21 +63,9 @@ async fn test_e2e_geographic_discovery_sync() {
     sleep(Duration::from_millis(100)).await;
 
     // Validate: All peers discovered
-    assert_eq!(
-        discovery1.total_platforms(),
-        3,
-        "Peer 1 should see 3 platforms"
-    );
-    assert_eq!(
-        discovery2.total_platforms(),
-        3,
-        "Peer 2 should see 3 platforms"
-    );
-    assert_eq!(
-        discovery3.total_platforms(),
-        3,
-        "Peer 3 should see 3 platforms"
-    );
+    assert_eq!(discovery1.total_nodes(), 3, "Peer 1 should see 3 nodes");
+    assert_eq!(discovery2.total_nodes(), 3, "Peer 2 should see 3 nodes");
+    assert_eq!(discovery3.total_nodes(), 3, "Peer 3 should see 3 nodes");
 
     // Validate: All peers in same geohash cluster
     assert_eq!(
@@ -209,7 +197,7 @@ async fn test_e2e_capability_based_discovery() {
         .min_confidence(0.80)
         .build();
 
-    let sensor_matches = engine.query_platforms(&query_sensors, &nodes);
+    let sensor_matches = engine.query_nodes(&query_sensors, &nodes);
 
     assert_eq!(sensor_matches.len(), 3, "Should find 3 nodes with sensors");
     // node4 should rank highest (highest sensor confidence + additional capabilities)
@@ -223,7 +211,7 @@ async fn test_e2e_capability_based_discovery() {
         .min_confidence(0.85)
         .build();
 
-    let combo_matches = engine.query_platforms(&query_sensor_comms, &nodes);
+    let combo_matches = engine.query_nodes(&query_sensor_comms, &nodes);
 
     assert_eq!(
         combo_matches.len(),
@@ -244,7 +232,7 @@ async fn test_e2e_capability_based_discovery() {
         .limit(2)
         .build();
 
-    let complex_matches = engine.query_platforms(&query_complex, &nodes);
+    let complex_matches = engine.query_nodes(&query_complex, &nodes);
 
     assert_eq!(complex_matches.len(), 2, "Should limit results to 2");
     // node4 should score highest (has all 3 capabilities)
@@ -253,7 +241,7 @@ async fn test_e2e_capability_based_discovery() {
     // Query 4: Minimum capability count filter
     let query_min_count = CapabilityQuery::builder().min_capability_count(2).build();
 
-    let min_count_matches = engine.query_platforms(&query_min_count, &nodes);
+    let min_count_matches = engine.query_nodes(&query_min_count, &nodes);
 
     assert_eq!(
         min_count_matches.len(),
@@ -304,12 +292,8 @@ async fn test_e2e_multi_region_discovery() {
     // Wait for processing
     sleep(Duration::from_millis(100)).await;
 
-    // Validate: Total platforms discovered
-    assert_eq!(
-        discovery.total_platforms(),
-        4,
-        "Should discover all 4 platforms"
-    );
+    // Validate: Total nodes discovered
+    assert_eq!(discovery.total_nodes(), 4, "Should discover all 4 nodes");
 
     // Validate: Two separate geographic clusters
     assert_eq!(
@@ -328,11 +312,7 @@ async fn test_e2e_multi_region_discovery() {
 
     // Validate: Each cluster has correct member count
     for cluster in formable_cells {
-        assert_eq!(
-            cluster.platforms.len(),
-            2,
-            "Each region should have 2 platforms"
-        );
+        assert_eq!(cluster.nodes.len(), 2, "Each region should have 2 nodes");
     }
 
     // Harness cleanup happens automatically on drop
@@ -369,9 +349,9 @@ async fn test_e2e_beacon_expiration_cleanup() {
     discovery.process_beacon(fresh_beacon);
 
     assert_eq!(
-        discovery.total_platforms(),
+        discovery.total_nodes(),
         2,
-        "Should have 2 platforms before cleanup"
+        "Should have 2 nodes before cleanup"
     );
 
     // Run cleanup
@@ -379,9 +359,9 @@ async fn test_e2e_beacon_expiration_cleanup() {
 
     // Validate: Expired beacon removed
     assert_eq!(
-        discovery.total_platforms(),
+        discovery.total_nodes(),
         1,
-        "Should have 1 platform after cleanup"
+        "Should have 1 node after cleanup"
     );
 
     // Validate: Can't form cell with insufficient fresh beacons
@@ -444,7 +424,7 @@ async fn test_e2e_capability_statistics() {
 
     // Calculate statistics
     let engine = CapabilityQueryEngine::new();
-    let stats = engine.platform_capability_stats(&nodes);
+    let stats = engine.node_capability_stats(&nodes);
 
     // Validate: Sensor stats (all 5 nodes)
     let sensor_stats = stats.get(&CapabilityType::Sensor).unwrap();

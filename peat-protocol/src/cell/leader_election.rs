@@ -11,15 +11,15 @@
 //! ## Election Flow
 //!
 //! 1. **Initialization**: All nodes start in `Candidate` state
-//! 2. **Scoring**: Each platform computes its leadership score
-//! 3. **Announcement**: Platforms announce their candidacy with scores
-//! 4. **Comparison**: Platforms compare received scores with their own
+//! 2. **Scoring**: Each node computes its leadership score
+//! 3. **Announcement**: Nodes announce their candidacy with scores
+//! 4. **Comparison**: Nodes compare received scores with their own
 //! 5. **Convergence**: Node with highest score becomes leader
 //! 6. **Confirmation**: Leader announces election win, others follow
 //!
 //! ## Scoring Function
 //!
-//! Leadership score is computed from platform capabilities:
+//! Leadership score is computed from node capabilities:
 //! - Compute resources (30% weight)
 //! - Communication capabilities (25% weight)
 //! - Sensor diversity (20% weight)
@@ -28,7 +28,7 @@
 //!
 //! ## Split-Brain Prevention
 //!
-//! - Deterministic tie-breaking using platform ID (lexicographic order)
+//! - Deterministic tie-breaking using node ID (lexicographic order)
 //! - Election round numbers to detect stale announcements
 //! - Timeout-based re-election if no leader emerges
 //!
@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, instrument, warn};
 
-/// Election state of a platform
+/// Election state of a node
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ElectionState {
     /// Node is a candidate for leadership
@@ -115,12 +115,12 @@ impl LeadershipScore {
         }
     }
 
-    /// Compare scores with tie-breaking by platform ID
+    /// Compare scores with tie-breaking by node ID
     pub fn compare(&self, other: &Self, my_id: &str, other_id: &str) -> std::cmp::Ordering {
         // First compare total scores
         match self.total.partial_cmp(&other.total) {
             Some(std::cmp::Ordering::Equal) => {
-                // Tie-break with platform ID (lexicographic)
+                // Tie-break with node ID (lexicographic)
                 my_id.cmp(other_id)
             }
             Some(ordering) => ordering,
@@ -193,7 +193,7 @@ pub struct LeaderElectionManager {
     /// Cell ID
     cell_id: String,
     /// Node ID
-    platform_id: String,
+    node_id: String,
     /// Message bus for election messages
     message_bus: Arc<CellMessageBus>,
     /// Current election state
@@ -219,7 +219,7 @@ impl LeaderElectionManager {
     /// Create a new leader election manager
     pub fn new(
         cell_id: String,
-        platform_id: String,
+        node_id: String,
         message_bus: Arc<CellMessageBus>,
         capabilities: Vec<Capability>,
     ) -> Self {
@@ -228,7 +228,7 @@ impl LeaderElectionManager {
 
         Self {
             cell_id,
-            platform_id,
+            node_id,
             message_bus,
             state: Arc::new(Mutex::new(ElectionState::Candidate)),
             current_round: Arc::new(Mutex::new(current_round)),
@@ -249,7 +249,7 @@ impl LeaderElectionManager {
         let score = self.my_score.lock().unwrap().clone();
         let round = {
             let mut current = self.current_round.lock().unwrap();
-            current.candidates.insert(self.platform_id.clone(), score);
+            current.candidates.insert(self.node_id.clone(), score);
             current.round
         };
 
@@ -263,12 +263,12 @@ impl LeaderElectionManager {
     fn announce_candidacy(&self, round: u32) -> Result<()> {
         debug!(
             "Node {} announcing candidacy for round {}",
-            self.platform_id, round
+            self.node_id, round
         );
 
         // Send candidacy announcement
         let payload = CellMessageType::LeaderAnnounce {
-            leader_id: self.platform_id.clone(),
+            leader_id: self.node_id.clone(),
             election_round: round,
         };
 
@@ -287,8 +287,8 @@ impl LeaderElectionManager {
             } => {
                 self.handle_leader_announce(leader_id, *election_round)?;
             }
-            CellMessageType::Heartbeat { platform_id } => {
-                self.handle_heartbeat(platform_id)?;
+            CellMessageType::Heartbeat { node_id } => {
+                self.handle_heartbeat(node_id)?;
             }
             _ => {
                 // Not an election message
@@ -319,7 +319,7 @@ impl LeaderElectionManager {
 
         // Compare leadership scores
         // In a real system, we'd need to receive the score in the message
-        // For now, we'll use a simplified comparison based on platform ID
+        // For now, we'll use a simplified comparison based on node ID
         let should_follow = self.should_follow_leader(leader_id)?;
 
         if should_follow {
@@ -340,16 +340,16 @@ impl LeaderElectionManager {
     /// Determine if should follow a leader based on score comparison
     fn should_follow_leader(&self, leader_id: &str) -> Result<bool> {
         // In a production system, we'd compare actual scores received in messages
-        // For now, use deterministic platform ID comparison
-        Ok(leader_id > self.platform_id.as_str())
+        // For now, use deterministic node ID comparison
+        Ok(leader_id > self.node_id.as_str())
     }
 
     /// Handle heartbeat from leader
-    fn handle_heartbeat(&self, platform_id: &str) -> Result<()> {
+    fn handle_heartbeat(&self, node_id: &str) -> Result<()> {
         let current_leader = self.current_leader.lock().unwrap().clone();
 
         if let Some(leader_id) = current_leader {
-            if platform_id == leader_id {
+            if node_id == leader_id {
                 // Update heartbeat tracker
                 if let Some(ref mut heartbeat) = *self.leader_heartbeat.lock().unwrap() {
                     heartbeat.update();
@@ -412,7 +412,7 @@ impl LeaderElectionManager {
 
         if state == ElectionState::Leader {
             let payload = CellMessageType::Heartbeat {
-                platform_id: self.platform_id.clone(),
+                node_id: self.node_id.clone(),
             };
             self.message_bus.publish(payload)?;
             debug!("Sent leader heartbeat");
@@ -438,9 +438,9 @@ impl LeaderElectionManager {
 
     /// Manually set as leader (for testing or C2 override)
     pub fn set_as_leader(&self) {
-        info!("Node {} set as leader", self.platform_id);
+        info!("Node {} set as leader", self.node_id);
         *self.state.lock().unwrap() = ElectionState::Leader;
-        *self.current_leader.lock().unwrap() = Some(self.platform_id.clone());
+        *self.current_leader.lock().unwrap() = Some(self.node_id.clone());
     }
 }
 
@@ -506,13 +506,13 @@ mod tests {
 
         // score1 is higher
         assert_eq!(
-            score1.compare(&score2, "platform_a", "platform_b"),
+            score1.compare(&score2, "node_a", "node_b"),
             std::cmp::Ordering::Greater
         );
 
         // score2 is lower
         assert_eq!(
-            score2.compare(&score1, "platform_b", "platform_a"),
+            score2.compare(&score1, "node_b", "node_a"),
             std::cmp::Ordering::Less
         );
     }
@@ -537,13 +537,13 @@ mod tests {
             total: 0.75,
         };
 
-        // Tie-break with platform ID
+        // Tie-break with node ID
         assert_eq!(
-            score1.compare(&score2, "platform_a", "platform_b"),
+            score1.compare(&score2, "node_a", "node_b"),
             std::cmp::Ordering::Less
         );
         assert_eq!(
-            score1.compare(&score2, "platform_b", "platform_a"),
+            score1.compare(&score2, "node_b", "node_a"),
             std::cmp::Ordering::Greater
         );
     }

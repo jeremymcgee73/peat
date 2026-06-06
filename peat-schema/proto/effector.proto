@@ -357,7 +357,7 @@ message RoeStatus {
 
 // Complete effector specification
 message EffectorSpec {
-  // Unique effector identifier within the platform
+  // Unique effector identifier within the node
   // Format: lowercase alphanumeric with hyphens, e.g., "m240-coax", "smoke-l"
   string effector_id = 1;
 
@@ -444,8 +444,8 @@ enum EffectorStatus {
 
 // Effector state update message (flows upward with capability advertisements)
 message EffectorStateUpdate {
-  // Platform this effector belongs to
-  string platform_id = 1;
+  // Node this effector belongs to
+  string node_id = 1;
 
   // Effector specification with current state
   EffectorSpec effector = 2;
@@ -458,7 +458,7 @@ message EffectorStateUpdate {
 }
 
 // ============================================================================
-// Effector Commands (C2 → Platform)
+// Effector Commands (C2 → Node)
 // ============================================================================
 
 // Command type for effector control
@@ -498,8 +498,8 @@ message EffectorCommand {
   // Command identifier
   string command_id = 1;
 
-  // Target platform
-  string platform_id = 2;
+  // Target node
+  string node_id = 2;
 
   // Target effector
   string effector_id = 3;
@@ -556,8 +556,8 @@ message EngagementRecord {
   // Unique engagement ID
   string engagement_id = 1;
 
-  // Platform that engaged
-  string platform_id = 2;
+  // Node that engaged
+  string node_id = 2;
 
   // Effector used
   string effector_id = 3;

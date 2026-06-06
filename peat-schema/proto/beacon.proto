@@ -38,8 +38,8 @@ message Beacon {
 
 // Beacon query for discovering nodes
 message BeaconQuery {
-  // Filter by platform type (e.g., "UAV", "UGV")
-  optional string platform_type = 1;
+  // Filter by node type (e.g., "UAV", "UGV")
+  optional string node_type = 1;
 
   // Filter by required capabilities
   repeated capability.v1.CapabilityType required_capabilities = 2;

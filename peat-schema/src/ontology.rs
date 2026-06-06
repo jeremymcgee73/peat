@@ -16,7 +16,7 @@ use std::collections::HashMap;
 /// Ontology concept categories
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConceptCategory {
-    /// Physical entities (nodes, platforms)
+    /// Physical entities (nodes)
     Entity,
     /// Organizational structures (cells, cohorts, federations, coalitions)
     Organization,
@@ -146,32 +146,32 @@ pub fn build_cap_ontology() -> Ontology {
     let mut ont = Ontology::new();
 
     // Entity concepts
+    // Single root entity: under ADR-068 the substrate participant and the
+    // physical entity are the same concept ("node"). Its descendants (uav,
+    // ugv, soldier_system) parent onto it. (Pre-ADR-068 this was two concepts,
+    // "node" and a child "platform"; the rename merged them — keep one root,
+    // never a self-parent, or `is_subtype_of` recurses forever.)
     ont.add_concept(
-        Concept::new("node", "Node", ConceptCategory::Entity)
-            .with_description("A node in the Peat Protocol network (platform or system)"),
-    );
-
-    ont.add_concept(
-        Concept::new("platform", "Platform", ConceptCategory::Entity)
-            .with_parent("node")
-            .with_description("A physical platform (UAV, UGV, soldier system, etc.)"),
+        Concept::new("node", "Node", ConceptCategory::Entity).with_description(
+            "A node in the Peat Protocol network (physical UAV, UGV, soldier system, etc.)",
+        ),
     );
 
     ont.add_concept(
         Concept::new("uav", "Unmanned Aerial Vehicle", ConceptCategory::Entity)
-            .with_parent("platform")
+            .with_parent("node")
             .with_property("domain", "air"),
     );
 
     ont.add_concept(
         Concept::new("ugv", "Unmanned Ground Vehicle", ConceptCategory::Entity)
-            .with_parent("platform")
+            .with_parent("node")
             .with_property("domain", "ground"),
     );
 
     ont.add_concept(
         Concept::new("soldier_system", "Soldier System", ConceptCategory::Entity)
-            .with_parent("platform")
+            .with_parent("node")
             .with_property("domain", "ground")
             .with_property("human_operated", "true"),
     );
@@ -179,7 +179,7 @@ pub fn build_cap_ontology() -> Ontology {
     // Organization concepts
     ont.add_concept(
         Concept::new("cell", "Cell", ConceptCategory::Organization)
-            .with_description("Smallest aggregation unit: a coordinated group of platforms")
+            .with_description("Smallest aggregation unit: a coordinated group of nodes")
             .with_property("min_size", "2")
             .with_property("max_size", "8"),
     );
@@ -290,7 +290,7 @@ pub fn build_cap_ontology() -> Ontology {
 
     ont.add_concept(
         Concept::new("operator", "Operator", ConceptCategory::Role)
-            .with_description("Human operator of a platform"),
+            .with_description("Human operator of a node"),
     );
 
     ont
@@ -306,7 +306,6 @@ mod tests {
 
         // Check entity concepts exist
         assert!(ont.get_concept("node").is_some());
-        assert!(ont.get_concept("platform").is_some());
         assert!(ont.get_concept("uav").is_some());
 
         // Check organization concepts exist
@@ -320,20 +319,21 @@ mod tests {
     fn test_ontology_is_subtype() {
         let ont = build_cap_ontology();
 
-        // UAV is a platform
-        assert!(ont.is_subtype_of("uav", "platform"));
-
-        // Platform is a node
-        assert!(ont.is_subtype_of("platform", "node"));
-
-        // UAV is a node (transitive)
+        // UAV is a node (direct parent link)
         assert!(ont.is_subtype_of("uav", "node"));
 
-        // Cell is not a platform
-        assert!(!ont.is_subtype_of("cell", "platform"));
+        // Cell is not a node
+        assert!(!ont.is_subtype_of("cell", "node"));
 
         // Reflexive check
         assert!(ont.is_subtype_of("node", "node"));
+
+        // Regression (ADR-068): "node" must have no self-parent. The
+        // platform->node rename briefly produced two "node" concepts where the
+        // second carried `.with_parent("node")`, so `is_subtype_of("node", X)`
+        // for any non-ancestor X recursed forever. This query must terminate
+        // and return false, not stack-overflow.
+        assert!(!ont.is_subtype_of("node", "capability"));
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
         let ont = build_cap_ontology();
 
         let entities = ont.concepts_by_category(ConceptCategory::Entity);
-        assert!(entities.len() >= 4); // node, platform, uav, ugv, soldier_system
+        assert!(entities.len() >= 4); // node, uav, ugv, soldier_system
 
         let capabilities = ont.concepts_by_category(ConceptCategory::Capability);
         assert!(capabilities.len() >= 7); // capability + 6 types

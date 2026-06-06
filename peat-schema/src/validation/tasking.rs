@@ -175,9 +175,9 @@ pub fn validate_task_status(status: &TaskStatus) -> ValidationResult<()> {
         return Err(ValidationError::MissingField("task_id".to_string()));
     }
 
-    // platform_id is required
-    if status.platform_id.is_empty() {
-        return Err(ValidationError::MissingField("platform_id".to_string()));
+    // node_id is required
+    if status.node_id.is_empty() {
+        return Err(ValidationError::MissingField("node_id".to_string()));
     }
 
     // State must be specified
@@ -299,7 +299,7 @@ mod tests {
                 seconds: 1702000000,
                 nanos: 0,
             }),
-            target_platforms: vec![],
+            target_nodes: vec![],
         }
     }
 
@@ -348,7 +348,7 @@ mod tests {
     fn test_valid_task_status() {
         let status = TaskStatus {
             task_id: "TASK-001".to_string(),
-            platform_id: "Alpha-3".to_string(),
+            node_id: "Alpha-3".to_string(),
             state: TaskState::Active as i32,
             statistics: Some(TaskStatistics {
                 frames_processed: 1000,
@@ -375,7 +375,7 @@ mod tests {
     fn test_invalid_statistics() {
         let status = TaskStatus {
             task_id: "TASK-001".to_string(),
-            platform_id: "Alpha-3".to_string(),
+            node_id: "Alpha-3".to_string(),
             state: TaskState::Active as i32,
             statistics: Some(TaskStatistics {
                 frames_processed: 1000,

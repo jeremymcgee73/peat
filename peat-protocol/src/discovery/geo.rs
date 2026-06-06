@@ -1,7 +1,7 @@
 //! Geographic primitives for Peat protocol
 //!
 //! Provides fundamental geographic types and operations for defining
-//! operational areas and spatial relationships between platforms.
+//! operational areas and spatial relationships between nodes.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

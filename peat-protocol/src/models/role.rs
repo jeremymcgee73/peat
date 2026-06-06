@@ -1,7 +1,7 @@
 //! Cell role model and scoring
 //!
 //! Defines tactical roles that nodes can fill within a cell, with scoring
-//! algorithms that consider both platform capabilities and human operator specialties.
+//! algorithms that consider both node capabilities and human operator specialties.
 
 use crate::models::{
     CapabilityExt, CapabilityType, NodeConfig, NodeConfigExt, NodeState, NodeStateExt, Operator,
@@ -9,7 +9,7 @@ use crate::models::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Tactical role that a platform can fill within a cell
+/// Tactical role that a node can fill within a cell
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CellRole {
     /// Cell leader - elected leader, coordinates cell operations
@@ -96,24 +96,24 @@ impl CellRole {
     }
 }
 
-/// Role assignment for a platform
+/// Role assignment for a node
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleAssignment {
     /// Node ID
-    pub platform_id: String,
+    pub node_id: String,
     /// Assigned role
     pub role: CellRole,
     /// Score for this assignment (0.0-1.0)
     pub score: f64,
-    /// Whether this is the platform's primary role choice
+    /// Whether this is the node's primary role choice
     pub is_primary_choice: bool,
 }
 
 impl RoleAssignment {
     /// Create a new role assignment
-    pub fn new(platform_id: String, role: CellRole, score: f64, is_primary_choice: bool) -> Self {
+    pub fn new(node_id: String, role: CellRole, score: f64, is_primary_choice: bool) -> Self {
         Self {
-            platform_id,
+            node_id,
             role,
             score,
             is_primary_choice,
@@ -121,19 +121,19 @@ impl RoleAssignment {
     }
 }
 
-/// Role scorer - calculates how well a platform fits a role
+/// Role scorer - calculates how well a node fits a role
 pub struct RoleScorer;
 
 impl RoleScorer {
-    /// Score a platform for a specific role
+    /// Score a node for a specific role
     ///
     /// Scoring considers:
     /// - Node capabilities (required and preferred)
     /// - Human operator MOS (if present)
     /// - Node health and readiness
     ///
-    /// Returns score 0.0-1.0, or None if platform cannot fill role
-    pub fn score_platform_for_role(
+    /// Returns score 0.0-1.0, or None if node cannot fill role
+    pub fn score_node_for_role(
         config: &NodeConfig,
         state: &NodeState,
         role: CellRole,
@@ -171,8 +171,8 @@ impl RoleScorer {
             weight_sum += 0.3;
         }
 
-        // Score platform health (20% weight)
-        let health_score = Self::score_platform_health(state);
+        // Score node health (20% weight)
+        let health_score = Self::score_node_health(state);
         score += health_score * 0.2;
         weight_sum += 0.2;
 
@@ -258,8 +258,8 @@ impl RoleScorer {
         }
     }
 
-    /// Score platform health
-    fn score_platform_health(state: &NodeState) -> f64 {
+    /// Score node health
+    fn score_node_health(state: &NodeState) -> f64 {
         match state.get_health() {
             crate::models::HealthStatus::Nominal => 1.0,
             crate::models::HealthStatus::Degraded => 0.6,
@@ -269,12 +269,12 @@ impl RoleScorer {
         }
     }
 
-    /// Get all role scores for a platform
+    /// Get all role scores for a node
     pub fn score_all_roles(config: &NodeConfig, state: &NodeState) -> HashMap<CellRole, f64> {
         let mut scores = HashMap::new();
 
         for role in CellRole::assignable_roles() {
-            if let Some(score) = Self::score_platform_for_role(config, state, role) {
+            if let Some(score) = Self::score_node_for_role(config, state, role) {
                 scores.insert(role, score);
             }
         }
@@ -282,11 +282,8 @@ impl RoleScorer {
         scores
     }
 
-    /// Get the best role for a platform
-    pub fn best_role_for_platform(
-        config: &NodeConfig,
-        state: &NodeState,
-    ) -> Option<(CellRole, f64)> {
+    /// Get the best role for a node
+    pub fn best_role_for_node(config: &NodeConfig, state: &NodeState) -> Option<(CellRole, f64)> {
         Self::score_all_roles(config, state)
             .into_iter()
             .max_by(|(_, score_a), (_, score_b)| {
@@ -305,8 +302,8 @@ mod tests {
         NodeConfigExt, NodeStateExt, OperatorExt, OperatorRank,
     };
 
-    fn create_test_platform_with_capabilities(caps: Vec<Capability>) -> (NodeConfig, NodeState) {
-        let mut config = NodeConfig::new("test_platform".to_string());
+    fn create_test_node_with_capabilities(caps: Vec<Capability>) -> (NodeConfig, NodeState) {
+        let mut config = NodeConfig::new("test_node".to_string());
         for cap in caps {
             config.add_capability(cap);
         }
@@ -347,37 +344,37 @@ mod tests {
     }
 
     #[test]
-    fn test_score_platform_without_required_capability() {
+    fn test_score_node_without_required_capability() {
         // Node without sensing capability cannot be sensor
-        let (config, state) = create_test_platform_with_capabilities(vec![Capability::new(
+        let (config, state) = create_test_node_with_capabilities(vec![Capability::new(
             "cpu_1".to_string(),
             "CPU".to_string(),
             CapabilityType::Compute,
             0.8,
         )]);
 
-        let score = RoleScorer::score_platform_for_role(&config, &state, CellRole::Sensor);
+        let score = RoleScorer::score_node_for_role(&config, &state, CellRole::Sensor);
         assert!(score.is_none());
     }
 
     #[test]
-    fn test_score_platform_with_required_capability() {
+    fn test_score_node_with_required_capability() {
         // Node with sensing capability can be sensor
-        let (config, state) = create_test_platform_with_capabilities(vec![Capability::new(
+        let (config, state) = create_test_node_with_capabilities(vec![Capability::new(
             "radar_1".to_string(),
             "Radar".to_string(),
             CapabilityType::Sensor,
             0.9,
         )]);
 
-        let score = RoleScorer::score_platform_for_role(&config, &state, CellRole::Sensor);
+        let score = RoleScorer::score_node_for_role(&config, &state, CellRole::Sensor);
         assert!(score.is_some());
         assert!(score.unwrap() > 0.5);
     }
 
     #[test]
     fn test_score_with_operator_mos_match() {
-        let (mut config, state) = create_test_platform_with_capabilities(vec![Capability::new(
+        let (mut config, state) = create_test_node_with_capabilities(vec![Capability::new(
             "camera_1".to_string(),
             "Camera".to_string(),
             CapabilityType::Sensor,
@@ -393,11 +390,11 @@ mod tests {
         config.set_operator_binding(Some(binding));
 
         let score_with_match =
-            RoleScorer::score_platform_for_role(&config, &state, CellRole::Sensor).unwrap();
+            RoleScorer::score_node_for_role(&config, &state, CellRole::Sensor).unwrap();
 
-        // Create platform without operator for comparison
+        // Create node without operator for comparison
         let (config_no_op, state_no_op) =
-            create_test_platform_with_capabilities(vec![Capability::new(
+            create_test_node_with_capabilities(vec![Capability::new(
                 "camera_2".to_string(),
                 "Camera".to_string(),
                 CapabilityType::Sensor,
@@ -405,8 +402,7 @@ mod tests {
             )]);
 
         let score_without_operator =
-            RoleScorer::score_platform_for_role(&config_no_op, &state_no_op, CellRole::Sensor)
-                .unwrap();
+            RoleScorer::score_node_for_role(&config_no_op, &state_no_op, CellRole::Sensor).unwrap();
 
         // Score with matching MOS should be higher
         assert!(score_with_match > score_without_operator);
@@ -414,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_score_with_operator_mos_mismatch() {
-        let (mut config, state) = create_test_platform_with_capabilities(vec![Capability::new(
+        let (mut config, state) = create_test_node_with_capabilities(vec![Capability::new(
             "camera_1".to_string(),
             "Camera".to_string(),
             CapabilityType::Sensor,
@@ -430,7 +426,7 @@ mod tests {
         config.set_operator_binding(Some(binding));
 
         let score_with_mismatch =
-            RoleScorer::score_platform_for_role(&config, &state, CellRole::Sensor).unwrap();
+            RoleScorer::score_node_for_role(&config, &state, CellRole::Sensor).unwrap();
 
         // Score should still be valid but not boosted
         assert!(score_with_mismatch > 0.0);
@@ -439,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_score_all_roles() {
-        let (config, state) = create_test_platform_with_capabilities(vec![
+        let (config, state) = create_test_node_with_capabilities(vec![
             Capability::new(
                 "camera_1".to_string(),
                 "Camera".to_string(),
@@ -467,8 +463,8 @@ mod tests {
     }
 
     #[test]
-    fn test_best_role_for_platform() {
-        let mut config = NodeConfig::new("test_platform".to_string());
+    fn test_best_role_for_node() {
+        let mut config = NodeConfig::new("test_node".to_string());
         config.add_capability(Capability::new(
             "radar_1".to_string(),
             "Radar".to_string(),
@@ -484,16 +480,16 @@ mod tests {
 
         // Add operator with Sensor-relevant MOS to boost Sensor score
         let operator = create_test_operator("19D", OperatorRank::E4); // Cavalry Scout
-        let platform_id = config.id.clone();
+        let node_id = config.id.clone();
         config.operator_binding = Some(HumanMachinePair::new(
             vec![operator],
-            vec![platform_id],
+            vec![node_id],
             BindingType::OneToOne,
         ));
 
         let state = NodeState::new((0.0, 0.0, 0.0));
 
-        let (best_role, score) = RoleScorer::best_role_for_platform(&config, &state).unwrap();
+        let (best_role, score) = RoleScorer::best_role_for_node(&config, &state).unwrap();
 
         // Best role should be Sensor due to high sensing capability + matching MOS
         assert_eq!(best_role, CellRole::Sensor);
@@ -504,7 +500,7 @@ mod tests {
     fn test_role_assignment_creation() {
         let assignment = RoleAssignment::new("node_1".to_string(), CellRole::Sensor, 0.85, true);
 
-        assert_eq!(assignment.platform_id, "node_1");
+        assert_eq!(assignment.node_id, "node_1");
         assert_eq!(assignment.role, CellRole::Sensor);
         assert_eq!(assignment.score, 0.85);
         assert!(assignment.is_primary_choice);
@@ -527,10 +523,10 @@ mod tests {
     }
 
     #[test]
-    fn test_degraded_platform_role_scoring() {
-        // Edge case: Degraded platform should have lower score than nominal
+    fn test_degraded_node_role_scoring() {
+        // Edge case: Degraded node should have lower score than nominal
         let (config_nominal, state_nominal) =
-            create_test_platform_with_capabilities(vec![Capability::new(
+            create_test_node_with_capabilities(vec![Capability::new(
                 "sensor_1".to_string(),
                 "Sensor".to_string(),
                 CapabilityType::Sensor,
@@ -538,7 +534,7 @@ mod tests {
             )]);
 
         let (config_degraded, mut state_degraded) =
-            create_test_platform_with_capabilities(vec![Capability::new(
+            create_test_node_with_capabilities(vec![Capability::new(
                 "sensor_2".to_string(),
                 "Sensor".to_string(),
                 CapabilityType::Sensor,
@@ -547,25 +543,22 @@ mod tests {
         state_degraded.update_health(crate::models::HealthStatus::Degraded);
 
         let score_nominal =
-            RoleScorer::score_platform_for_role(&config_nominal, &state_nominal, CellRole::Sensor)
+            RoleScorer::score_node_for_role(&config_nominal, &state_nominal, CellRole::Sensor)
                 .unwrap();
-        let score_degraded = RoleScorer::score_platform_for_role(
-            &config_degraded,
-            &state_degraded,
-            CellRole::Sensor,
-        )
-        .unwrap();
+        let score_degraded =
+            RoleScorer::score_node_for_role(&config_degraded, &state_degraded, CellRole::Sensor)
+                .unwrap();
 
-        // Degraded platform should score lower
+        // Degraded node should score lower
         assert!(score_degraded < score_nominal);
         // But should still be viable (>0.4)
         assert!(score_degraded > 0.4);
     }
 
     #[test]
-    fn test_critical_platform_role_scoring() {
-        // Edge case: Critical health platform
-        let (config, mut state) = create_test_platform_with_capabilities(vec![Capability::new(
+    fn test_critical_node_role_scoring() {
+        // Edge case: Critical health node
+        let (config, mut state) = create_test_node_with_capabilities(vec![Capability::new(
             "sensor_1".to_string(),
             "Sensor".to_string(),
             CapabilityType::Sensor,
@@ -573,7 +566,7 @@ mod tests {
         )]);
         state.update_health(crate::models::HealthStatus::Critical);
 
-        let score = RoleScorer::score_platform_for_role(&config, &state, CellRole::Sensor).unwrap();
+        let score = RoleScorer::score_node_for_role(&config, &state, CellRole::Sensor).unwrap();
 
         // Critical health (0.3) weighs 20%, so contributes 0.06
         // High capability (0.9) weighs 30%, so contributes 0.27
@@ -583,9 +576,9 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_platform_role_scoring() {
-        // Edge case: Failed platform
-        let (config, mut state) = create_test_platform_with_capabilities(vec![Capability::new(
+    fn test_failed_node_role_scoring() {
+        // Edge case: Failed node
+        let (config, mut state) = create_test_node_with_capabilities(vec![Capability::new(
             "sensor_1".to_string(),
             "Sensor".to_string(),
             CapabilityType::Sensor,
@@ -593,7 +586,7 @@ mod tests {
         )]);
         state.update_health(crate::models::HealthStatus::Failed);
 
-        let score = RoleScorer::score_platform_for_role(&config, &state, CellRole::Sensor).unwrap();
+        let score = RoleScorer::score_node_for_role(&config, &state, CellRole::Sensor).unwrap();
 
         // Failed health (0.0) weighs 20%, so contributes 0.0
         // High capability (0.9) weighs 30%, so contributes 0.27

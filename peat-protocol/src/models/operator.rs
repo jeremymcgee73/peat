@@ -1,6 +1,6 @@
 //! Human operator and human-machine binding models
 //!
-//! This module defines the relationship between human operators and platforms,
+//! This module defines the relationship between human operators and nodes,
 //! supporting multiple teaming patterns and authority models.
 
 // Re-export protobuf types
@@ -215,15 +215,15 @@ impl AuthorityLevelExt for AuthorityLevel {
 // Extension trait for HumanMachinePair helper methods
 pub trait HumanMachinePairExt {
     /// Create a new human-machine pair
-    fn new(operators: Vec<Operator>, platform_ids: Vec<String>, binding_type: BindingType) -> Self;
+    fn new(operators: Vec<Operator>, node_ids: Vec<String>, binding_type: BindingType) -> Self;
 
     /// Create an autonomous (no human) binding
-    fn autonomous(platform_id: String) -> Self;
+    fn autonomous(node_id: String) -> Self;
 
-    /// Create a one-to-one human-platform pair
-    fn one_to_one(operator: Operator, platform_id: String) -> Self;
+    /// Create a one-to-one human-node pair
+    fn one_to_one(operator: Operator, node_id: String) -> Self;
 
-    /// Check if this is an autonomous platform (no operators)
+    /// Check if this is an autonomous node (no operators)
     fn is_autonomous(&self) -> bool;
 
     /// Get the primary operator (highest rank)
@@ -243,26 +243,26 @@ pub trait HumanMachinePairExt {
 }
 
 impl HumanMachinePairExt for HumanMachinePair {
-    fn new(operators: Vec<Operator>, platform_ids: Vec<String>, binding_type: BindingType) -> Self {
+    fn new(operators: Vec<Operator>, node_ids: Vec<String>, binding_type: BindingType) -> Self {
         Self {
             operators,
-            platform_ids,
+            node_ids,
             binding_type: binding_type as i32,
             bound_at: None,
         }
     }
 
-    fn autonomous(platform_id: String) -> Self {
+    fn autonomous(node_id: String) -> Self {
         Self {
             operators: Vec::new(),
-            platform_ids: vec![platform_id],
+            node_ids: vec![node_id],
             binding_type: BindingType::Unspecified as i32,
             bound_at: None,
         }
     }
 
-    fn one_to_one(operator: Operator, platform_id: String) -> Self {
-        Self::new(vec![operator], vec![platform_id], BindingType::OneToOne)
+    fn one_to_one(operator: Operator, node_id: String) -> Self {
+        Self::new(vec![operator], vec![node_id], BindingType::OneToOne)
     }
 
     fn is_autonomous(&self) -> bool {
@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn test_human_machine_pair_multiple_platforms() {
+    fn test_human_machine_pair_multiple_nodes() {
         let op = Operator::new(
             "op1".to_string(),
             "Operator".to_string(),
@@ -772,7 +772,7 @@ mod tests {
             "11B".to_string(),
         );
 
-        let platform_ids = vec![
+        let node_ids = vec![
             "p1".to_string(),
             "p2".to_string(),
             "p3".to_string(),
@@ -780,9 +780,9 @@ mod tests {
             "p5".to_string(),
         ];
 
-        let pair = HumanMachinePair::new(vec![op], platform_ids.clone(), BindingType::OneToMany);
+        let pair = HumanMachinePair::new(vec![op], node_ids.clone(), BindingType::OneToMany);
 
-        assert_eq!(pair.platform_ids.len(), 5);
+        assert_eq!(pair.node_ids.len(), 5);
         assert_eq!(pair.operators.len(), 1);
         assert!(!pair.is_autonomous());
     }

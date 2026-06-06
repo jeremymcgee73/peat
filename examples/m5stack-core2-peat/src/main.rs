@@ -74,7 +74,7 @@ use base64::Engine;
 /// `HealthStatus.alerts` bitfield.
 ///
 /// The encoding has to land identically on three independent emitters
-/// — the activity-transition handler (immediate platform advert via
+/// — the activity-transition handler (immediate node advert via
 /// the 0xB6 translator path) and the periodic `update_health_full` /
 /// `update_alerts` call (legacy peripheral path). Without a shared
 /// definition, a future edit to one site would silently produce
@@ -1179,11 +1179,11 @@ fn main() -> anyhow::Result<()> {
                     current_activity = activity;
                     needs_redraw = true;
 
-                    // Publish a platform advertisement (ADR-059 0xB6
-                    // translator frame, "platforms" collection) so the
+                    // Publish a node advertisement (ADR-059 0xB6
+                    // translator frame, "nodes" collection) so the
                     // tablet plugin's onTranslatorFrameDecoded surfaces
                     // the new state — Prone → ALERT_MAN_DOWN drives
-                    // PeatPlatform.Status to UNAVAILABLE. Synchronous
+                    // PeatNode.Status to UNAVAILABLE. Synchronous
                     // with the IMU transition so peers don't have to
                     // wait for the 5 s gossip cycle to see the flip;
                     // the regular legacy-peripheral broadcast still
@@ -1247,10 +1247,10 @@ fn main() -> anyhow::Result<()> {
                             timestamp: now_ms(),
                             position: None, // SCOUT-A698 has no GPS
                         };
-                        if let Some(framed) = mesh.publish_platform_advertisement(&advert) {
+                        if let Some(framed) = mesh.publish_node_advertisement(&advert) {
                             let sent = nimble::gossip_document(&framed);
                             info!(
-                                ">>> Platform advert: {:?} alerts=0x{:02X} ({} bytes -> {} conns)",
+                                ">>> Node advert: {:?} alerts=0x{:02X} ({} bytes -> {} conns)",
                                 activity,
                                 alerts,
                                 framed.len(),
@@ -1258,12 +1258,12 @@ fn main() -> anyhow::Result<()> {
                             );
                         } else {
                             warn!(
-                                "publish_platform_advertisement returned None — wire encode failed"
+                                "publish_node_advertisement returned None — wire encode failed"
                             );
                         }
                     } else {
                         warn!(
-                            "publish_platform_advertisement skipped: battery_pct=None \
+                            "publish_node_advertisement skipped: battery_pct=None \
                              (AXP I2C not ready yet) — will retry on next 1 Hz tick"
                         );
                     }

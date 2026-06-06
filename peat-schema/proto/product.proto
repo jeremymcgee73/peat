@@ -19,16 +19,16 @@ import "common.proto";
 // Product represents any AI/ML model output
 //
 // This is the generic container for AI-generated products that flow upward
-// from edge platforms to C2. Each product has a type-specific content payload.
+// from edge nodes to C2. Each product has a type-specific content payload.
 message Product {
-  // Unique product identifier (e.g., "PROD-{platform}-{timestamp}")
+  // Unique product identifier (e.g., "PROD-{node}-{timestamp}")
   string product_id = 1;
 
   // Type of product
   ProductType product_type = 2;
 
-  // Source platform that generated this product
-  string source_platform = 3;
+  // Source node that generated this product
+  string source_node = 3;
 
   // Timestamp when product was generated
   common.v1.Timestamp timestamp = 4;
@@ -417,8 +417,8 @@ message ProductQuery {
   // Filter by product types
   repeated ProductType product_types = 1;
 
-  // Filter by source platform
-  repeated string source_platforms = 2;
+  // Filter by source node
+  repeated string source_nodes = 2;
 
   // Filter by model ID
   string model_id = 3;

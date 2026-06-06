@@ -413,7 +413,7 @@ fn bench_capability_query(c: &mut Criterion) {
                 let engine = CapabilityQueryEngine::new();
 
                 b.iter(|| {
-                    let matches = engine.query_platforms(&query, &nodes);
+                    let matches = engine.query_nodes(&query, &nodes);
                     black_box(matches)
                 });
             },

@@ -1,7 +1,7 @@
 //! Cell Capability Aggregation
 //!
 //! This module implements capability aggregation across cell members following ADR-004
-//! human-machine teaming principles. It collects individual platform capabilities and
+//! human-machine teaming principles. It collects individual node capabilities and
 //! composes them into emergent cell-level capabilities with human authority integration.
 //!
 //! # Key Concepts
@@ -35,7 +35,7 @@ pub struct AggregatedCapability {
     pub confidence: f32,
     /// Number of nodes contributing this capability
     pub contributor_count: usize,
-    /// Contributing platform IDs
+    /// Contributing node IDs
     pub contributors: Vec<String>,
     /// Highest authority level among contributors
     pub max_authority: Option<AuthorityLevel>,
@@ -133,7 +133,7 @@ impl CapabilityAggregator {
 
         // Collect capabilities from all members
         for (config, state) in members {
-            // Skip if platform is not operational
+            // Skip if node is not operational
             if !state.is_operational() {
                 continue;
             }
@@ -286,7 +286,7 @@ mod tests {
         OperatorExt, OperatorRank,
     };
 
-    fn create_test_platform(
+    fn create_test_node(
         id: &str,
         capabilities: Vec<(CapabilityType, f32)>,
         operator: Option<Operator>,
@@ -318,8 +318,8 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_single_platform() {
-        let platform = create_test_platform(
+    fn test_aggregate_single_node() {
+        let node = create_test_node(
             "p1",
             vec![
                 (CapabilityType::Sensor, 0.8),
@@ -328,7 +328,7 @@ mod tests {
             None,
         );
 
-        let result = CapabilityAggregator::aggregate_capabilities(&[platform]).unwrap();
+        let result = CapabilityAggregator::aggregate_capabilities(&[node]).unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains_key(&CapabilityType::Sensor));
@@ -340,10 +340,10 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_multiple_platforms_redundancy() {
-        let p1 = create_test_platform("p1", vec![(CapabilityType::Sensor, 0.7)], None);
-        let p2 = create_test_platform("p2", vec![(CapabilityType::Sensor, 0.8)], None);
-        let p3 = create_test_platform("p3", vec![(CapabilityType::Sensor, 0.75)], None);
+    fn test_aggregate_multiple_nodes_redundancy() {
+        let p1 = create_test_node("p1", vec![(CapabilityType::Sensor, 0.7)], None);
+        let p2 = create_test_node("p2", vec![(CapabilityType::Sensor, 0.8)], None);
+        let p3 = create_test_node("p3", vec![(CapabilityType::Sensor, 0.75)], None);
 
         let result = CapabilityAggregator::aggregate_capabilities(&[p1, p2, p3]).unwrap();
 
@@ -366,7 +366,7 @@ mod tests {
             "19D".to_string(),
         );
 
-        let p1 = create_test_platform("p1", vec![(CapabilityType::Payload, 0.7)], Some(operator));
+        let p1 = create_test_node("p1", vec![(CapabilityType::Payload, 0.7)], Some(operator));
 
         let result = CapabilityAggregator::aggregate_capabilities(&[p1]).unwrap();
 
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn test_oversight_requirements() {
         // Payload capability without operator - requires oversight
-        let p1 = create_test_platform("p1", vec![(CapabilityType::Payload, 0.9)], None);
+        let p1 = create_test_node("p1", vec![(CapabilityType::Payload, 0.9)], None);
         let result = CapabilityAggregator::aggregate_capabilities(&[p1]).unwrap();
         let payload_cap = result.get(&CapabilityType::Payload).unwrap();
         assert!(payload_cap.requires_oversight);
@@ -393,7 +393,7 @@ mod tests {
             AuthorityLevel::Commander,
             "11B".to_string(),
         );
-        let p2 = create_test_platform("p2", vec![(CapabilityType::Payload, 0.9)], Some(operator));
+        let p2 = create_test_node("p2", vec![(CapabilityType::Payload, 0.9)], Some(operator));
         let result2 = CapabilityAggregator::aggregate_capabilities(&[p2]).unwrap();
         let payload_cap2 = result2.get(&CapabilityType::Payload).unwrap();
         assert!(!payload_cap2.requires_oversight);
@@ -409,7 +409,7 @@ mod tests {
             "11B".to_string(),
         );
 
-        let p1 = create_test_platform("p1", vec![(CapabilityType::Payload, 0.85)], Some(operator));
+        let p1 = create_test_node("p1", vec![(CapabilityType::Payload, 0.85)], Some(operator));
         let result = CapabilityAggregator::aggregate_capabilities(&[p1]).unwrap();
         let payload_cap = result.get(&CapabilityType::Payload).unwrap();
 
@@ -428,7 +428,7 @@ mod tests {
             "11B".to_string(),
         );
 
-        let p1 = create_test_platform("p1", vec![(CapabilityType::Payload, 0.9)], Some(operator));
+        let p1 = create_test_node("p1", vec![(CapabilityType::Payload, 0.9)], Some(operator));
         let result = CapabilityAggregator::aggregate_capabilities(&[p1]).unwrap();
         let payload_cap = result.get(&CapabilityType::Payload).unwrap();
 
@@ -448,7 +448,7 @@ mod tests {
             "11B".to_string(),
         );
 
-        let p1 = create_test_platform(
+        let p1 = create_test_node(
             "p1",
             vec![
                 (CapabilityType::Communication, 0.9),
@@ -457,7 +457,7 @@ mod tests {
             Some(operator.clone()),
         );
 
-        let p2 = create_test_platform(
+        let p2 = create_test_node(
             "p2",
             vec![
                 (CapabilityType::Compute, 0.85),
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_identify_gaps() {
-        let p1 = create_test_platform(
+        let p1 = create_test_node(
             "p1",
             vec![
                 (CapabilityType::Sensor, 0.8),
@@ -505,33 +505,33 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_non_operational_platforms() {
-        let mut platform = create_test_platform("p1", vec![(CapabilityType::Sensor, 0.9)], None);
+    fn test_skip_non_operational_nodes() {
+        let mut node = create_test_node("p1", vec![(CapabilityType::Sensor, 0.9)], None);
 
-        // Set platform to degraded state
-        platform.1.health = HealthStatus::Degraded as i32;
+        // Set node to degraded state
+        node.1.health = HealthStatus::Degraded as i32;
 
-        let result = CapabilityAggregator::aggregate_capabilities(&[platform]).unwrap();
+        let result = CapabilityAggregator::aggregate_capabilities(&[node]).unwrap();
 
         // Should still include degraded nodes (they're operational)
         assert_eq!(result.len(), 1);
 
         // Critical nodes are still operational (only Failed is non-operational)
-        let mut platform2 = create_test_platform("p2", vec![(CapabilityType::Sensor, 0.9)], None);
-        platform2.1.health = HealthStatus::Critical as i32;
+        let mut node2 = create_test_node("p2", vec![(CapabilityType::Sensor, 0.9)], None);
+        node2.1.health = HealthStatus::Critical as i32;
 
-        let result2 = CapabilityAggregator::aggregate_capabilities(&[platform2]).unwrap();
+        let result2 = CapabilityAggregator::aggregate_capabilities(&[node2]).unwrap();
 
         // Critical is still operational
         assert_eq!(result2.len(), 1);
 
         // Now test with Failed status (truly non-operational)
-        let mut platform3 = create_test_platform("p3", vec![(CapabilityType::Sensor, 0.9)], None);
-        platform3.1.health = HealthStatus::Failed as i32;
+        let mut node3 = create_test_node("p3", vec![(CapabilityType::Sensor, 0.9)], None);
+        node3.1.health = HealthStatus::Failed as i32;
 
-        let result3 = CapabilityAggregator::aggregate_capabilities(&[platform3]).unwrap();
+        let result3 = CapabilityAggregator::aggregate_capabilities(&[node3]).unwrap();
 
-        // Should exclude failed platforms
+        // Should exclude failed nodes
         assert_eq!(result3.len(), 0);
     }
 
@@ -554,16 +554,15 @@ mod tests {
     }
 
     #[test]
-    fn test_all_platforms_non_operational() {
+    fn test_all_nodes_non_operational() {
         // Edge case: All nodes failed/non-operational
-        let mut platform1 = create_test_platform("p1", vec![(CapabilityType::Sensor, 0.9)], None);
-        platform1.1.health = HealthStatus::Failed as i32;
+        let mut node1 = create_test_node("p1", vec![(CapabilityType::Sensor, 0.9)], None);
+        node1.1.health = HealthStatus::Failed as i32;
 
-        let mut platform2 =
-            create_test_platform("p2", vec![(CapabilityType::Communication, 0.8)], None);
-        platform2.1.health = HealthStatus::Failed as i32;
+        let mut node2 = create_test_node("p2", vec![(CapabilityType::Communication, 0.8)], None);
+        node2.1.health = HealthStatus::Failed as i32;
 
-        let result = CapabilityAggregator::aggregate_capabilities(&[platform1, platform2]).unwrap();
+        let result = CapabilityAggregator::aggregate_capabilities(&[node1, node2]).unwrap();
 
         // All nodes excluded, should be empty
         assert_eq!(result.len(), 0);
@@ -572,9 +571,9 @@ mod tests {
     #[test]
     fn test_zero_confidence_capability() {
         // Edge case: Capability with 0.0 confidence
-        let platform = create_test_platform("p1", vec![(CapabilityType::Sensor, 0.0)], None);
+        let node = create_test_node("p1", vec![(CapabilityType::Sensor, 0.0)], None);
 
-        let result = CapabilityAggregator::aggregate_capabilities(&[platform]).unwrap();
+        let result = CapabilityAggregator::aggregate_capabilities(&[node]).unwrap();
 
         // Should still aggregate, but with low confidence
         assert_eq!(result.len(), 1);

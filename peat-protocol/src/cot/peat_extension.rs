@@ -113,7 +113,7 @@ impl PeatExtension {
         // Source
         if let Some(ref source) = self.source {
             let mut src_elem = BytesStart::new("source");
-            src_elem.push_attribute(("platform", source.platform.as_str()));
+            src_elem.push_attribute(("node", source.node.as_str()));
             src_elem.push_attribute(("model", source.model.as_str()));
             src_elem.push_attribute(("model_version", source.model_version.as_str()));
 
@@ -261,8 +261,8 @@ impl PeatExtension {
 /// Source attribution for track/capability origin
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PeatSource {
-    /// Platform that generated this data
-    pub platform: String,
+    /// Node that generated this data
+    pub node: String,
     /// Model/sensor name
     pub model: String,
     /// Model version
@@ -271,9 +271,9 @@ pub struct PeatSource {
 
 impl PeatSource {
     /// Create a new source attribution
-    pub fn new(platform: &str, model: &str, model_version: &str) -> Self {
+    pub fn new(node: &str, model: &str, model_version: &str) -> Self {
         Self {
-            platform: platform.to_string(),
+            node: node.to_string(),
             model: model.to_string(),
             model_version: model_version.to_string(),
         }
@@ -447,7 +447,7 @@ mod tests {
             .with_status(PeatStatus::new(OperationalStatus::Active, 0.91));
 
         assert!(ext.source.is_some());
-        assert_eq!(ext.source.as_ref().unwrap().platform, "Alpha-2");
+        assert_eq!(ext.source.as_ref().unwrap().node, "Alpha-2");
         assert!(ext.confidence.is_some());
         assert_eq!(ext.confidence.as_ref().unwrap().value, 0.89);
     }
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn test_peat_extension_to_xml() {
         let ext = PeatExtension::new()
-            .with_source(PeatSource::new("Platform-1", "sensor", "1.0.0"))
+            .with_source(PeatSource::new("Node-1", "sensor", "1.0.0"))
             .with_confidence(0.85, None);
 
         let mut writer = Writer::new(Cursor::new(Vec::new()));
@@ -464,7 +464,7 @@ mod tests {
         let xml = String::from_utf8(writer.into_inner().into_inner()).unwrap();
         assert!(xml.contains("<_peat_"));
         assert!(xml.contains("version=\"1.0\""));
-        assert!(xml.contains("platform=\"Platform-1\""));
+        assert!(xml.contains("node=\"Node-1\""));
         assert!(xml.contains("value=\"0.85\""));
     }
 
