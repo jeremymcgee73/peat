@@ -34,7 +34,7 @@ description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
 
 [lib]
-crate-type = ["cdylib", "lib"]
+crate-type = ["staticlib", "cdylib", "lib"]
 name = "peat_ffi"
 
 [[bin]]
@@ -143,6 +143,9 @@ peat-btle = { workspace = true, features = ["macos"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 peat-btle = { workspace = true, features = ["windows"], optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+peat-btle = { workspace = true, features = ["ios"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 peat-btle = { workspace = true, features = ["android"], optional = true }

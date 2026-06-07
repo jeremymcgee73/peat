@@ -513,6 +513,23 @@ pub struct DocumentChange {
     pub change_type: ChangeType,
 }
 
+/// Encoded BLE outbound frame produced by the `BleTranslator` fan-out.
+///
+/// Received by calling [`PeatNode::poll_outbound_frames`] on the host side.
+/// The host is responsible for the final transport-specific framing (GATT
+/// write, encryption envelope) before putting `bytes` on the radio.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OutboundFrame {
+    /// Transport identifier — `"ble"` for typed 0xB6 frames, `"ble-lite"`
+    /// for universal-Document (peat-lite) frames.
+    pub transport_id: String,
+    /// Collection the document belongs to (e.g. `"tracks"`, `"platforms"`).
+    pub collection: String,
+    /// postcard-encoded typed BLE struct ready for the radio.
+    pub bytes: Vec<u8>,
+}
+
 /// Callback interface for document change notifications
 ///
 /// Implement this interface in Kotlin/Swift to receive document updates.
@@ -557,14 +574,25 @@ pub trait OutboundFrameCallback: Send + Sync {
 #[cfg(feature = "sync")]
 #[derive(uniffi::Object)]
 pub struct SubscriptionHandle {
-    /// Flag to signal the subscription should stop
     active: Arc<AtomicBool>,
+    /// Queued changes for polling consumers (populated by `subscribe_poll`).
+    pending: Arc<std::sync::Mutex<std::collections::VecDeque<DocumentChange>>>,
 }
 
 #[cfg(feature = "sync")]
 impl SubscriptionHandle {
     fn new(active: Arc<AtomicBool>) -> Self {
-        Self { active }
+        Self {
+            active,
+            pending: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        }
+    }
+
+    fn new_with_queue(
+        active: Arc<AtomicBool>,
+        pending: Arc<std::sync::Mutex<std::collections::VecDeque<DocumentChange>>>,
+    ) -> Self {
+        Self { active, pending }
     }
 }
 
@@ -579,6 +607,18 @@ impl SubscriptionHandle {
     /// Cancel the subscription
     pub fn cancel(&self) {
         self.active.store(false, Ordering::SeqCst);
+    }
+
+    /// Drain all pending document changes. Non-blocking.
+    ///
+    /// Only populated when the subscription was opened via
+    /// [`PeatNode::subscribe_poll`]. Always returns an empty Vec for
+    /// subscriptions opened via [`PeatNode::subscribe`] (callback path).
+    pub fn poll_changes(&self) -> Vec<DocumentChange> {
+        self.pending
+            .lock()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -644,6 +684,15 @@ pub struct PeatNode {
     /// Constructed via PeatNode::enable_blob_transfer() after node creation.
     #[cfg(feature = "sync")]
     blob_store: std::sync::RwLock<Option<Arc<NetworkedIrohBlobStore>>>,
+    /// Queue of outbound BLE frames produced by the `BleTranslator` fan-out.
+    /// Populated by `QueueOutboundSink::send_outbound`; drained by
+    /// `poll_outbound_frames`. None when the `bluetooth` feature is off.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    outbound_queue: Arc<std::sync::Mutex<std::collections::VecDeque<OutboundFrame>>>,
+    /// `FanoutHandle` for the active outbound subscription, if any.
+    /// Held alive between `start_outbound_frames` and `stop_outbound_frames`.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    outbound_fanout: std::sync::Mutex<Option<peat_mesh::transport::FanoutHandle>>,
 }
 
 #[cfg(feature = "sync")]
@@ -1172,6 +1221,75 @@ impl PeatNode {
         });
 
         Ok(Arc::new(SubscriptionHandle::new(active)))
+    }
+
+    /// Subscribe to document changes using a poll-based model.
+    ///
+    /// Returns a [`SubscriptionHandle`] whose [`SubscriptionHandle::poll_changes`]
+    /// method drains buffered [`DocumentChange`] events. Callers drive delivery
+    /// by periodically calling `poll_changes` (e.g. from a Dart isolate loop or
+    /// `Timer.periodic`) — no foreign callback interface is required.
+    ///
+    /// Drop or call [`SubscriptionHandle::cancel`] on the handle to stop.
+    ///
+    /// # Broadcast lag
+    ///
+    /// The underlying channel has a bounded capacity. If `poll_changes` is not
+    /// called frequently enough relative to the document-change rate, the
+    /// broadcast channel will lag and silently drop events — `poll_changes`
+    /// returns a partial set with no indication that events were missed.
+    /// Callers should treat a long gap between `poll_changes` calls (e.g. the
+    /// app was backgrounded) as a signal to trigger a full collection resync
+    /// rather than relying on the change stream alone.
+    pub fn subscribe_poll(&self) -> Result<Arc<SubscriptionHandle>, PeatError> {
+        let change_rx = self.store.subscribe_to_changes();
+        let active = Arc::new(AtomicBool::new(true));
+        let active_clone = Arc::clone(&active);
+        let pending = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+            DocumentChange,
+        >::new()));
+        let pending_clone = Arc::clone(&pending);
+
+        self.runtime.spawn(async move {
+            let mut rx = change_rx;
+            while active_clone.load(Ordering::SeqCst) {
+                tokio::select! {
+                    result = rx.recv() => {
+                        match result {
+                            Ok(doc_key) => {
+                                let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
+                                    DocumentChange {
+                                        collection: collection.to_string(),
+                                        doc_id: doc_id.to_string(),
+                                        change_type: ChangeType::Upsert,
+                                    }
+                                } else {
+                                    DocumentChange {
+                                        collection: "default".to_string(),
+                                        doc_id: doc_key,
+                                        change_type: ChangeType::Upsert,
+                                    }
+                                };
+                                if let Ok(mut q) = pending_clone.lock() {
+                                    q.push_back(change);
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                        if !active_clone.load(Ordering::SeqCst) {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Arc::new(SubscriptionHandle::new_with_queue(
+            active, pending,
+        )))
     }
 }
 
@@ -1706,6 +1824,10 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         cleanup_running,
         #[cfg(feature = "sync")]
         blob_store: std::sync::RwLock::new(None),
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        outbound_queue: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        outbound_fanout: std::sync::Mutex::new(None),
     }))
 }
 
@@ -4039,6 +4161,171 @@ mod tests {
                 "second register on same transport_id must error"
             );
         }
+
+        // ----- Poll-API unit tests -----
+
+        /// `QueueOutboundSink::send_outbound` enqueues frames that can be
+        /// drained via the queue directly — mirrors what `poll_outbound_frames`
+        /// does at the `PeatNode` level.
+        #[tokio::test]
+        async fn queue_sink_enqueues_frames() {
+            let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+                OutboundFrame,
+            >::new()));
+            let sink = QueueOutboundSink {
+                transport_id: "ble",
+                queue: Arc::clone(&queue),
+            };
+            let ctx = TranslationContext::inbound("ble").with_collection("tracks");
+            sink.send_outbound(vec![0xAA, 0xBB], &ctx).await.unwrap();
+            sink.send_outbound(vec![0xCC], &ctx).await.unwrap();
+
+            let frames: Vec<OutboundFrame> = queue.lock().unwrap().drain(..).collect();
+            assert_eq!(frames.len(), 2);
+            assert_eq!(frames[0].transport_id, "ble");
+            assert_eq!(frames[0].collection, "tracks");
+            assert_eq!(frames[0].bytes, vec![0xAA, 0xBB]);
+            assert_eq!(frames[1].bytes, vec![0xCC]);
+        }
+
+        /// A document published via the fan-out path reaches the
+        /// `QueueOutboundSink`, confirming the poll-API wiring matches the
+        /// existing `RecordingSink`-based path. Mirrors
+        /// `iroh_origin_doc_reaches_ble_sink`.
+        #[tokio::test]
+        async fn queue_sink_receives_fanned_out_doc() {
+            let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
+            let node = Arc::new(peat_mesh::Node::new(backend));
+            let translator = Arc::new(BleTranslator::with_defaults());
+            let tm = TransportManager::new(TransportManagerConfig::default());
+            let queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+                OutboundFrame,
+            >::new()));
+            let sink: Arc<dyn OutboundSink> = Arc::new(QueueOutboundSink {
+                transport_id: "ble",
+                queue: Arc::clone(&queue),
+            });
+            let translator_dyn: Arc<dyn Translator> = translator.clone();
+            tm.register_translator(translator_dyn, sink, TranslatorRegistrationConfig::ble())
+                .await
+                .expect("register");
+            let _h = tm
+                .start_fanout(
+                    Arc::clone(&node),
+                    vec![translator.tracks_collection().to_string()],
+                )
+                .expect("start_fanout");
+
+            let doc = peat_mesh::sync::types::Document::with_id("q-00000001".to_string(), {
+                let mut f = std::collections::HashMap::new();
+                f.insert("lat".to_string(), serde_json::json!(51.5));
+                f.insert("lon".to_string(), serde_json::json!(-0.1));
+                f.insert("source_platform".to_string(), serde_json::json!("iroh-q01"));
+                f.insert("hae".to_string(), serde_json::json!(10.0));
+                f.insert("cep".to_string(), serde_json::json!(2.0));
+                f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
+                f.insert("confidence".to_string(), serde_json::json!(0.8));
+                f.insert("category".to_string(), serde_json::json!("friendly"));
+                f.insert("callsign".to_string(), serde_json::json!("BRAVO-1"));
+                f.insert(
+                    "created_at".to_string(),
+                    serde_json::json!(1_700_000_001_000_i64),
+                );
+                f
+            });
+            node.publish(translator.tracks_collection(), doc)
+                .await
+                .expect("publish");
+
+            let _ = timeout(Duration::from_secs(1), async {
+                loop {
+                    if !queue.lock().unwrap().is_empty() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+
+            let frames: Vec<OutboundFrame> = queue.lock().unwrap().drain(..).collect();
+            assert!(
+                !frames.is_empty(),
+                "queue sink must receive at least one frame"
+            );
+            assert_eq!(frames[0].transport_id, "ble");
+            assert_eq!(frames[0].collection, translator.tracks_collection());
+        }
+
+        /// `ingest_inbound_frame` round-trips: produce postcard bytes via
+        /// `BleTranslator::encode_outbound` (the same path the real fan-out
+        /// uses), then decode them back through `decode_inbound` and publish
+        /// with `Some("ble")` origin (ADR-059 echo-suppression invariant).
+        /// Tests the same primitives that `PeatNode::ingest_inbound_frame` uses.
+        #[tokio::test]
+        async fn ingest_inbound_frame_roundtrip_publishes_with_ble_origin() {
+            let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
+            let node = Arc::new(peat_mesh::Node::new(backend));
+            let translator = Arc::new(BleTranslator::with_defaults());
+
+            // Build a minimal tracks document and encode it to postcard bytes.
+            let outbound_doc =
+                peat_mesh::sync::types::Document::with_id("enc-00000001".to_string(), {
+                    let mut f = std::collections::HashMap::new();
+                    f.insert("lat".to_string(), serde_json::json!(48.858));
+                    f.insert("lon".to_string(), serde_json::json!(2.294));
+                    f.insert(
+                        "source_platform".to_string(),
+                        serde_json::json!("iroh-enc01"),
+                    );
+                    f.insert("hae".to_string(), serde_json::json!(50.0));
+                    f.insert("cep".to_string(), serde_json::json!(3.0));
+                    f.insert("classification".to_string(), serde_json::json!("a-f-G-U-C"));
+                    f.insert("confidence".to_string(), serde_json::json!(0.9));
+                    f.insert("category".to_string(), serde_json::json!("friendly"));
+                    f.insert("callsign".to_string(), serde_json::json!("DELTA-1"));
+                    f.insert(
+                        "created_at".to_string(),
+                        serde_json::json!(1_700_000_002_000_i64),
+                    );
+                    f
+                });
+            let encode_ctx = TranslationContext::inbound("ble")
+                .with_collection(translator.tracks_collection().to_string());
+            let postcard_bytes = translator
+                .encode_outbound(&outbound_doc, &encode_ctx)
+                .await
+                .expect("encode_outbound should produce Some bytes for a tracks doc");
+
+            // Decode — mirrors what `ingest_inbound_frame` does.
+            let decode_ctx = TranslationContext::inbound("ble")
+                .with_collection(translator.tracks_collection().to_string());
+            let decoded = translator
+                .decode_inbound(&postcard_bytes, &decode_ctx)
+                .await
+                .expect("decode_inbound")
+                .expect("should produce a document for tracks");
+
+            // Publish with ble origin so echo-suppression fires correctly.
+            let id = node
+                .publish_with_origin(
+                    translator.tracks_collection(),
+                    decoded,
+                    Some("ble".to_string()),
+                )
+                .await
+                .expect("publish");
+
+            // Verify the doc landed in the store.
+            let stored = node
+                .get(translator.tracks_collection(), &id)
+                .await
+                .expect("get")
+                .expect("doc must be present after ingest");
+            assert!(
+                stored.fields.contains_key("lat"),
+                "decoded document must contain lat field"
+            );
+        }
     }
 
     /// Universal-Document path coexistence with the typed BLE path.
@@ -4429,6 +4716,161 @@ mod tests {
                 )
                 .await
                 .expect("re-register lite-bridge");
+        }
+    }
+
+    /// Wrapper-tier E2E tests for the poll API added for Dart/Flutter consumers.
+    ///
+    /// These tests exercise the full path through the `PeatNode` wrapper —
+    /// `subscribe_poll` / `poll_changes`, `start_outbound_frames` /
+    /// `poll_outbound_frames` / `stop_outbound_frames`, and
+    /// `ingest_inbound_frame` — using `create_node` as the entry point, the
+    /// same way Flutter consumers do. Each test is intentionally independent
+    /// (separate temp dirs, separate nodes) so failures are local.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    mod poll_api_wrapper_tests {
+        use super::*;
+
+        fn test_cfg(storage_path: &str) -> NodeConfig {
+            NodeConfig {
+                app_id: "poll-wrapper-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: storage_path.to_string(),
+                transport: None,
+            }
+        }
+
+        /// `subscribe_poll` + `poll_changes` + `cancel` through the `PeatNode` wrapper.
+        ///
+        /// Creates a real node via `create_node`, subscribes with `subscribe_poll`,
+        /// publishes a document via the mesh document layer (the path that actually
+        /// triggers `subscribe_to_changes`), and verifies the change arrives through
+        /// `poll_changes`. Also confirms the drain is idempotent and that `cancel`
+        /// is safe to call multiple times.
+        #[test]
+        fn subscribe_poll_drain_and_cancel() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+
+            let handle = node.subscribe_poll().expect("subscribe_poll");
+
+            // Publish through the mesh document layer — this feeds subscribe_to_changes().
+            let mesh_node = Arc::clone(&node.node);
+            node.runtime
+                .block_on(publish_document_into_node(
+                    &mesh_node,
+                    "test",
+                    r#"{"id":"doc-001","x":1}"#,
+                ))
+                .expect("publish_document_into_node");
+
+            // Give the spawned Tokio task time to pick up the broadcast.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            let changes = handle.poll_changes();
+            assert!(
+                !changes.is_empty(),
+                "poll_changes must return changes after publish_document_into_node"
+            );
+            assert!(
+                changes.iter().any(|c| c.collection == "test"),
+                "change must be for the 'test' collection; got: {changes:?}"
+            );
+
+            // Drain is idempotent — second call returns nothing.
+            assert!(
+                handle.poll_changes().is_empty(),
+                "second poll must be empty after drain"
+            );
+
+            // cancel is safe to call repeatedly.
+            handle.cancel();
+            handle.cancel();
+        }
+
+        /// `start_outbound_frames` → publish → `poll_outbound_frames` →
+        /// `ingest_inbound_frame` → `stop_outbound_frames` → idempotent re-start.
+        ///
+        /// Covers the full wrapper path for the BLE poll API:
+        /// - `start_outbound_frames` idempotency (second call is a no-op, not an error)
+        /// - A document published to "tracks" via the mesh layer produces an outbound
+        ///   BLE frame visible through `poll_outbound_frames`
+        /// - The polled frame can be fed into a second node via `ingest_inbound_frame`
+        ///   and the decoded document appears in that node's mesh store
+        /// - `stop_outbound_frames` + `start_outbound_frames` re-registers the
+        ///   translator without a duplicate-id collision
+        #[test]
+        fn outbound_frames_start_poll_ingest_stop_restart() {
+            let tmp_a = tempfile::tempdir().unwrap();
+            let tmp_b = tempfile::tempdir().unwrap();
+            let node_a = create_node(test_cfg(tmp_a.path().to_str().unwrap())).expect("node_a");
+            let node_b = create_node(test_cfg(tmp_b.path().to_str().unwrap())).expect("node_b");
+
+            // start is idempotent — second call must succeed, not error.
+            node_a.start_outbound_frames().expect("start 1");
+            node_a
+                .start_outbound_frames()
+                .expect("start 2 (idempotent no-op)");
+
+            // Publish a properly-structured tracks doc so BleTranslator can encode it.
+            let tracks_json = r#"{
+                "id": "track-wrap-001",
+                "lat": 51.5, "lon": -0.1,
+                "source_platform": "test-01",
+                "hae": 10.0, "cep": 2.0,
+                "classification": "a-f-G-U-C",
+                "confidence": 0.9,
+                "category": "friendly",
+                "callsign": "ALPHA-1",
+                "created_at": 1700000001000
+            }"#;
+            let mesh_a = Arc::clone(&node_a.node);
+            node_a
+                .runtime
+                .block_on(publish_document_into_node(&mesh_a, "tracks", tracks_json))
+                .expect("publish tracks");
+
+            // Poll with retries to allow the async fan-out observer to fire.
+            let mut frames = Vec::new();
+            for _ in 0..40 {
+                frames = node_a.poll_outbound_frames();
+                if !frames.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(
+                !frames.is_empty(),
+                "outbound frames must appear after publishing to 'tracks'"
+            );
+            assert_eq!(frames[0].transport_id, "ble");
+            assert_eq!(frames[0].collection, "tracks");
+
+            // Ingest on node_b — exercising the ingest_inbound_frame wrapper path.
+            let doc_id = node_b
+                .ingest_inbound_frame("tracks".to_string(), frames[0].bytes.clone())
+                .expect("ingest_inbound_frame must not error")
+                .expect("must return a doc_id for a valid tracks frame");
+            assert!(!doc_id.is_empty(), "ingested doc_id must be non-empty");
+
+            // Document must be in node_b's mesh store.
+            let stored = node_b
+                .runtime
+                .block_on(Arc::clone(&node_b.node).get("tracks", &doc_id))
+                .expect("get must not error")
+                .expect("ingested document must be in node_b's store");
+            assert!(
+                stored.fields.contains_key("lat"),
+                "decoded track must carry lat field"
+            );
+
+            // stop → re-start: translator must re-register without duplicate-id error.
+            node_a.stop_outbound_frames();
+            node_a
+                .start_outbound_frames()
+                .expect("re-start after stop must succeed");
+            node_a.stop_outbound_frames(); // cleanup
         }
     }
 
@@ -8508,6 +8950,272 @@ fn dispatch_document_error(message: &str) {
 }
 
 // =============================================================================
+// Outbound-frame poll API — dart:ffi / non-JNI consumers (ADR-059 Slice 1.b)
+// =============================================================================
+//
+// Exposes the same BLE translator fan-out as `subscribeOutboundFramesJni` but
+// via a queue-drain pattern instead of a foreign callback. The host calls
+// `start_outbound_frames` once, then polls `poll_outbound_frames` at its own
+// pace (e.g. from a Dart isolate loop), and calls `stop_outbound_frames` on
+// teardown. Explicit stop avoids the Drop-drives-async problem that deferred
+// the original `OutboundFrameCallback` UniFFI trait registration.
+//
+// The inbound direction (`ingest_inbound_frame`) accepts postcard-encoded
+// typed BLE structs (i.e. the bytes *after* peat-btle has stripped the GATT
+// framing and decrypted the envelope) and publishes the resulting document
+// with `Some("ble")` origin so ADR-059 echo-suppression fires correctly.
+
+/// `OutboundSink` that appends encoded frames to an in-process queue instead
+/// of dispatching to a JNI callback. Used by `start_outbound_frames`.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+struct QueueOutboundSink {
+    transport_id: &'static str,
+    queue: Arc<std::sync::Mutex<std::collections::VecDeque<OutboundFrame>>>,
+}
+
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[async_trait::async_trait]
+impl peat_mesh::transport::OutboundSink for QueueOutboundSink {
+    async fn send_outbound(
+        &self,
+        bytes: Vec<u8>,
+        ctx: &peat_mesh::transport::TranslationContext,
+    ) -> anyhow::Result<()> {
+        let collection = ctx.collection.clone().unwrap_or_default();
+        self.queue
+            .lock()
+            .map_err(|e| anyhow::anyhow!("outbound_queue poisoned: {e}"))?
+            .push_back(OutboundFrame {
+                transport_id: self.transport_id.to_string(),
+                collection,
+                bytes,
+            });
+        Ok(())
+    }
+}
+
+/// Internal helper: registers the ble (and optionally ble-lite) translator +
+/// sink pair with `TransportManager`, starts the fan-out, and returns the
+/// `FanoutHandle`. On any failure, already-registered translators are rolled
+/// back before the error propagates.
+///
+/// `sink_factory` is a closure that receives the `transport_id` string and
+/// returns the `Arc<dyn OutboundSink>` to wire for that transport. Called
+/// once for `"ble"` and, with `lite-bridge` on, once for `"ble-lite"`.
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+impl PeatNode {
+    fn register_ble_fanout(
+        &self,
+        sink_factory: impl Fn(&'static str) -> Arc<dyn peat_mesh::transport::OutboundSink>,
+    ) -> anyhow::Result<peat_mesh::transport::FanoutHandle> {
+        let translator_dyn: Arc<dyn peat_mesh::transport::Translator> = self.ble_translator.clone();
+        let ble_sink = sink_factory("ble");
+
+        let collections = vec![
+            self.ble_translator.tracks_collection().to_string(),
+            self.ble_translator.nodes_collection().to_string(),
+            self.ble_translator.alerts_collection().to_string(),
+            self.ble_translator.canned_messages_collection().to_string(),
+        ];
+
+        #[cfg(feature = "lite-bridge")]
+        let lite_bridge_translator_id = peat_mesh::transport::BLE_LITE_BRIDGE;
+        #[cfg(feature = "lite-bridge")]
+        let mut collections = collections;
+        #[cfg(feature = "lite-bridge")]
+        for c in LITE_BRIDGE_COLLECTIONS {
+            collections.push((*c).to_string());
+        }
+        let collections = collections;
+
+        self.runtime.block_on(async {
+            self.transport_manager
+                .register_translator(
+                    translator_dyn,
+                    ble_sink,
+                    peat_mesh::transport::TranslatorRegistrationConfig::ble(),
+                )
+                .await?;
+
+            #[cfg(feature = "lite-bridge")]
+            {
+                let lite_translator: Arc<dyn peat_mesh::transport::Translator> = Arc::new(
+                    CollectionGatedLiteBridge::for_ble_with_collections(LITE_BRIDGE_COLLECTIONS),
+                );
+                let lite_sink = sink_factory(lite_bridge_translator_id);
+                if let Err(e) = self
+                    .transport_manager
+                    .register_translator(
+                        lite_translator,
+                        lite_sink,
+                        peat_mesh::transport::TranslatorRegistrationConfig::ble(),
+                    )
+                    .await
+                {
+                    let _ = self.transport_manager.unregister_translator("ble").await;
+                    return Err(e);
+                }
+            }
+
+            match self
+                .transport_manager
+                .start_fanout(Arc::clone(&self.node), collections)
+            {
+                Ok(handle) => Ok(handle),
+                Err(e) => {
+                    #[cfg(feature = "lite-bridge")]
+                    {
+                        let _ = self
+                            .transport_manager
+                            .unregister_translator(lite_bridge_translator_id)
+                            .await;
+                    }
+                    let _ = self.transport_manager.unregister_translator("ble").await;
+                    Err(e)
+                }
+            }
+        })
+    }
+}
+
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[uniffi::export]
+impl PeatNode {
+    /// Subscribe to outbound BLE frames via a poll queue.
+    ///
+    /// After calling this, encoded frames produced by the `BleTranslator`
+    /// fan-out accumulate in an internal unbounded queue. Call
+    /// [`poll_outbound_frames`] frequently to drain it — if the consumer
+    /// pauses polling the queue will grow without bound, one `Vec<u8>`
+    /// payload per BLE frame.
+    ///
+    /// Idempotent — a second call while already subscribed is a no-op
+    /// (returns `Ok`).
+    ///
+    /// Call [`stop_outbound_frames`] to unsubscribe, tear down the fan-out,
+    /// and clear any residual frames from the queue.
+    pub fn start_outbound_frames(&self) -> Result<(), PeatError> {
+        {
+            let guard = self
+                .outbound_fanout
+                .lock()
+                .map_err(|_| PeatError::SyncError {
+                    msg: "outbound_fanout poisoned".to_string(),
+                })?;
+            if guard.is_some() {
+                return Ok(()); // already running
+            }
+        }
+        let queue = Arc::clone(&self.outbound_queue);
+        let handle = self
+            .register_ble_fanout(move |tid| {
+                Arc::new(QueueOutboundSink {
+                    transport_id: tid,
+                    queue: Arc::clone(&queue),
+                })
+            })
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        *self
+            .outbound_fanout
+            .lock()
+            .map_err(|_| PeatError::SyncError {
+                msg: "outbound_fanout poisoned".to_string(),
+            })? = Some(handle);
+        Ok(())
+    }
+
+    /// Drain all queued outbound frames produced since the last call.
+    ///
+    /// Returns an empty `Vec` when no frames are pending or when
+    /// [`start_outbound_frames`] has not been called. Non-blocking.
+    pub fn poll_outbound_frames(&self) -> Vec<OutboundFrame> {
+        // If the Mutex is poisoned (a thread panicked while holding it) we
+        // recover the inner value rather than propagating a panic — the
+        // VecDeque state is consistent enough to drain safely.
+        let mut q = self
+            .outbound_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        q.drain(..).collect()
+    }
+
+    /// Stop outbound-frame delivery and tear down the BLE fan-out.
+    ///
+    /// Drops the `FanoutHandle` (cancels observer tasks), unregisters the BLE
+    /// translator(s), and clears the outbound queue so that stale frames are
+    /// not delivered after a subsequent [`start_outbound_frames`].
+    ///
+    /// Idempotent — safe to call when not subscribed.
+    pub fn stop_outbound_frames(&self) {
+        let handle = self
+            .outbound_fanout
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        drop(handle); // cancels fan-out observer tasks
+
+        // Clear residual frames so a subsequent start_outbound_frames sees a
+        // clean queue rather than frames from the previous subscription window.
+        self.outbound_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+
+        // Unregister the translator(s) so a future start_outbound_frames
+        // can re-register without hitting the duplicate-id rejection.
+        self.runtime.block_on(async {
+            #[cfg(feature = "lite-bridge")]
+            {
+                let _ = self
+                    .transport_manager
+                    .unregister_translator(peat_mesh::transport::BLE_LITE_BRIDGE)
+                    .await;
+            }
+            let _ = self.transport_manager.unregister_translator("ble").await;
+        });
+    }
+
+    /// Feed a BLE inbound frame into the mesh.
+    ///
+    /// `postcard_bytes` must be the postcard-encoded typed BLE struct
+    /// produced by `peat-btle` *after* it has stripped the GATT framing and
+    /// decrypted the envelope (i.e. the bytes `peat-btle` would pass to its
+    /// internal `Translator::decode_inbound`).
+    ///
+    /// `collection` must name the document collection the bytes belong to
+    /// (e.g. `"tracks"`, `"platforms"`) — peat-btle knows this from the GATT
+    /// characteristic or frame type and should pass it through unchanged.
+    ///
+    /// On success returns the newly-published document ID. Returns `Ok(None)`
+    /// if the bytes are addressed to an unknown collection (graceful decline).
+    pub fn ingest_inbound_frame(
+        &self,
+        collection: String,
+        postcard_bytes: Vec<u8>,
+    ) -> Result<Option<String>, PeatError> {
+        use peat_mesh::transport::{TranslationContext, Translator};
+        let ctx = TranslationContext::inbound("ble").with_collection(collection);
+        let doc = self
+            .runtime
+            .block_on(self.ble_translator.decode_inbound(&postcard_bytes, &ctx))
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        let Some(mesh_doc) = doc else {
+            return Ok(None);
+        };
+        let collection_name = ctx.collection.unwrap_or_default();
+        let id = self
+            .runtime
+            .block_on(self.node.publish_with_origin(
+                &collection_name,
+                mesh_doc,
+                Some("ble".to_string()),
+            ))
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        Ok(Some(id.to_string()))
+    }
+}
+
+// =============================================================================
 // OutboundFrameCallback JNI (ADR-059 Slice 1.b)
 // =============================================================================
 //
@@ -8683,120 +9391,11 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFr
     // forget happens after the registration block completes.
     let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
 
-    // Unsized coercion `Arc<BleTranslator> -> Arc<dyn Translator>` happens
-    // implicitly when the LHS type is annotated; `Arc::clone` would
-    // preserve the concrete type and break the coercion.
-    let translator_dyn: Arc<dyn peat_mesh::transport::Translator> =
-        node_owner.ble_translator.clone();
-    let sink: Arc<dyn peat_mesh::transport::OutboundSink> = Arc::new(JniOutboundSink {
-        transport_id: "ble",
-    });
-    // Source the BLE-routable collection names from the translator's own
-    // accessors so this call site stays aligned with the translator's
-    // coverage. Hardcoded literals would silently drift if the collection
-    // names change or new ones (e.g. chat) are added.
-    let mut collections = vec![
-        node_owner.ble_translator.tracks_collection().to_string(),
-        node_owner.ble_translator.nodes_collection().to_string(),
-        node_owner.ble_translator.alerts_collection().to_string(),
-        node_owner
-            .ble_translator
-            .canned_messages_collection()
-            .to_string(),
-    ];
-
-    // Universal Document transport (ADR-035 + ADR-059 Slice 1.b "scope #3").
-    // Register a second translator + sink for the peat-lite envelope path,
-    // gated on `lite-bridge`. transport_id `"ble-lite"` is distinct from
-    // the typed-frame translator's `"ble"` so origin-skip and per-doc
-    // `allowed_transports` can disambiguate the two codecs sharing the
-    // BLE physical wire. Universal-Document collections extend the
-    // fanout list so peat-mesh's observer fires for them; the
-    // `CollectionGatedLiteBridge` wrapper then declines any non-allow-list
-    // collection at encode_outbound, ensuring the lite-bridge path doesn't
-    // double-emit on typed BLE collections. Future entries live in
-    // `LITE_BRIDGE_COLLECTIONS`.
-    #[cfg(feature = "lite-bridge")]
-    let lite_bridge_translator_id = peat_mesh::transport::BLE_LITE_BRIDGE;
-    #[cfg(feature = "lite-bridge")]
-    {
-        for c in LITE_BRIDGE_COLLECTIONS {
-            collections.push((*c).to_string());
-        }
-    }
-
-    // Compose register + start + on-failure-rollback inside one
-    // `block_on` so a `start_fanout` failure unregisters the translator
-    // before returning. Without the rollback, the translator is left
-    // registered while the listener slot says "not subscribed", and the
-    // next subscribe call hits the duplicate-`transport_id` rejection in
-    // `register_translator` — a permanent stuck state until
-    // `unsubscribeOutboundFramesJni` clears it.
-    let final_result: anyhow::Result<peat_mesh::transport::FanoutHandle> =
-        node_owner.runtime.block_on(async {
-            node_owner
-                .transport_manager
-                .register_translator(
-                    translator_dyn,
-                    sink,
-                    peat_mesh::transport::TranslatorRegistrationConfig::ble(),
-                )
-                .await?;
-
-            // lite-bridge: register the universal-Document translator
-            // alongside the typed BLE one. The wrapper gates encode by
-            // the static `LITE_BRIDGE_COLLECTIONS` allow-list so the
-            // catch-all codec doesn't double-emit on the typed
-            // BleTranslator's collections. On failure, roll back the
-            // typed-BLE registration too so we don't leave a
-            // half-wired state.
-            #[cfg(feature = "lite-bridge")]
-            {
-                let lite_translator: Arc<dyn peat_mesh::transport::Translator> = Arc::new(
-                    CollectionGatedLiteBridge::for_ble_with_collections(LITE_BRIDGE_COLLECTIONS),
-                );
-                let lite_sink: Arc<dyn peat_mesh::transport::OutboundSink> =
-                    Arc::new(JniOutboundSink {
-                        transport_id: lite_bridge_translator_id,
-                    });
-                if let Err(e) = node_owner
-                    .transport_manager
-                    .register_translator(
-                        lite_translator,
-                        lite_sink,
-                        peat_mesh::transport::TranslatorRegistrationConfig::ble(),
-                    )
-                    .await
-                {
-                    let _ = node_owner
-                        .transport_manager
-                        .unregister_translator("ble")
-                        .await;
-                    return Err(e);
-                }
-            }
-
-            match node_owner
-                .transport_manager
-                .start_fanout(Arc::clone(&node_owner.node), collections)
-            {
-                Ok(handle) => Ok(handle),
-                Err(e) => {
-                    #[cfg(feature = "lite-bridge")]
-                    {
-                        let _ = node_owner
-                            .transport_manager
-                            .unregister_translator(lite_bridge_translator_id)
-                            .await;
-                    }
-                    let _ = node_owner
-                        .transport_manager
-                        .unregister_translator("ble")
-                        .await;
-                    Err(e)
-                }
-            }
-        });
+    // Delegate to the shared registration helper so the JNI and the
+    // poll-API paths stay aligned. The factory produces a `JniOutboundSink`
+    // whose `send_outbound` dispatches to the registered Kotlin GlobalRef.
+    let final_result =
+        node_owner.register_ble_fanout(|tid| Arc::new(JniOutboundSink { transport_id: tid }));
 
     std::mem::forget(node_owner);
 

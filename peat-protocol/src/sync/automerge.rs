@@ -2154,6 +2154,30 @@ impl DocumentStore for IrohDocumentStore {
         // the corresponding `doc_key` notification arrives.
         let pending_origins = Arc::clone(&self.pending_origins);
 
+        // Fallback for legacy documents stored via message_to_automerge (fields at
+        // Automerge ROOT). Documents written by Collection::upsert store their
+        // payload as a single "data" Bytes scalar; automerge_to_message reads ROOT
+        // directly and returns {"data": "<blob>"} for those, which is not a valid
+        // Document. This helper is only reached when Collection::get fails or
+        // returns bytes that don't deserialise as Document.
+        let read_automerge_root_fields = |backend: &crate::storage::AutomergeBackend,
+                                          doc_key: &str,
+                                          doc_id: &str|
+         -> Option<Document> {
+            let am_doc = backend.automerge_store().get(doc_key).ok()??;
+            let json_value = automerge_to_message::<serde_json::Value>(&am_doc).ok()?;
+            let fields = if let serde_json::Value::Object(m) = json_value {
+                m.into_iter().collect()
+            } else {
+                serde_json::Map::new().into_iter().collect()
+            };
+            Some(Document {
+                id: Some(doc_id.to_string()),
+                fields,
+                updated_at: std::time::SystemTime::now(),
+            })
+        };
+
         // Spawn background task to listen for changes and emit Updated events
         tokio::spawn(async move {
             loop {
@@ -2170,33 +2194,36 @@ impl DocumentStore for IrohDocumentStore {
                             None => continue,
                         };
 
-                        // Fetch the updated document directly from store
-                        // Issue #457: AutomergeSummaryStorage uses message_to_automerge which stores
-                        // fields at ROOT, but Collection::get expects a "data" field wrapper.
-                        // Use direct store access for consistent handling of all document formats.
-                        let maybe_doc: Option<Document> = if let Ok(Some(automerge_doc)) =
-                            backend.automerge_store().get(&doc_key)
-                        {
-                            // Convert Automerge doc to JSON Value, then to Document
-                            if let Ok(json_value) =
-                                automerge_to_message::<serde_json::Value>(&automerge_doc)
-                            {
-                                // Convert JSON Value to Document
-                                let fields = if let serde_json::Value::Object(map) = json_value {
-                                    map.into_iter().collect()
-                                } else {
-                                    serde_json::Map::new().into_iter().collect()
-                                };
-                                Some(Document {
-                                    id: Some(doc_id.clone()),
-                                    fields,
-                                    updated_at: std::time::SystemTime::now(),
-                                })
-                            } else {
-                                None
+                        // Fetch the updated document. Documents written by
+                        // upsert_with_origin are stored as serde_json-serialised
+                        // Document bytes under the Automerge "data" scalar
+                        // (via AutomergeCollection::upsert). Collection::get
+                        // correctly unwraps that "data" field; automerge_to_message
+                        // reads the Automerge root directly and therefore returns
+                        // {"data": "<json_string>"} for that layout, losing the
+                        // actual document fields. Use Collection::get as the
+                        // primary path, with a fallback to automerge_to_message
+                        // for legacy formats that store individual fields at ROOT
+                        // (Issue #457 / peat#973-fix).
+                        let maybe_doc: Option<Document> = {
+                            use crate::storage::traits::StorageBackend;
+                            let coll = backend.collection(&collection_name);
+                            match coll.get(&doc_id) {
+                                Ok(Some(bytes)) => {
+                                    match serde_json::from_slice::<Document>(&bytes) {
+                                        Ok(mut doc) => {
+                                            if doc.id.is_none() {
+                                                doc.id = Some(doc_id.clone());
+                                            }
+                                            Some(doc)
+                                        }
+                                        Err(_) => {
+                                            read_automerge_root_fields(&backend, &doc_key, &doc_id)
+                                        }
+                                    }
+                                }
+                                _ => read_automerge_root_fields(&backend, &doc_key, &doc_id),
                             }
-                        } else {
-                            None
                         };
 
                         if let Some(mut doc) = maybe_doc {
@@ -6024,5 +6051,72 @@ mod issue_271_clone_tests {
             assert!(items.is_array(), "items should be an array");
             assert_eq!(items, &serde_json::json!([1, 2, 3]));
         }
+    }
+
+    /// peat#973 — IrohDocumentStore::observe() delivers real payload fields.
+    ///
+    /// `AutomergeCollection::upsert` stores JSON bytes under an Automerge
+    /// `"data"` scalar. Before the fix, the observer task used
+    /// `automerge_to_message` to read documents back, which produced
+    /// `{"data": "<json_blob>"}` instead of the actual fields — downstream
+    /// consumers (BleTranslator, queries on `lat`/`lon`) would silently drop
+    /// the document. This test pins the correct behaviour: an upsert followed
+    /// by an observe yields a Document whose fields match the original payload.
+    #[tokio::test]
+    async fn iroh_document_store_observe_delivers_real_fields() {
+        let store = Arc::new(crate::storage::AutomergeStore::in_memory());
+        let backend = Arc::new(crate::storage::AutomergeBackend::new(store));
+
+        let store = IrohDocumentStore {
+            backend: Arc::clone(&backend),
+            deletion_policy_registry: Arc::new(DeletionPolicyRegistry::new()),
+            lamport_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            node_id: "test-node".to_string(),
+            pending_origins: Arc::new(crate::sync::pending_origins::PendingOrigins::new()),
+        };
+
+        let mut stream = store.observe("tracks", &Query::All).unwrap();
+
+        // Drain the Initial snapshot so the next recv() sees the Updated event.
+        let _initial = stream.receiver.recv().await.unwrap();
+
+        let doc = Document::new(
+            [
+                ("lat".to_string(), serde_json::json!(51.5)),
+                ("lon".to_string(), serde_json::json!(-0.1)),
+                ("callsign".to_string(), serde_json::json!("ALPHA-1")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store.upsert_with_origin("tracks", doc, None).await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.receiver.recv())
+            .await
+            .expect("timed out waiting for Updated event")
+            .expect("channel closed before Updated event");
+
+        let updated_doc = match event {
+            ChangeEvent::Updated { document, .. } => document,
+            other => panic!("expected ChangeEvent::Updated, got {:?}", other),
+        };
+
+        assert_eq!(
+            updated_doc.fields.get("lat"),
+            Some(&serde_json::json!(51.5)),
+            "lat field must be present as a real number — if this fails the \
+             observer is reading the Automerge 'data' scalar via \
+             automerge_to_message instead of Collection::get (peat#973 regression)"
+        );
+        assert_eq!(
+            updated_doc.fields.get("lon"),
+            Some(&serde_json::json!(-0.1)),
+            "lon field must be present (peat#973 regression guard)"
+        );
+        assert!(
+            !updated_doc.fields.contains_key("data"),
+            "fields must not contain a raw 'data' blob — the observer is \
+             incorrectly reading the storage envelope instead of the payload"
+        );
     }
 }

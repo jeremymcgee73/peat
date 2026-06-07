@@ -1,6 +1,18 @@
 
 # cargo-vet imports lock
 
+[[unpublished.peat]]
+version = "0.9.0-rc.22"
+audited_as = "0.9.0-rc.21"
+
+[[unpublished.peat-protocol]]
+version = "0.9.0-rc.22"
+audited_as = "0.9.0-rc.21"
+
+[[unpublished.peat-schema]]
+version = "0.9.0-rc.22"
+audited_as = "0.9.0-rc.21"
+
 [[publisher.acto]]
 version = "0.8.2"
 when = "2026-05-19"
@@ -211,21 +223,21 @@ user-login = "cuviper"
 user-name = "Josh Stone"
 
 [[publisher.automerge]]
-version = "0.7.4"
-when = "2026-02-13"
+version = "0.9.0"
+when = "2026-04-22"
 user-id = 6739
 user-login = "alexjg"
 
 [[publisher.aws-lc-rs]]
-version = "1.16.1"
-when = "2026-03-02"
+version = "1.17.0"
+when = "2026-05-13"
 user-id = 156764
 user-login = "justsmth"
 user-name = "Justin W Smith"
 
 [[publisher.aws-lc-sys]]
-version = "0.38.0"
-when = "2026-03-02"
+version = "0.41.0"
+when = "2026-05-13"
 user-id = 156764
 user-login = "justsmth"
 user-name = "Justin W Smith"
@@ -1115,8 +1127,8 @@ user-login = "mkroening"
 user-name = "Martin Kröning"
 
 [[publisher.hexane]]
-version = "0.1.7"
-when = "2026-01-12"
+version = "0.2.1"
+when = "2026-03-25"
 user-id = 6739
 user-login = "alexjg"
 
@@ -1274,22 +1286,29 @@ user-login = "lo48576"
 user-name = "YOSHIOKA Takuma"
 
 [[publisher.iroh]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.0-rc.1"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-base]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.0-rc.1"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-blobs]]
-version = "0.101.0"
-when = "2026-05-08"
+version = "0.102.0"
+when = "2026-05-27"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
+
+[[publisher.iroh-dns]]
+version = "1.0.0-rc.1"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1301,6 +1320,13 @@ user-id = 65577
 user-login = "rklaehn"
 user-name = "Rüdiger Klaehn"
 
+[[publisher.iroh-mdns-address-lookup]]
+version = "0.3.0"
+when = "2026-05-27"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
+
 [[publisher.iroh-metrics]]
 version = "1.0.0-rc.0"
 when = "2026-05-07"
@@ -1309,29 +1335,36 @@ user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-relay]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.0-rc.1"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-tickets]]
-version = "1.0.0-rc.0"
-when = "2026-05-08"
+version = "1.0.0-rc.1"
+when = "2026-05-27"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
+
+[[publisher.iroh-util]]
+version = "0.5.0"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.irpc]]
-version = "0.15.0"
-when = "2026-05-08"
+version = "0.16.0"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.irpc-derive]]
-version = "0.15.0"
-when = "2026-05-08"
+version = "0.16.0"
+when = "2026-05-27"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1661,8 +1694,8 @@ user-login = "cathay4t"
 user-name = "Gris Ge"
 
 [[publisher.netwatch]]
-version = "0.17.0"
-when = "2026-05-07"
+version = "0.18.0"
+when = "2026-05-26"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1675,22 +1708,22 @@ user-login = "SteveLauC"
 user-name = "SteveLauC"
 
 [[publisher.noq]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.0-rc.1"
+when = "2026-05-26"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.noq-proto]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.0-rc.1"
+when = "2026-05-26"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.noq-udp]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.0-rc.1"
+when = "2026-05-26"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1864,8 +1897,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.peat]]
-version = "0.9.0-rc.13"
-when = "2026-05-22"
+version = "0.9.0-rc.21"
+when = "2026-05-30"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1885,22 +1918,22 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-mesh]]
-version = "0.9.0-rc.20"
-when = "2026-05-24"
+version = "0.9.0-rc.31"
+when = "2026-06-02"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-protocol]]
-version = "0.9.0-rc.13"
-when = "2026-05-22"
+version = "0.9.0-rc.21"
+when = "2026-05-30"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-schema]]
-version = "0.9.0-rc.13"
-when = "2026-05-22"
+version = "0.9.0-rc.21"
+when = "2026-05-30"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1983,8 +2016,8 @@ user-login = "taiki-e"
 user-name = "Taiki Endo"
 
 [[publisher.portmapper]]
-version = "0.17.0"
-when = "2026-05-07"
+version = "0.18.0"
+when = "2026-05-26"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
