@@ -4,7 +4,7 @@
 //! and provides extension traits for ergonomic usage.
 
 // Re-export protobuf types from cap-schema
-pub use peat_schema::cap::capability::v1::{Capability, CapabilityType};
+pub use peat_schema::capability::v1::{Capability, CapabilityType};
 
 /// Extension trait for Capability with ergonomic constructors and accessors
 pub trait CapabilityExt {

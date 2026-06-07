@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-package cap.common.v1;
+package peat.common.v1;
 
 // Unique identifier (UUID)
 message Uuid {

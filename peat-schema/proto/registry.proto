@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-package cap.registry.v1;
+package peat.registry.v1;
 
 import "common.proto";
 
@@ -18,7 +18,7 @@ message SyncIntent {
   uint32 wave = 7;
   repeated string require_referrers = 8;
   repeated string pin_digests = 9;
-  cap.common.v1.Timestamp created_at = 10;
+  peat.common.v1.Timestamp created_at = 10;
 }
 
 // OCI registry endpoint with tier and auth configuration.
@@ -38,14 +38,14 @@ message TargetConvergenceStateProto {
   uint32 remaining_items = 5;
   string active_checkpoint = 6;
   repeated ConvergenceBlockerProto blockers = 7;
-  cap.common.v1.Timestamp last_updated = 8;
+  peat.common.v1.Timestamp last_updated = 8;
 }
 
 // A blocker preventing convergence.
 message ConvergenceBlockerProto {
   string target_id = 1;
   ConvergenceBlockerReasonEnum reason = 2;
-  cap.common.v1.Timestamp since = 3;
+  peat.common.v1.Timestamp since = 3;
   optional string details = 4;
 }
 

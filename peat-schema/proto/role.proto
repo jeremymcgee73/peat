@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-package cap.role.v1;
+package peat.role.v1;
 
 import "common.proto";
 import "capability.proto";

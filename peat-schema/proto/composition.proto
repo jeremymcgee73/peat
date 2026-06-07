@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-package cap.composition.v1;
+package peat.composition.v1;
 
 import "common.proto";
 import "capability.proto";

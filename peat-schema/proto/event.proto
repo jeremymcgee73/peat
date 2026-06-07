@@ -4,7 +4,7 @@
 
 syntax = "proto3";
 
-package cap.event.v1;
+package peat.event.v1;
 
 import "common.proto";
 
@@ -15,7 +15,7 @@ message PeatEvent {
   string event_id = 1;
 
   // When the event was generated
-  cap.common.v1.Timestamp timestamp = 2;
+  peat.common.v1.Timestamp timestamp = 2;
 
   // Node that generated this event
   string source_node_id = 3;
@@ -111,8 +111,8 @@ message EventSummary {
   string formation_id = 1;
 
   // Aggregation window timestamps
-  cap.common.v1.Timestamp window_start = 2;
-  cap.common.v1.Timestamp window_end = 3;
+  peat.common.v1.Timestamp window_start = 2;
+  peat.common.v1.Timestamp window_end = 3;
 
   // Event class and type being summarized
   EventClass event_class = 4;
