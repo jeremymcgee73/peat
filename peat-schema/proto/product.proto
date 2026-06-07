@@ -8,7 +8,7 @@
 
 syntax = "proto3";
 
-package cap.product.v1;
+package peat.product.v1;
 
 import "common.proto";
 

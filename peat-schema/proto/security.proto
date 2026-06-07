@@ -4,7 +4,7 @@
 
 syntax = "proto3";
 
-package cap.security.v1;
+package peat.security.v1;
 
 import "common.proto";
 
@@ -95,13 +95,13 @@ message Challenge {
   bytes nonce = 1;
 
   // Challenge creation timestamp
-  cap.common.v1.Timestamp timestamp = 2;
+  peat.common.v1.Timestamp timestamp = 2;
 
   // Challenger's device ID (hex string)
   string challenger_id = 3;
 
   // Challenge expiration timestamp
-  cap.common.v1.Timestamp expires_at = 4;
+  peat.common.v1.Timestamp expires_at = 4;
 
   // Protocol version the challenger speaks (ADR-065).
   // `0` = pre-rc.21+1 peer (no version field on the wire, prost
@@ -172,7 +172,7 @@ message SignedChallengeResponse {
   // Response creation timestamp. The `seconds` field is included
   // verbatim in the signed-message construction above; the `nanos`
   // field is informational only and is NOT covered by the signature.
-  cap.common.v1.Timestamp timestamp = 4;
+  peat.common.v1.Timestamp timestamp = 4;
 
   // Responder's device type
   DeviceType device_type = 5;

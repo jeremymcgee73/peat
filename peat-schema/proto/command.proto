@@ -5,7 +5,7 @@
 
 syntax = "proto3";
 
-package cap.command.v1;
+package peat.command.v1;
 
 import "common.proto";
 

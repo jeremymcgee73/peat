@@ -6,7 +6,7 @@
 
 syntax = "proto3";
 
-package cap.model.v1;
+package peat.model.v1;
 
 import "common.proto";
 

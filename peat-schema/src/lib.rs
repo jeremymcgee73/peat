@@ -1,6 +1,6 @@
-//! # CAP Schema
+//! # Peat Schema
 //!
-//! Protocol Buffer message definitions for the Capability Aggregation Protocol (CAP).
+//! Protocol Buffer message definitions for the Peat protocol.
 //!
 //! This crate provides schema-first message definitions that enable:
 //! - Multi-transport support (HTTP, gRPC, ROS2, WebSocket, MQTT)
@@ -58,136 +58,133 @@
 //! };
 //! ```
 
-// Include generated protobuf code
-pub mod cap {
-    pub mod common {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.common.v1.rs"));
-        }
-    }
-
-    pub mod capability {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.capability.v1.rs"));
-        }
-    }
-
-    pub mod node {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.node.v1.rs"));
-        }
-    }
-
-    pub mod cell {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.cell.v1.rs"));
-        }
-    }
-
-    pub mod beacon {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.beacon.v1.rs"));
-        }
-    }
-
-    pub mod composition {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.composition.v1.rs"));
-        }
-    }
-
-    pub mod zone {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.zone.v1.rs"));
-        }
-    }
-
-    pub mod role {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.role.v1.rs"));
-        }
-    }
-
-    pub mod hierarchy {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.hierarchy.v1.rs"));
-        }
-    }
-
-    pub mod command {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.command.v1.rs"));
-        }
-    }
-
-    pub mod security {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.security.v1.rs"));
-        }
-    }
-
-    pub mod track {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.track.v1.rs"));
-        }
-    }
-
-    pub mod model {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.model.v1.rs"));
-        }
-    }
-
-    pub mod sensor {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.sensor.v1.rs"));
-        }
-    }
-
-    #[allow(clippy::enum_variant_names)]
-    pub mod actuator {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.actuator.v1.rs"));
-        }
-    }
-
-    #[allow(clippy::enum_variant_names)]
-    pub mod effector {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.effector.v1.rs"));
-        }
-    }
-
-    pub mod product {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.product.v1.rs"));
-        }
-    }
-
-    #[allow(clippy::enum_variant_names)]
-    pub mod tasking {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.tasking.v1.rs"));
-        }
-    }
-
-    #[allow(clippy::enum_variant_names)]
-    pub mod event {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.event.v1.rs"));
-        }
-    }
-
-    #[allow(clippy::enum_variant_names)]
-    pub mod registry {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/cap.registry.v1.rs"));
-        }
+// Include generated protobuf code. Proto package namespace is `peat.<domain>.v1`
+// (ADR-069 — renamed from the `cap.*` CAP-academic fossil). Modules are
+// top-level: the canonical path is `peat_schema::<domain>::v1::<Type>`.
+pub mod common {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.common.v1.rs"));
     }
 }
 
-// Re-export for convenience
-pub use cap::*;
+pub mod capability {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.capability.v1.rs"));
+    }
+}
+
+pub mod node {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.node.v1.rs"));
+    }
+}
+
+pub mod cell {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.cell.v1.rs"));
+    }
+}
+
+pub mod beacon {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.beacon.v1.rs"));
+    }
+}
+
+pub mod composition {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.composition.v1.rs"));
+    }
+}
+
+pub mod zone {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.zone.v1.rs"));
+    }
+}
+
+pub mod role {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.role.v1.rs"));
+    }
+}
+
+pub mod hierarchy {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.hierarchy.v1.rs"));
+    }
+}
+
+pub mod command {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.command.v1.rs"));
+    }
+}
+
+pub mod security {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.security.v1.rs"));
+    }
+}
+
+pub mod track {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.track.v1.rs"));
+    }
+}
+
+pub mod model {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.model.v1.rs"));
+    }
+}
+
+pub mod sensor {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.sensor.v1.rs"));
+    }
+}
+
+#[allow(clippy::enum_variant_names)]
+pub mod actuator {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.actuator.v1.rs"));
+    }
+}
+
+#[allow(clippy::enum_variant_names)]
+pub mod effector {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.effector.v1.rs"));
+    }
+}
+
+pub mod product {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.product.v1.rs"));
+    }
+}
+
+#[allow(clippy::enum_variant_names)]
+pub mod tasking {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.tasking.v1.rs"));
+    }
+}
+
+#[allow(clippy::enum_variant_names)]
+pub mod event {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.event.v1.rs"));
+    }
+}
+
+#[allow(clippy::enum_variant_names)]
+pub mod registry {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.registry.v1.rs"));
+    }
+}
 
 /// Validation utilities for schema types
 pub mod validation;

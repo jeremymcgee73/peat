@@ -137,32 +137,32 @@ All schemas are defined using **Protocol Buffers v3** syntax.
 #### 3.1.1 Package Naming Convention
 
 ```
-cap.<domain>.v<major_version>
+peat.<domain>.v<major_version>
 ```
 
 Examples:
-- `cap.common.v1` - Common types
-- `cap.node.v1` - Node schemas
-- `cap.cell.v2` - Cell schemas (future major version)
+- `peat.common.v1` - Common types
+- `peat.node.v1` - Node schemas
+- `peat.cell.v2` - Cell schemas (future major version)
 
 #### 3.1.2 Schema Inventory
 
 | Package | File | Purpose | Message Count | Status |
 |---------|------|---------|---------------|--------|
-| `cap.common.v1` | `common.proto` | Foundation types | 5 | STABLE |
-| `cap.capability.v1` | `capability.proto` | Capabilities | 4 | STABLE |
-| `cap.node.v1` | `node.proto` | Nodes & operators | 8 | STABLE |
-| `cap.cell.v1` | `cell.proto` | Cell formation | 6 | STABLE |
-| `cap.zone.v1` | `zone.proto` | Zone hierarchy | 7 | STABLE |
-| `cap.role.v1` | `role.proto` | Tactical roles | 7 | STABLE |
-| `cap.beacon.v1` | `beacon.proto` | Discovery | 4 | STABLE |
-| `cap.composition.v1` | `composition.proto` | Composition rules | 4 | STABLE |
+| `peat.common.v1` | `common.proto` | Foundation types | 5 | STABLE |
+| `peat.capability.v1` | `capability.proto` | Capabilities | 4 | STABLE |
+| `peat.node.v1` | `node.proto` | Nodes & operators | 8 | STABLE |
+| `peat.cell.v1` | `cell.proto` | Cell formation | 6 | STABLE |
+| `peat.zone.v1` | `zone.proto` | Zone hierarchy | 7 | STABLE |
+| `peat.role.v1` | `role.proto` | Tactical roles | 7 | STABLE |
+| `peat.beacon.v1` | `beacon.proto` | Discovery | 4 | STABLE |
+| `peat.composition.v1` | `composition.proto` | Composition rules | 4 | STABLE |
 
 **Total**: 8 packages, 45 message types
 
 ### 3.2 Data Type Specifications
 
-#### 3.2.1 Common Types (`cap.common.v1`)
+#### 3.2.1 Common Types (`peat.common.v1`)
 
 ```protobuf
 // Unique identifier (UUID v4)
@@ -282,7 +282,7 @@ message NodeConfig {
 
 When creating a new major version (e.g., v1 → v2):
 
-1. **Create new package**: `cap.node.v2`
+1. **Create new package**: `peat.node.v2`
 2. **Maintain parallel support**: Keep v1 and v2 for minimum 6 months
 3. **Provide migration utilities**: Code-generated converters
 4. **Document breaking changes**: CHANGELOG.md with migration guide
@@ -431,7 +431,7 @@ All schema changes MUST follow this process:
 ## Schema Change Request
 
 **Type**: [ ] Minor (backward compatible) [ ] Major (breaking change)
-**Affected Package**: cap.<package>.v<version>
+**Affected Package**: peat.<package>.v<version>
 **Proposed Version**: <new version>
 
 ### Motivation
@@ -469,22 +469,22 @@ Implementations MUST support one of these conformance levels:
 
 #### 8.1.1 Level 1: Core Schemas (REQUIRED)
 
-- `cap.common.v1` ✅
-- `cap.capability.v1` ✅
-- `cap.node.v1` ✅
-- `cap.beacon.v1` ✅
+- `peat.common.v1` ✅
+- `peat.capability.v1` ✅
+- `peat.node.v1` ✅
+- `peat.beacon.v1` ✅
 
 #### 8.1.2 Level 2: Cell Formation (RECOMMENDED)
 
 - Level 1 +
-- `cap.cell.v1` ✅
-- `cap.composition.v1` ✅
+- `peat.cell.v1` ✅
+- `peat.composition.v1` ✅
 
 #### 8.1.3 Level 3: Full Hierarchy (OPTIONAL)
 
 - Level 2 +
-- `cap.zone.v1` ✅
-- `cap.role.v1` ✅
+- `peat.zone.v1` ✅
+- `peat.role.v1` ✅
 
 ### 8.2 Code Generation Requirements
 

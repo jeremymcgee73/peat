@@ -13,7 +13,7 @@
 
 syntax = "proto3";
 
-package cap.effector.v1;
+package peat.effector.v1;
 
 import "common.proto";
 

@@ -23,40 +23,40 @@ This crate provides schema-first message definitions that enable:
 
 ### Core Types (1 schema)
 
-**`cap.common.v1`** - Common types used across all messages
+**`peat.common.v1`** - Common types used across all messages
 - `Position`, `Timestamp`, `Uuid`, `Metadata`
 
 ### Entity Schemas (2 schemas)
 
-**`cap.capability.v1`** - Capability definitions and queries
+**`peat.capability.v1`** - Capability definitions and queries
 - `Capability`, `CapabilityType`, `CapabilityQuery`, `CapabilityResponse`
 
-**`cap.node.v1`** - Node configuration and state
+**`peat.node.v1`** - Node configuration and state
 - `NodeConfig`, `NodeState`, `Node`
 - `Operator`, `HumanMachinePair`
 - Enums: `Phase`, `HealthStatus`, `OperatorRank`, `AuthorityLevel`, `BindingType`
 
 ### Organization Schemas (3 schemas)
 
-**`cap.cell.v1`** - Cell (squad) formation and management
+**`peat.cell.v1`** - Cell (squad) formation and management
 - `CellConfig`, `CellState`, `Cell`
 - `CellFormationRequest/Response`, `CellMembershipChange`
 
-**`cap.zone.v1`** - Zone (hierarchy) coordination
+**`peat.zone.v1`** - Zone (hierarchy) coordination
 - `ZoneConfig`, `ZoneState`, `Zone`, `ZoneStats`
 - `ZoneFormationRequest/Response`, `ZoneMembershipChange`
 
-**`cap.role.v1`** - Tactical role assignments
+**`peat.role.v1`** - Tactical role assignments
 - `RoleCapabilities`, `RoleAssignment`, `RoleScoringFactors`
 - `RoleAssignmentRequest/Response`, `RoleChangeEvent`
 - Enum: `CellRole` (LEADER, SENSOR, COMPUTE, RELAY, STRIKE, SUPPORT, FOLLOWER)
 
 ### Protocol Schemas (2 schemas)
 
-**`cap.beacon.v1`** - Discovery phase beacons
+**`peat.beacon.v1`** - Discovery phase beacons
 - `Beacon`, `BeaconQuery`, `BeaconQueryResponse`, `BeaconRecord`
 
-**`cap.composition.v1`** - Capability composition rules
+**`peat.composition.v1`** - Capability composition rules
 - `CompositionRule`, `CompositionResult`
 - `ApplyCompositionRequest/Response`
 - Enum: `CompositionRuleType` (ADDITIVE, EMERGENT, REDUNDANT, CONSTRAINT)
@@ -123,9 +123,9 @@ state = NodeState(
 ### Java
 
 ```java
-import cap.node.v1.NodeOuterClass.NodeConfig;
-import cap.node.v1.NodeOuterClass.NodeState;
-import cap.common.v1.CommonOuterClass.Position;
+import peat.node.v1.NodeOuterClass.NodeConfig;
+import peat.node.v1.NodeOuterClass.NodeState;
+import peat.common.v1.CommonOuterClass.Position;
 
 // Create a node configuration
 NodeConfig config = NodeConfig.newBuilder()
@@ -152,7 +152,7 @@ NodeState state = NodeState.newBuilder()
 
 ### Version Numbering
 
-- Schemas use **semantic versioning** via package namespaces (e.g., `cap.node.v1`, `cap.node.v2`)
+- Schemas use **semantic versioning** via package namespaces (e.g., `peat.node.v1`, `peat.node.v2`)
 - Major version changes (v1 → v2) indicate breaking changes
 - Minor changes within a version are backward compatible
 
@@ -185,7 +185,7 @@ message NodeConfig {
 
 When creating a new major version:
 
-1. Create new package namespace (e.g., `cap.node.v2`)
+1. Create new package namespace (e.g., `peat.node.v2`)
 2. Copy existing messages to new namespace
 3. Make breaking changes in new namespace
 4. Provide migration utilities in Rust code

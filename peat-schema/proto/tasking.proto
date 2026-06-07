@@ -7,7 +7,7 @@
 
 syntax = "proto3";
 
-package cap.tasking.v1;
+package peat.tasking.v1;
 
 import "common.proto";
 import "product.proto";

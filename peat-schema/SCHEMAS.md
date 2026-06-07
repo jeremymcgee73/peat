@@ -15,7 +15,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ## 1. Core Types
 
-### `cap.common.v1` - Common Types
+### `peat.common.v1` - Common Types
 
 **File**: `proto/common.proto`
 
@@ -34,7 +34,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ## 2. Entity Schemas
 
-### `cap.capability.v1` - Capabilities
+### `peat.capability.v1` - Capabilities
 
 **File**: `proto/capability.proto`
 
@@ -52,7 +52,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ---
 
-### `cap.node.v1` - Nodes
+### `peat.node.v1` - Nodes
 
 **File**: `proto/node.proto`
 
@@ -81,7 +81,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ## 3. Organization Schemas
 
-### `cap.cell.v1` - Cells (Squads)
+### `peat.cell.v1` - Cells (Squads)
 
 **File**: `proto/cell.proto`
 
@@ -105,7 +105,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ---
 
-### `cap.zone.v1` - Zones (Hierarchy)
+### `peat.zone.v1` - Zones (Hierarchy)
 
 **File**: `proto/zone.proto`
 
@@ -130,7 +130,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ---
 
-### `cap.role.v1` - Tactical Roles
+### `peat.role.v1` - Tactical Roles
 
 **File**: `proto/role.proto`
 
@@ -157,7 +157,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ## 4. Protocol Schemas
 
-### `cap.beacon.v1` - Discovery
+### `peat.beacon.v1` - Discovery
 
 **File**: `proto/beacon.proto`
 
@@ -182,7 +182,7 @@ The CAP Schema defines **8 Protocol Buffer packages** organized into 4 categorie
 
 ---
 
-### `cap.composition.v1` - Capability Composition
+### `peat.composition.v1` - Capability Composition
 
 **File**: `proto/composition.proto`
 
@@ -284,9 +284,9 @@ common.proto (foundation)
 
 ## Versioning
 
-All schemas use the `v1` namespace (e.g., `cap.node.v1`). When breaking changes are needed:
+All schemas use the `v1` namespace (e.g., `peat.node.v1`). When breaking changes are needed:
 
-1. Create new `v2` namespace (e.g., `cap.node.v2`)
+1. Create new `v2` namespace (e.g., `peat.node.v2`)
 2. Keep `v1` for backward compatibility (minimum 6 months)
 3. Provide migration utilities in Rust code
 
