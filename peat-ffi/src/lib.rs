@@ -791,7 +791,6 @@ impl PeatNode {
     pub fn stop_sync(&self) -> Result<(), PeatError> {
         // Must run inside Tokio runtime for consistency with start_sync()
         self.runtime.block_on(async {
-            // Call stop_sync() on the ACTUAL storage_backend instance
             self.storage_backend
                 .stop_sync()
                 .map_err(|e| PeatError::SyncError { msg: e.to_string() })
@@ -1177,10 +1176,9 @@ impl PeatNode {
         // Create active flag for the subscription
         let active = Arc::new(AtomicBool::new(true));
         let active_clone = Arc::clone(&active);
-        let seen_remote_cb: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
-            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-
-        // Spawn a task to listen for changes and call the callback
+        // Spawn a task to listen for changes and call the callback.
+        // Dedup is handled at the Dart layer via content hashing — emit all
+        // events here so cross-device updates are never silently dropped.
         let callback = Arc::new(callback);
         self.runtime.spawn(async move {
             let mut rx = change_rx;
@@ -1190,26 +1188,7 @@ impl PeatNode {
                     result = rx.recv() => {
                         match result {
                             Ok(doc_change) => {
-                                let is_remote = !matches!(
-                                    doc_change.origin,
-                                    _PeatMeshChangeOrigin::Local
-                                );
                                 let doc_key = doc_change.key;
-                                if is_remote {
-                                    let already_seen = seen_remote_cb
-                                        .lock()
-                                        .map(|mut s| !s.insert(doc_key.clone()))
-                                        .unwrap_or(true);
-                                    if already_seen {
-                                        continue;
-                                    }
-                                } else {
-                                    // Local write: pre-populate seen set so the echo
-                                    // from a peer syncing it back is suppressed.
-                                    let _ = seen_remote_cb
-                                        .lock()
-                                        .map(|mut s| s.insert(doc_key.clone()));
-                                }
                                 // Parse the document key (format: "collection:doc_id")
                                 let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
                                     DocumentChange {
@@ -1276,12 +1255,9 @@ impl PeatNode {
         // redundant re-syncs of unchanged documents. To prevent a sync loop (periodic
         // requestSync re-fires Remote events for every already-known doc), we apply
         // origin-based deduplication:
-        //   - Local origin → always emit (user-initiated writes)
-        //   - Remote origin → emit only the FIRST time a doc_key is seen; subsequent
-        //     Remote events for the same key are suppressed until the subscription is
-        //     reset. This handles "new doc arrived from peer" without re-emitting on
-        //     every sync round. Legitimate remote content updates are surfaced via a
-        //     future content-hash comparison; for now, poll listDocuments for updates.
+        // Emit all events — dedup is handled in the Dart layer via content
+        // hashing so cross-device updates (including repeated increments)
+        // are never silently dropped by the Rust subscription.
         let change_rx = self.store.subscribe_to_changes_with_origin();
         let active = Arc::new(AtomicBool::new(true));
         let active_clone = Arc::clone(&active);
@@ -1289,8 +1265,6 @@ impl PeatNode {
             DocumentChange,
         >::new()));
         let pending_clone = Arc::clone(&pending);
-        let seen_remote: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
-            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
         self.runtime.spawn(async move {
             let mut rx = change_rx;
@@ -1300,27 +1274,6 @@ impl PeatNode {
                         match result {
                             Ok(doc_change) => {
                                 let doc_key = doc_change.key;
-                                // For Remote-origin events, only emit if this doc_key
-                                // hasn't been seen before (first arrival from a peer).
-                                let is_remote = !matches!(
-                                    doc_change.origin,
-                                    _PeatMeshChangeOrigin::Local
-                                );
-                                if is_remote {
-                                    let already_seen = seen_remote
-                                        .lock()
-                                        .map(|mut s| !s.insert(doc_key.clone()))
-                                        .unwrap_or(true);
-                                    if already_seen {
-                                        continue;
-                                    }
-                                } else {
-                                    // Local write: pre-populate seen set so the echo
-                                    // from a peer syncing it back is suppressed.
-                                    let _ = seen_remote
-                                        .lock()
-                                        .map(|mut s| s.insert(doc_key.clone()));
-                                }
                                 let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
                                     DocumentChange {
                                         collection: collection.to_string(),
@@ -1463,10 +1416,25 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         let store_start = Instant::now();
         let transport_start = Instant::now();
 
-        // Spawn store opening on blocking thread pool (it does sync I/O)
+        // Spawn store opening on blocking thread pool (it does sync I/O).
+        // Retry up to 10 times with 200 ms delays — the previous node's redb
+        // file lock may not be released immediately when the user stops and
+        // immediately restarts the node (background Arcs are still alive).
         let store_handle = tokio::task::spawn_blocking(move || {
-            let result = AutomergeStore::open(&storage_path_for_store);
-            (result, store_start.elapsed().as_millis())
+            let mut last_err = None;
+            // Retry for up to ~15 s — background tasks from a previous node
+            // instance may still hold Arc<AutomergeStore> and keep the redb
+            // file locked for several seconds after stop_sync() returns.
+            for _ in 0..30u32 {
+                match AutomergeStore::open(&storage_path_for_store) {
+                    Ok(s) => return (Ok(s), store_start.elapsed().as_millis()),
+                    Err(e) => {
+                        last_err = Some(e);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            }
+            (Err(last_err.unwrap()), store_start.elapsed().as_millis())
         });
 
         // Create transport WITH mDNS discovery wired into the endpoint
