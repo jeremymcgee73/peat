@@ -118,6 +118,9 @@ use peat_protocol::sync::{BackendConfig, DataSyncBackend, TransportConfig};
 // Blob transfer via peat-mesh NetworkedIrohBlobStore (ADR-060).
 // Parallel endpoint model — blob store runs its own iroh Router/Endpoint
 // separate from PeatNode.iroh_transport's sync endpoint.
+use peat_mesh::storage::automerge_store::{
+    ChangeOrigin as _PeatMeshChangeOrigin, DocChange as _PeatMeshDocChange,
+};
 #[cfg(feature = "sync")]
 use peat_mesh::storage::{
     BlobMetadata, BlobStore, BlobStoreExt, BlobToken, NetworkedIrohBlobStore,
@@ -140,6 +143,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 // Setup UniFFI scaffolding
 uniffi::setup_scaffolding!();
+
+// FFIBuffer wrappers for Dart FFI bindings
+pub mod dart_ffi;
 
 /// Get the Peat library version
 #[uniffi::export]
@@ -1164,12 +1170,15 @@ impl PeatNode {
         &self,
         callback: Box<dyn DocumentCallback>,
     ) -> Result<Arc<SubscriptionHandle>, PeatError> {
-        // Get the change receiver from the store (broadcast channel)
-        let change_rx = self.store.subscribe_to_changes();
+        // Subscribe to ALL changes (local + peer-synced). Same origin-based dedup
+        // as subscribe_poll: Remote events only fire the first time a doc_key is seen.
+        let change_rx = self.store.subscribe_to_changes_with_origin();
 
         // Create active flag for the subscription
         let active = Arc::new(AtomicBool::new(true));
         let active_clone = Arc::clone(&active);
+        let seen_remote_cb: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
         // Spawn a task to listen for changes and call the callback
         let callback = Arc::new(callback);
@@ -1180,16 +1189,35 @@ impl PeatNode {
                 tokio::select! {
                     result = rx.recv() => {
                         match result {
-                            Ok(doc_key) => {
+                            Ok(doc_change) => {
+                                let is_remote = !matches!(
+                                    doc_change.origin,
+                                    _PeatMeshChangeOrigin::Local
+                                );
+                                let doc_key = doc_change.key;
+                                if is_remote {
+                                    let already_seen = seen_remote_cb
+                                        .lock()
+                                        .map(|mut s| !s.insert(doc_key.clone()))
+                                        .unwrap_or(true);
+                                    if already_seen {
+                                        continue;
+                                    }
+                                } else {
+                                    // Local write: pre-populate seen set so the echo
+                                    // from a peer syncing it back is suppressed.
+                                    let _ = seen_remote_cb
+                                        .lock()
+                                        .map(|mut s| s.insert(doc_key.clone()));
+                                }
                                 // Parse the document key (format: "collection:doc_id")
                                 let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
                                     DocumentChange {
                                         collection: collection.to_string(),
                                         doc_id: doc_id.to_string(),
-                                        change_type: ChangeType::Upsert, // We only get notifications on upsert currently
+                                        change_type: ChangeType::Upsert,
                                     }
                                 } else {
-                                    // Key without colon - treat as collection with doc_id
                                     DocumentChange {
                                         collection: "default".to_string(),
                                         doc_id: doc_key,
@@ -1242,13 +1270,27 @@ impl PeatNode {
     /// app was backgrounded) as a signal to trigger a full collection resync
     /// rather than relying on the change stream alone.
     pub fn subscribe_poll(&self) -> Result<Arc<SubscriptionHandle>, PeatError> {
-        let change_rx = self.store.subscribe_to_changes();
+        // Subscribe to ALL changes (local + peer-synced) via the origin-tagged channel.
+        //
+        // The gossip channel fires on every Automerge sync protocol exchange, including
+        // redundant re-syncs of unchanged documents. To prevent a sync loop (periodic
+        // requestSync re-fires Remote events for every already-known doc), we apply
+        // origin-based deduplication:
+        //   - Local origin → always emit (user-initiated writes)
+        //   - Remote origin → emit only the FIRST time a doc_key is seen; subsequent
+        //     Remote events for the same key are suppressed until the subscription is
+        //     reset. This handles "new doc arrived from peer" without re-emitting on
+        //     every sync round. Legitimate remote content updates are surfaced via a
+        //     future content-hash comparison; for now, poll listDocuments for updates.
+        let change_rx = self.store.subscribe_to_changes_with_origin();
         let active = Arc::new(AtomicBool::new(true));
         let active_clone = Arc::clone(&active);
         let pending = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
             DocumentChange,
         >::new()));
         let pending_clone = Arc::clone(&pending);
+        let seen_remote: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
         self.runtime.spawn(async move {
             let mut rx = change_rx;
@@ -1256,7 +1298,29 @@ impl PeatNode {
                 tokio::select! {
                     result = rx.recv() => {
                         match result {
-                            Ok(doc_key) => {
+                            Ok(doc_change) => {
+                                let doc_key = doc_change.key;
+                                // For Remote-origin events, only emit if this doc_key
+                                // hasn't been seen before (first arrival from a peer).
+                                let is_remote = !matches!(
+                                    doc_change.origin,
+                                    _PeatMeshChangeOrigin::Local
+                                );
+                                if is_remote {
+                                    let already_seen = seen_remote
+                                        .lock()
+                                        .map(|mut s| !s.insert(doc_key.clone()))
+                                        .unwrap_or(true);
+                                    if already_seen {
+                                        continue;
+                                    }
+                                } else {
+                                    // Local write: pre-populate seen set so the echo
+                                    // from a peer syncing it back is suppressed.
+                                    let _ = seen_remote
+                                        .lock()
+                                        .map(|mut s| s.insert(doc_key.clone()));
+                                }
                                 let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
                                     DocumentChange {
                                         collection: collection.to_string(),
