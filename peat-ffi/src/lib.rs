@@ -5057,13 +5057,13 @@ mod tests {
             // End-to-end: sim node publishes a contact report (TrackUpdate)
             // with an embedded image chip blob hash. Tablet node syncs the
             // document and fetches the blob by hash. Validates the full
-            // demo chain: disco-leader → Iroh doc sync → tablet receives
+            // demo chain: mesh-leader → Iroh doc sync → tablet receives
             // track → tablet fetches image via blob transfer.
 
             let tmp_sim = tempfile::tempdir().unwrap();
             let tmp_tablet = tempfile::tempdir().unwrap();
 
-            // Create sim node (disco-leader stand-in)
+            // Create sim node (mesh-leader stand-in)
             let sim = create_node(NodeConfig {
                 app_id: "e2e-contact-test".to_string(),
                 shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
@@ -5137,7 +5137,7 @@ mod tests {
             // 2. Sim publishes a contact report (TrackUpdate) to the tracks collection
             let track_json = serde_json::json!({
                 "id": "red-track-1",
-                "source_node": "LightFish-3",
+                "source_node": "sensor-node-3",
                 "source_model": "FLIR Vue Pro R 640",
                 "model_version": "1.0",
                 "cell_id": "company-CHARLIE",
@@ -5152,7 +5152,7 @@ mod tests {
                     "callsign": "SKUNK-1",
                     "speed_kts": "15",
                     "vehicle_class": "fast attack craft",
-                    "reporter": "LightFish-3",
+                    "reporter": "sensor-node-3",
                     "distance_to_reporter_m": "800",
                     "image_chip_hash": &image_hash,
                 },
@@ -5180,7 +5180,7 @@ mod tests {
             // primitive works; this test extends coverage to the doc layer.
             if let Some((_id, data)) = track_doc.into_iter().find(|(id, _)| id == "red-track-1") {
                 let parsed: serde_json::Value = serde_json::from_slice(&data).expect("valid JSON");
-                assert_eq!(parsed["source_node"], "LightFish-3");
+                assert_eq!(parsed["source_node"], "sensor-node-3");
                 assert_eq!(parsed["classification"], "a-h-S");
                 assert_eq!(parsed["attributes"]["callsign"], "SKUNK-1");
                 assert_eq!(parsed["attributes"]["image_chip_hash"], image_hash);

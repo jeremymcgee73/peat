@@ -68,7 +68,8 @@ bluetooth = ["peat-protocol/bluetooth", "dep:peat-btle"]
 # 0xB6 `BleTranslator`. Both translators register on the same physical
 # wire (BLE) under distinct transport_ids ("ble" vs "ble-lite") so
 # origin-skip can disambiguate echo-loops between them. The Kotlin AAR
-# build enables this on Android; non-BLE consumers leave it off.
+# build uses `--features bluetooth`; enable `lite-bridge` on top when
+# `CollectionGatedLiteBridge` / `LITE_BRIDGE_COLLECTIONS` wiring is needed.
 #
 # **Hard-requires `bluetooth`.** Every concrete item this feature gates
 # (`CollectionGatedLiteBridge`, `LITE_BRIDGE_COLLECTIONS`, the JNI
