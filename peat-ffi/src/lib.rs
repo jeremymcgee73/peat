@@ -1422,10 +1422,9 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         // immediately restarts the node (background Arcs are still alive).
         let store_handle = tokio::task::spawn_blocking(move || {
             let mut last_err = None;
-            // Retry for up to ~15 s — background tasks from a previous node
-            // instance may still hold Arc<AutomergeStore> and keep the redb
-            // file locked for several seconds after stop_sync() returns.
-            for _ in 0..30u32 {
+            // Retry for up to ~30 s — iOS background tasks can hold the redb
+            // lock for longer than macOS before their Arcs are fully released.
+            for _ in 0..60u32 {
                 match AutomergeStore::open(&storage_path_for_store) {
                     Ok(s) => return (Ok(s), store_start.elapsed().as_millis()),
                     Err(e) => {
