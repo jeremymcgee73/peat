@@ -414,6 +414,15 @@ jobs:
         # so we run it explicitly.
         run: ./gradlew buildNativeLibs
 
+      - name: Generate Kotlin bindings
+        working-directory: peat-ffi/android
+        # Regenerate UniFFI Kotlin bindings from the freshly compiled SO.
+        # Without this step, stale generated files from a previous
+        # generateBindings run could reference symbols that the current
+        # SO doesn't export, causing UnsatisfiedLinkError at runtime
+        # when the feature set has changed (e.g. bluetooth added/removed).
+        run: ./gradlew generateBindings
+
       - name: Run instrumented tests on attached device
         working-directory: peat-ffi/android
         # connectedCheck → connectedDebugAndroidTest builds the test

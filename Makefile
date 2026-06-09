@@ -544,17 +544,17 @@ demo-verify:
 	@echo "=== Sim commander metrics ==="
 	@docker exec $(COMMANDER_CONTAINER) tail -5 /data/logs/company-ALPHA-commander.metrics.log 2>/dev/null || echo "(sim not running)"
 
-# DiSCO USV flotilla (runs alongside company-ALPHA)
-DISCO_TOPOLOGY ?= peat-sim/topologies/disco-8usv.yaml
-demo-disco:
-	@echo "Deploying DiSCO USV flotilla..."
-	@sudo BACKEND=automerge CAP_IN_MEMORY=true containerlab deploy -t $(DISCO_TOPOLOGY) --reconfigure --timeout 5m
-	@echo "✓ DiSCO flotilla deployed"
+# Patrol USV flotilla (runs alongside company-ALPHA)
+USV_FLOTILLA_TOPOLOGY ?= peat-sim/topologies/usv-flotilla.yaml
+demo-usv:
+	@echo "Deploying patrol USV flotilla..."
+	@sudo BACKEND=automerge CAP_IN_MEMORY=true containerlab deploy -t $(USV_FLOTILLA_TOPOLOGY) --reconfigure --timeout 5m
+	@echo "✓ Patrol USV flotilla deployed"
 
-demo-disco-destroy:
-	@echo "Destroying DiSCO flotilla..."
-	@sudo containerlab destroy -t $(DISCO_TOPOLOGY) --cleanup 2>/dev/null || true
-	@echo "✓ DiSCO flotilla destroyed"
+demo-usv-destroy:
+	@echo "Destroying patrol USV flotilla..."
+	@sudo containerlab destroy -t $(USV_FLOTILLA_TOPOLOGY) --cleanup 2>/dev/null || true
+	@echo "✓ Patrol USV flotilla destroyed"
 
 # ---- Demo Flow Control ----
 # Pre-demo: build everything (run once before the demo)
@@ -565,7 +565,7 @@ demo-prep: build-docker build-consumer-plugin deploy-consumer-plugin
 # Clean reset: tear down everything, clear consumer-plugin store, restart fresh
 demo-reset: stop-consumer
 	@docker ps -a --filter "name=clab-" -q | xargs -r docker rm -f 2>/dev/null || true
-	@docker network rm lab4-48n disco-8usv 2>/dev/null || true
+	@docker network rm lab4-48n usv-flotilla 2>/dev/null || true
 	@adb shell "run-as $(CONSUMER_PACKAGE) rm -rf /data/user/0/$(CONSUMER_PACKAGE)/files/peat" 2>/dev/null || true
 	@echo "✓ Clean reset complete"
 
@@ -580,28 +580,28 @@ demo-phase2:
 	@sudo BACKEND=automerge CAP_IN_MEMORY=true containerlab deploy -t $(TOPOLOGY) --reconfigure --timeout 5m
 	@echo "✓ Phase 2: ALPHA company deployed"
 
-# Phase 3: Bring up CHARLIE (DiSCO USV swarm)
+# Phase 3: Bring up CHARLIE (patrol USV swarm)
 demo-phase3:
-	@echo "Deploying CHARLIE (DiSCO LightFish swarm)..."
-	@sudo BACKEND=automerge CAP_IN_MEMORY=true containerlab deploy -t $(DISCO_TOPOLOGY) --reconfigure --timeout 5m
+	@echo "Deploying CHARLIE patrol USV swarm..."
+	@sudo BACKEND=automerge CAP_IN_MEMORY=true containerlab deploy -t $(USV_FLOTILLA_TOPOLOGY) --reconfigure --timeout 5m
 	@echo "✓ Phase 3: CHARLIE USV swarm deployed"
 
 # Phase 4: Start red track scenario (hostile vessel approaches USV box)
-# Sends SIGUSR1 to disco-leader container, which publishes START_SCENARIO
+# Sends SIGUSR1 to usv-leader container, which publishes START_SCENARIO
 # to the "commands" collection. consumer polls commands and triggers the scenario.
 demo-phase4:
 	@echo "Starting red track scenario via mesh command..."
-	@docker kill -s USR1 clab-disco-8usv-disco-leader
+	@docker kill -s USR1 clab-usv-flotilla-usv-leader
 	@echo "✓ Phase 4: START_SCENARIO published to mesh — consumer will pick it up within ~10s"
 
 # Stop red track scenario
 demo-phase4-stop:
 	@echo "Stopping red track scenario via mesh command..."
-	@docker kill -s USR2 clab-disco-8usv-disco-leader
+	@docker kill -s USR2 clab-usv-flotilla-usv-leader
 	@echo "✓ STOP_SCENARIO published to mesh"
 
 # Stop everything
-demo-stop: stop-consumer demo-sim-destroy demo-disco-destroy
+demo-stop: stop-consumer demo-sim-destroy demo-usv-destroy
 	@echo "✓ Demo environment torn down"
 
 # ============================================
