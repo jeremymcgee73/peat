@@ -404,10 +404,6 @@ impl BuiltinRegistry {
 
     /// Registry pre-populated with the peat-schema types that have
     /// validators in [`crate::validation`].
-    ///
-    /// The pre-populated set is intentionally narrow in v1 (the core
-    /// five). Additional types (tasking, sensor, actuator, effector,
-    /// product, track, model) land in follow-on commits.
     pub fn with_peat_schema_types() -> Self {
         let mut r = Self::new();
         r.register(descriptors::capability());
@@ -415,6 +411,9 @@ impl BuiltinRegistry {
         r.register(descriptors::node_state());
         r.register(descriptors::cell_config());
         r.register(descriptors::cell_state());
+        r.register(descriptors::track());
+        r.register(descriptors::hierarchical_command());
+        r.register(descriptors::marker());
         r
     }
 }
@@ -755,6 +754,302 @@ mod descriptors {
             ],
         }
     }
+
+    /// `peat.track.v1.Track` — ISR track document stored in the `"tracks"` collection.
+    pub fn track() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let msg = crate::track::v1::Track::deserialize(value).map_err(|e| {
+                ValidationError::InvalidValue(format!("{DESERIALISE_ERROR_PREFIX}Track: {e}"))
+            })?;
+            crate::validation::validate_track(&msg)
+        }
+        const TRACK_STATE_VARIANTS: &[&str] =
+            &["Unspecified", "Tentative", "Confirmed", "Lost", "Dropped"];
+        const SOURCE_TYPE_VARIANTS: &[&str] =
+            &["Unspecified", "Sensor", "AI Model", "Human", "Fused"];
+        fn proto3_zero() -> Value {
+            serde_json::to_value(crate::track::v1::Track::default())
+                .expect("proto3 message serialises to JSON cleanly")
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.track.v1.Track"),
+            name: "Track".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("tracks".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: proto3_zero,
+            fields: vec![
+                FieldDescriptor {
+                    name: "track_id",
+                    label: "Track ID",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "classification",
+                    label: "Classification",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "confidence",
+                    label: "Confidence",
+                    format: FieldFormat::Percentage,
+                },
+                FieldDescriptor {
+                    name: "position",
+                    label: "Position",
+                    format: FieldFormat::Position,
+                },
+                FieldDescriptor {
+                    name: "state",
+                    label: "State",
+                    format: FieldFormat::Enum {
+                        variants: TRACK_STATE_VARIANTS,
+                    },
+                },
+                FieldDescriptor {
+                    name: "source",
+                    label: "Source",
+                    format: FieldFormat::JsonString,
+                },
+                FieldDescriptor {
+                    name: "source_type",
+                    label: "Source Type",
+                    format: FieldFormat::Enum {
+                        variants: SOURCE_TYPE_VARIANTS,
+                    },
+                },
+                FieldDescriptor {
+                    name: "attributes_json",
+                    label: "Attributes",
+                    format: FieldFormat::JsonString,
+                },
+                FieldDescriptor {
+                    name: "first_seen",
+                    label: "First Seen",
+                    format: FieldFormat::Timestamp,
+                },
+                FieldDescriptor {
+                    name: "last_seen",
+                    label: "Last Seen",
+                    format: FieldFormat::Timestamp,
+                },
+                FieldDescriptor {
+                    name: "observation_count",
+                    label: "Observations",
+                    format: FieldFormat::Number { unit: None },
+                },
+            ],
+        }
+    }
+
+    /// `peat.command.v1.HierarchicalCommand` — command document stored in the `"commands"` collection.
+    pub fn hierarchical_command() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let msg = crate::command::v1::HierarchicalCommand::deserialize(value).map_err(|e| {
+                ValidationError::InvalidValue(format!(
+                    "{DESERIALISE_ERROR_PREFIX}HierarchicalCommand: {e}"
+                ))
+            })?;
+            crate::validation::validate_hierarchical_command(&msg)
+        }
+        const PRIORITY_VARIANTS: &[&str] =
+            &["Unspecified", "Routine", "Priority", "Immediate", "Flash"];
+        const BUFFER_POLICY_VARIANTS: &[&str] = &[
+            "Unspecified",
+            "Buffer and Retry",
+            "Drop on Partition",
+            "Require Immediate Delivery",
+        ];
+        const CONFLICT_POLICY_VARIANTS: &[&str] = &[
+            "Unspecified",
+            "Last Write Wins",
+            "Highest Priority Wins",
+            "Highest Authority Wins",
+            "Merge Compatible",
+            "Reject Conflict",
+        ];
+        const ACK_POLICY_VARIANTS: &[&str] = &[
+            "Unspecified",
+            "No Ack Required",
+            "Ack Required",
+            "Ack Majority Required",
+            "Ack Leader Only",
+        ];
+        fn proto3_zero() -> Value {
+            serde_json::to_value(crate::command::v1::HierarchicalCommand::default())
+                .expect("proto3 message serialises to JSON cleanly")
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.command.v1.HierarchicalCommand"),
+            name: "HierarchicalCommand".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("commands".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: proto3_zero,
+            fields: vec![
+                FieldDescriptor {
+                    name: "command_id",
+                    label: "Command ID",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "originator_id",
+                    label: "Originator",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "target",
+                    label: "Target",
+                    format: FieldFormat::JsonString,
+                },
+                FieldDescriptor {
+                    name: "priority",
+                    label: "Priority",
+                    format: FieldFormat::Enum {
+                        variants: PRIORITY_VARIANTS,
+                    },
+                },
+                FieldDescriptor {
+                    name: "buffer_policy",
+                    label: "Buffer Policy",
+                    format: FieldFormat::Enum {
+                        variants: BUFFER_POLICY_VARIANTS,
+                    },
+                },
+                FieldDescriptor {
+                    name: "conflict_policy",
+                    label: "Conflict Policy",
+                    format: FieldFormat::Enum {
+                        variants: CONFLICT_POLICY_VARIANTS,
+                    },
+                },
+                FieldDescriptor {
+                    name: "acknowledgment_policy",
+                    label: "Ack Policy",
+                    format: FieldFormat::Enum {
+                        variants: ACK_POLICY_VARIANTS,
+                    },
+                },
+                FieldDescriptor {
+                    name: "issued_at",
+                    label: "Issued",
+                    format: FieldFormat::Timestamp,
+                },
+                FieldDescriptor {
+                    name: "expires_at",
+                    label: "Expires",
+                    format: FieldFormat::Timestamp,
+                },
+                FieldDescriptor {
+                    name: "version",
+                    label: "Version",
+                    format: FieldFormat::Number { unit: None },
+                },
+            ],
+        }
+    }
+
+    /// Marker — geographic pin stored in the `"markers"` collection.
+    ///
+    /// Markers use a hand-crafted JSON wire shape (`uid`, `type`, `lat`, `lon`,
+    /// `hae`, `ts`, `callsign`, `color`) rather than a proto-generated type, so
+    /// this descriptor validates the JSON directly rather than round-tripping
+    /// through prost. The `proto3_zero_fn` returns the canonical empty marker shape.
+    pub fn marker() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let obj = value.as_object().ok_or_else(|| {
+                ValidationError::InvalidValue("marker document must be a JSON object".to_string())
+            })?;
+            for required in ["uid", "type", "lat", "lon"] {
+                if !obj.contains_key(required) {
+                    return Err(ValidationError::MissingField(required.to_string()));
+                }
+            }
+            let lat = obj["lat"]
+                .as_f64()
+                .ok_or_else(|| ValidationError::InvalidValue("lat must be a number".to_string()))?;
+            let lon = obj["lon"]
+                .as_f64()
+                .ok_or_else(|| ValidationError::InvalidValue("lon must be a number".to_string()))?;
+            if !(-90.0..=90.0).contains(&lat) {
+                return Err(ValidationError::InvalidValue(format!(
+                    "lat {lat} must be between -90 and 90"
+                )));
+            }
+            if !(-180.0..=180.0).contains(&lon) {
+                return Err(ValidationError::InvalidValue(format!(
+                    "lon {lon} must be between -180 and 180"
+                )));
+            }
+            Ok(())
+        }
+        fn proto3_zero() -> Value {
+            serde_json::json!({
+                "uid": "",
+                "type": "",
+                "lat": 0.0,
+                "lon": 0.0,
+                "hae": null,
+                "ts": 0,
+                "callsign": null,
+                "color": null,
+                "cell_id": null,
+                "deleted": false
+            })
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.marker.v1.Marker"),
+            name: "Marker".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("markers".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: proto3_zero,
+            fields: vec![
+                FieldDescriptor {
+                    name: "uid",
+                    label: "UID",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "type",
+                    label: "CoT Type",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "lat",
+                    label: "Latitude",
+                    format: FieldFormat::Number { unit: Some("°") },
+                },
+                FieldDescriptor {
+                    name: "lon",
+                    label: "Longitude",
+                    format: FieldFormat::Number { unit: Some("°") },
+                },
+                FieldDescriptor {
+                    name: "hae",
+                    label: "Altitude",
+                    format: FieldFormat::Number {
+                        unit: Some("m HAE"),
+                    },
+                },
+                FieldDescriptor {
+                    name: "ts",
+                    label: "Dropped",
+                    format: FieldFormat::Timestamp,
+                },
+                FieldDescriptor {
+                    name: "callsign",
+                    label: "Callsign",
+                    format: FieldFormat::Text,
+                },
+                FieldDescriptor {
+                    name: "cell_id",
+                    label: "Cell",
+                    format: FieldFormat::Text,
+                },
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -807,7 +1102,10 @@ mod tests {
         assert!(ids.contains(&"peat.capability.v1.Capability"));
         assert!(ids.contains(&"peat.node.v1.NodeConfig"));
         assert!(ids.contains(&"peat.cell.v1.CellState"));
-        assert_eq!(ids.len(), 5);
+        assert!(ids.contains(&"peat.track.v1.Track"));
+        assert!(ids.contains(&"peat.command.v1.HierarchicalCommand"));
+        assert!(ids.contains(&"peat.marker.v1.Marker"));
+        assert_eq!(ids.len(), 8);
     }
 
     /// Build a JSON object matching the Capability proto3 shape.
