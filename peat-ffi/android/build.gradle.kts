@@ -139,19 +139,19 @@ tasks.register<Exec>("buildNativeLibs") {
 
         # Build for arm64-v8a (modern Android devices)
         echo "Building for aarch64-linux-android (arm64-v8a)..."
-        cargo build --release --lib -p peat-ffi --features bluetooth --target aarch64-linux-android
+        cargo build --release --lib -p peat-ffi --features sync,bluetooth,lite-bridge --target aarch64-linux-android
         mkdir -p peat-ffi/android/src/main/jniLibs/arm64-v8a
         cp target/aarch64-linux-android/release/libpeat_ffi.so peat-ffi/android/src/main/jniLibs/arm64-v8a/
 
         # Build for armeabi-v7a (older devices)
         echo "Building for armv7-linux-androideabi (armeabi-v7a)..."
-        cargo build --release --lib -p peat-ffi --features bluetooth --target armv7-linux-androideabi
+        cargo build --release --lib -p peat-ffi --features sync,bluetooth,lite-bridge --target armv7-linux-androideabi
         mkdir -p peat-ffi/android/src/main/jniLibs/armeabi-v7a
         cp target/armv7-linux-androideabi/release/libpeat_ffi.so peat-ffi/android/src/main/jniLibs/armeabi-v7a/
 
         # Build for x86_64 (emulators)
         echo "Building for x86_64-linux-android (x86_64)..."
-        cargo build --release --lib -p peat-ffi --features bluetooth --target x86_64-linux-android
+        cargo build --release --lib -p peat-ffi --features sync,bluetooth,lite-bridge --target x86_64-linux-android
         mkdir -p peat-ffi/android/src/main/jniLibs/x86_64
         cp target/x86_64-linux-android/release/libpeat_ffi.so peat-ffi/android/src/main/jniLibs/x86_64/
 

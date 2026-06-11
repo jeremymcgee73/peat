@@ -95,6 +95,54 @@ static OUTBOUND_FRAME_FANOUT: LazyLock<Mutex<Option<peat_mesh::transport::Fanout
 #[cfg(feature = "sync")]
 static GLOBAL_NODE_HANDLE: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(0));
 
+/// Store an **owning** reference to `node` in [`GLOBAL_NODE_HANDLE`], dropping
+/// any previously-stored owning reference.
+///
+/// Invariant: the slot holds either `0` or a pointer produced here by
+/// `Arc::into_raw(Arc::clone(..))` — i.e. always an owning reference,
+/// independent of how the *originating* handle is released (UniFFI/Dart GC for
+/// `create_node`, or `freeNodeJni` for the JNI create paths). This is what
+/// makes `getGlobalNodeHandleJni` safe for the BLE bridge: the node can't be
+/// freed out from under a consumer while the global still references it.
+/// [`clearGlobalNodeHandleJni`] releases this reference. Centralising the
+/// write here keeps every create path consistent so the clear path can always
+/// safely `Arc::from_raw` + drop without risking a double-free or UAF.
+#[cfg(feature = "sync")]
+fn set_global_node_handle(node: &Arc<PeatNode>) {
+    store_owning_node_in_slot(&GLOBAL_NODE_HANDLE, node);
+}
+
+/// Store an owning `Arc<PeatNode>` pointer in `slot`, dropping any previously
+/// stored owning pointer. Factored out of [`set_global_node_handle`] /
+/// [`clearGlobalNodeHandleJni`] so the store/clear ownership semantics can be
+/// unit-tested against a *local* slot (the real `GLOBAL_NODE_HANDLE` is
+/// process-global shared state that parallel tests would race on).
+#[cfg(feature = "sync")]
+fn store_owning_node_in_slot(slot: &Mutex<i64>, node: &Arc<PeatNode>) {
+    if let Ok(mut g) = slot.lock() {
+        let prev = std::mem::replace(&mut *g, Arc::into_raw(Arc::clone(node)) as i64);
+        if prev != 0 {
+            // SAFETY: `prev` was produced by `Arc::into_raw(Arc::clone(..))`
+            // in a prior call to this helper; reclaim it to drop that ref.
+            unsafe { drop(Arc::from_raw(prev as *const PeatNode)) };
+        }
+    }
+}
+
+/// Zero `slot`, dropping the owning `Arc<PeatNode>` pointer it held (if any).
+/// Backs [`clearGlobalNodeHandleJni`].
+#[cfg(feature = "sync")]
+fn clear_owning_node_slot(slot: &Mutex<i64>) {
+    if let Ok(mut g) = slot.lock() {
+        let prev = std::mem::replace(&mut *g, 0);
+        if prev != 0 {
+            // SAFETY: the slot only ever holds `0` or an owning pointer from
+            // `store_owning_node_in_slot`; reclaim + drop to release the ref.
+            unsafe { drop(Arc::from_raw(prev as *const PeatNode)) };
+        }
+    }
+}
+
 // Global BLE transport reference for Android JNI access
 // Kotlin signals BLE state (started/stopped, peer discovery) into this transport
 // which makes TransportManager aware of BLE availability for PACE routing.
@@ -1840,7 +1888,7 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         Arc::new(BleTranslator::with_defaults())
     };
 
-    Ok(Arc::new(PeatNode {
+    let node_arc = Arc::new(PeatNode {
         sync_backend,
         storage_backend,
         #[cfg(feature = "sync")]
@@ -1859,7 +1907,15 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         outbound_queue: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         outbound_fanout: std::sync::Mutex::new(None),
-    }))
+    });
+
+    // Publish an OWNING reference to the JNI-visible global so a Kotlin bridge
+    // (e.g. the BLE pipe) can reach a node created via the Dart/UniFFI path
+    // without risking use-after-free: the prior code stashed a non-owning
+    // alias whose sole owner was the Dart handle, so Dart's GC finalizer could
+    // free the node out from under a `getGlobalNodeHandleJni` consumer.
+    set_global_node_handle(&node_arc);
+    Ok(node_arc)
 }
 
 // Add new error variants for sync operations
@@ -2711,9 +2767,16 @@ impl PeatNode {
 // =============================================================================
 
 fn parse_cell_json(id: &str, json: &str) -> Result<CellInfo, PeatError> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
-        msg: format!("Invalid JSON: {}", e),
-    })?;
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
+            msg: format!("Invalid JSON: {}", e),
+        })?;
+    // Docs published through the node layer are wrapped as {id, fields:{..}};
+    // flat (legacy) writes keep fields at the root. Read from `fields` if present.
+    let v = match root.get("fields") {
+        Some(f) if f.is_object() => f,
+        _ => &root,
+    };
 
     Ok(CellInfo {
         id: id.to_string(),
@@ -2855,9 +2918,18 @@ fn serialize_track_json(track: &TrackInfo) -> Result<String, PeatError> {
 }
 
 fn parse_node_json(id: &str, json: &str) -> Result<NodeInfo, PeatError> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
-        msg: format!("Invalid JSON: {}", e),
-    })?;
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
+            msg: format!("Invalid JSON: {}", e),
+        })?;
+
+    // Node docs published through the node layer are wrapped as
+    // `{id, fields:{..}, updated_at}`; flat (legacy storage_backend) writes
+    // keep the fields at the root. Read from `fields` when it's an object.
+    let v = match root.get("fields") {
+        Some(f) if f.is_object() => f,
+        _ => &root,
+    };
 
     Ok(NodeInfo {
         id: id.to_string(),
@@ -3297,9 +3369,16 @@ fn serialize_node_json(node: &NodeInfo) -> Result<String, PeatError> {
 }
 
 fn parse_command_json(id: &str, json: &str) -> Result<CommandInfo, PeatError> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
-        msg: format!("Invalid JSON: {}", e),
-    })?;
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
+            msg: format!("Invalid JSON: {}", e),
+        })?;
+    // Docs published through the node layer are wrapped as {id, fields:{..}};
+    // flat (legacy) writes keep fields at the root. Read from `fields` if present.
+    let v = match root.get("fields") {
+        Some(f) if f.is_object() => f,
+        _ => &root,
+    };
 
     Ok(CommandInfo {
         id: id.to_string(),
@@ -4902,6 +4981,201 @@ mod tests {
                 .start_outbound_frames()
                 .expect("re-start after stop must succeed");
             node_a.stop_outbound_frames(); // cleanup
+        }
+
+        /// Receive-side counterpart for the universal-Document (`ble-lite`)
+        /// codec — the path the production BLE pipe uses and that the typed
+        /// `ingest_inbound_frame` test above does not exercise.
+        ///
+        /// Publishes to a `LITE_BRIDGE_COLLECTIONS` member the typed
+        /// translator declines (`demo`), so it fans out solely as a `ble-lite`
+        /// frame; captures that frame; ingests it on a second node via
+        /// `PeatNode::ingest_inbound_lite_frame`; then asserts:
+        /// (a) it converges into the receiver's store with the payload intact,
+        /// (b) echo-suppression holds — the receiver does NOT re-emit it on
+        ///     `ble-lite` (origin = `Some("ble-lite")` → fan-out skips the
+        ///     originating transport). A regression here is the BLE echo storm.
+        #[cfg(feature = "lite-bridge")]
+        #[test]
+        fn lite_outbound_poll_ingest_converges_without_echo() {
+            let tmp_a = tempfile::tempdir().unwrap();
+            let tmp_b = tempfile::tempdir().unwrap();
+            let node_a = create_node(test_cfg(tmp_a.path().to_str().unwrap())).expect("node_a");
+            let node_b = create_node(test_cfg(tmp_b.path().to_str().unwrap())).expect("node_b");
+
+            node_a.start_outbound_frames().expect("start a");
+            node_b.start_outbound_frames().expect("start b");
+
+            // "demo" is on the lite-bridge allow-list AND declined by the typed
+            // BleTranslator, so it fans out solely as a ble-lite frame.
+            let demo_json = r#"{"id":"counter-demo-lite","inc":3,"dec":1,"by":"BRAVO"}"#;
+            let mesh_a = Arc::clone(&node_a.node);
+            node_a
+                .runtime
+                .block_on(publish_document_into_node(&mesh_a, "demo", demo_json))
+                .expect("publish demo");
+
+            // Capture the ble-lite frame for the demo doc.
+            let mut lite = None;
+            for _ in 0..40 {
+                if let Some(f) = node_a
+                    .poll_outbound_frames()
+                    .into_iter()
+                    .find(|f| f.transport_id == "ble-lite" && f.collection == "demo")
+                {
+                    lite = Some(f);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let lite = lite.expect("a ble-lite frame must appear for the 'demo' doc");
+
+            // Drain anything node_b emitted before the ingest (expected: none).
+            let _ = node_b.poll_outbound_frames();
+
+            // Ingest via the lite wrapper path on node_b.
+            let doc_id = node_b
+                .ingest_inbound_lite_frame("demo".to_string(), lite.bytes.clone())
+                .expect("ingest_inbound_lite_frame must not error")
+                .expect("must return a doc_id for a valid demo lite frame");
+            assert!(!doc_id.is_empty(), "ingested doc_id must be non-empty");
+
+            // (a) Converged into node_b's store with the payload intact.
+            let stored = node_b
+                .runtime
+                .block_on(Arc::clone(&node_b.node).get("demo", &doc_id))
+                .expect("get must not error")
+                .expect("ingested demo doc must be in node_b's store");
+            assert_eq!(
+                stored.fields.get("inc").and_then(|v| v.as_i64()),
+                Some(3),
+                "decoded demo doc must carry inc=3"
+            );
+            assert_eq!(
+                stored.fields.get("by").and_then(|v| v.as_str()),
+                Some("BRAVO"),
+                "decoded demo doc must carry the 'by' field"
+            );
+
+            // (b) Echo-suppression: node_b must NOT re-emit the just-ingested
+            // doc on ble-lite. Any such frame in this window is the echo storm.
+            let mut echoed = false;
+            for _ in 0..16 {
+                if node_b
+                    .poll_outbound_frames()
+                    .iter()
+                    .any(|f| f.transport_id == "ble-lite" && f.collection == "demo")
+                {
+                    echoed = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(
+                !echoed,
+                "ingested ble-lite doc must NOT be re-emitted on ble-lite \
+                 (origin-skip / echo-suppression)"
+            );
+
+            node_a.stop_outbound_frames();
+            node_b.stop_outbound_frames();
+        }
+
+        /// Direct coverage for the owning-handle store/clear semantics behind
+        /// `set_global_node_handle` / `clearGlobalNodeHandleJni` (peat#978 UAF
+        /// fix). Exercised against a LOCAL slot so it can't race the
+        /// process-global `GLOBAL_NODE_HANDLE` other create-path tests touch.
+        /// Asserts: store stashes a non-zero owning pointer (+1 strong ref);
+        /// clear zeros the slot and drops exactly that one ref (no leak, no
+        /// double-free).
+        #[test]
+        fn owning_node_slot_store_then_clear_drops_exactly_one_ref() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("node");
+            let slot = std::sync::Mutex::new(0i64);
+
+            let before = Arc::strong_count(&node);
+            store_owning_node_in_slot(&slot, &node);
+            assert_ne!(
+                *slot.lock().unwrap(),
+                0,
+                "store must stash a non-zero owning pointer"
+            );
+            assert_eq!(
+                Arc::strong_count(&node),
+                before + 1,
+                "store must add exactly one owning reference"
+            );
+
+            clear_owning_node_slot(&slot);
+            assert_eq!(*slot.lock().unwrap(), 0, "clear must zero the slot");
+            assert_eq!(
+                Arc::strong_count(&node),
+                before,
+                "clear must drop exactly the one stored reference (no leak/double-free)"
+            );
+        }
+    }
+
+    /// Wrapped-vs-flat document-shape parsing (peat#978). Docs published
+    /// through the node layer arrive wrapped as `{id, fields:{..}, updated_at}`;
+    /// legacy `storage_backend` writes are flat. `parse_node/cell/command_json`
+    /// must read both shapes identically — the contract `LITE_BRIDGE_COLLECTIONS`
+    /// now depends on for nodes/cells/commands to round-trip over BLE. The
+    /// lite-bridge E2E test uses the flat `demo` shape, so it exercised only the
+    /// fallback-to-root branch; these lock in the wrapped-`fields` branch.
+    mod doc_shape_parse_tests {
+        use super::*;
+
+        fn wrap(fields_json: &str) -> String {
+            String::from(r#"{"id":"x","fields":"#)
+                + fields_json
+                + r#","updated_at":{"secs_since_epoch":1730000000,"nanos_since_epoch":0}}"#
+        }
+
+        #[test]
+        fn parse_node_json_wrapped_equals_flat() {
+            let flat = r#"{"node_type":"peat-flutter","name":"Kilo","status":"ACTIVE","readiness":1.0,"capabilities":["comms","leader"],"last_heartbeat":1730000000000}"#;
+            let a = parse_node_json("n1", flat).expect("flat parse");
+            let b = parse_node_json("n1", &wrap(flat)).expect("wrapped parse");
+            assert_eq!(
+                b.name, "Kilo",
+                "wrapped name must come from fields, not the id"
+            );
+            assert_eq!(b.name, a.name);
+            assert_eq!(b.node_type, a.node_type);
+            assert_eq!(b.capabilities, a.capabilities);
+            assert_eq!(
+                b.capabilities,
+                vec!["comms".to_string(), "leader".to_string()]
+            );
+            assert_eq!(b.last_heartbeat, a.last_heartbeat);
+            assert_eq!(b.last_heartbeat, 1730000000000);
+        }
+
+        #[test]
+        fn parse_cell_json_wrapped_equals_flat() {
+            let flat = r#"{"name":"Alpha Cell","status":"ACTIVE","node_count":2,"capabilities":["comms"],"leader_id":"n1","last_update":1730000000000}"#;
+            let a = parse_cell_json("alpha", flat).expect("flat parse");
+            let b = parse_cell_json("alpha", &wrap(flat)).expect("wrapped parse");
+            assert_eq!(b.name, "Alpha Cell");
+            assert_eq!(b.node_count, 2);
+            assert_eq!(b.node_count, a.node_count);
+            assert_eq!(b.leader_id, a.leader_id);
+            assert_eq!(b.capabilities, a.capabilities);
+        }
+
+        #[test]
+        fn parse_command_json_wrapped_equals_flat() {
+            let flat = r#"{"command_type":"WATER_REQUEST","target_id":"leader","parameters":{"quantity":5,"from":"Kilo"},"priority":1,"status":"PENDING","originator":"n1","created_at":1730000000000,"last_update":1730000000000}"#;
+            let a = parse_command_json("req-1", flat).expect("flat parse");
+            let b = parse_command_json("req-1", &wrap(flat)).expect("wrapped parse");
+            assert_eq!(b.command_type, "WATER_REQUEST");
+            assert_eq!(b.command_type, a.command_type);
+            assert_eq!(b.originator, a.originator);
+            assert_eq!(b.target_id, a.target_id);
+            // parameters round-trips as the same JSON-object string in both shapes.
+            assert_eq!(b.parameters, a.parameters);
         }
     }
 
@@ -7127,13 +7401,15 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
             #[cfg(target_os = "android")]
             IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
             // Return the Arc pointer as a handle
+            // Store an OWNING reference in the global (survives APK
+            // replacement) BEFORE consuming `node` into the JNI handle, so the
+            // global owns its own ref rather than aliasing the handle. Released
+            // by clearGlobalNodeHandleJni, independent of this handle's
+            // freeNodeJni. See set_global_node_handle.
+            set_global_node_handle(&node);
             let handle = Arc::into_raw(node) as i64;
-            // Store globally so it survives APK replacement
-            if let Ok(mut global) = GLOBAL_NODE_HANDLE.lock() {
-                *global = handle;
-                #[cfg(target_os = "android")]
-                android_log(&format!("createNodeJni: Stored global handle: {}", handle));
-            }
+            #[cfg(target_os = "android")]
+            android_log(&format!("createNodeJni: Stored global handle: {}", handle));
             handle
         }
         Err(e) => {
@@ -7237,15 +7513,14 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
             // peat#924 QA WARNING-2.
             #[cfg(target_os = "android")]
             IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
+            // Owning global ref before consuming `node` (see set_global_node_handle).
+            set_global_node_handle(&node);
             let handle = Arc::into_raw(node) as i64;
-            if let Ok(mut global) = GLOBAL_NODE_HANDLE.lock() {
-                *global = handle;
-                #[cfg(target_os = "android")]
-                android_log(&format!(
-                    "createNodeWithConfigJni: Stored global handle: {}",
-                    handle
-                ));
-            }
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "createNodeWithConfigJni: Stored global handle: {}",
+                handle
+            ));
             handle
         }
         Err(e) => {
@@ -7277,6 +7552,24 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getGlobalNodeHandle
         }
         Err(_) => 0,
     }
+}
+
+/// JNI: Release the owning reference stored in [`GLOBAL_NODE_HANDLE`].
+///
+/// Counterpart to the `set_global_node_handle` write performed by every
+/// node-create path. The bridge that consumes `getGlobalNodeHandleJni` (e.g.
+/// the BLE pipe) calls this on teardown so the node can actually be freed
+/// once its originating handle is also released. Safe to call repeatedly and
+/// when no handle is stored (no-op on `0`).
+///
+/// Kotlin signature: `external fun clearGlobalNodeHandleJni()`
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_clearGlobalNodeHandleJni(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    clear_owning_node_slot(&GLOBAL_NODE_HANDLE);
 }
 
 /// JNI: Get node ID from a PeatNode handle
@@ -8535,6 +8828,138 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni(
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// JNI: Ingest an inbound frame received over BLE into the mesh.
+///
+/// Kotlin signature:
+/// `external fun ingestInboundFrameJni(handle: Long, collection: String, postcardBytes: ByteArray): String?`
+///
+/// Thin wrapper over [`PeatNode::ingest_inbound_frame`], which decodes the
+/// frame via the `BleTranslator` and publishes it into the mesh tagged with
+/// `Some("ble")` origin — so `TransportManager`'s per-transport fan-out
+/// re-emits it to the OTHER transports (iroh / Wi-Fi) without looping back
+/// to BLE (ADR-059). This is the inbound counterpart of
+/// `subscribeOutboundFramesJni`: a Kotlin BLE manager calls this with each
+/// decrypted frame it receives over the radio.
+///
+/// Returns the published document id, or null on failure / no-op (invalid
+/// handle, byte/string marshaling error, or the translator produced no
+/// document).
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestInboundFrameJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    collection: JString,
+    postcard_bytes: JByteArray,
+) -> jstring {
+    if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("ingestInboundFrameJni: Invalid handle (0)");
+        return std::ptr::null_mut();
+    }
+    let collection_str: String = match env.get_string(&collection) {
+        Ok(s) => s.into(),
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "ingestInboundFrameJni: failed to read collection: {:?}",
+                _e
+            ));
+            return std::ptr::null_mut();
+        }
+    };
+    let bytes: Vec<u8> = match env.convert_byte_array(&postcard_bytes) {
+        Ok(b) => b,
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "ingestInboundFrameJni: failed to read bytes: {:?}",
+                _e
+            ));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = node_owner.ingest_inbound_frame(collection_str, bytes);
+    std::mem::forget(node_owner);
+
+    match result {
+        Ok(Some(id)) => env
+            .new_string(id)
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Ok(None) => std::ptr::null_mut(),
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("ingestInboundFrameJni: ingest failed: {}", _e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// JNI: Ingest an inbound BLE frame on the universal-Document (peat-lite /
+/// `ble-lite`) codec — the counterpart of `ingestInboundFrameJni` for raw
+/// collections the typed translator declines (e.g. the `demo` counter).
+///
+/// Kotlin signature:
+/// `external fun ingestInboundLiteFrameJni(handle: Long, collection: String, envelopeBytes: ByteArray): String?`
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFrameJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    collection: JString,
+    envelope_bytes: JByteArray,
+) -> jstring {
+    if handle == 0 {
+        #[cfg(target_os = "android")]
+        android_log("ingestInboundLiteFrameJni: Invalid handle (0)");
+        return std::ptr::null_mut();
+    }
+    let collection_str: String = match env.get_string(&collection) {
+        Ok(s) => s.into(),
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "ingestInboundLiteFrameJni: failed to read collection: {:?}",
+                _e
+            ));
+            return std::ptr::null_mut();
+        }
+    };
+    let bytes: Vec<u8> = match env.convert_byte_array(&envelope_bytes) {
+        Ok(b) => b,
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "ingestInboundLiteFrameJni: failed to read bytes: {:?}",
+                _e
+            ));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = node_owner.ingest_inbound_lite_frame(collection_str, bytes);
+    std::mem::forget(node_owner);
+
+    match result {
+        Ok(Some(id)) => env
+            .new_string(id)
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Ok(None) => std::ptr::null_mut(),
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("ingestInboundLiteFrameJni: ingest failed: {}", _e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Pure-Rust helper backing [`Java_..._ingestPositionJni`]. Parses the JSON
 /// envelope into a [`BlePosition`] plus the surrounding ingest metadata,
 /// translates to an Automerge document via [`BleTranslator`], and publishes
@@ -9055,7 +9480,15 @@ impl PeatNode {
         let mut collections = collections;
         #[cfg(feature = "lite-bridge")]
         for c in LITE_BRIDGE_COLLECTIONS {
-            collections.push((*c).to_string());
+            // Dedup: `nodes` is already in the base list above. Pushing it again
+            // would spawn a SECOND observer task for the same collection, and the
+            // two race on the single-pop `pending_origins` map — one pops the
+            // ble-lite origin (skips), the other pops `None` and re-fans the
+            // ingested doc back out → the roster fan-out storm. One observer per
+            // collection keeps ADR-059 echo-suppression intact.
+            if !collections.iter().any(|existing| existing == c) {
+                collections.push((*c).to_string());
+            }
         }
         let collections = collections;
 
@@ -9244,6 +9677,40 @@ impl PeatNode {
             .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
         Ok(Some(id.to_string()))
     }
+
+    /// Ingest an inbound BLE frame that arrived on the universal-Document
+    /// (peat-lite / `ble-lite`) codec, as opposed to the typed 0xB6 path in
+    /// [`ingest_inbound_frame`]. Decodes via the `CollectionGatedLiteBridge`
+    /// and republishes with `Some("ble-lite")` origin so the mesh re-fans it
+    /// to the other transports without looping back to BLE. Used for raw
+    /// collections (e.g. the `demo` counter) that the typed translator declines.
+    #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+    pub fn ingest_inbound_lite_frame(
+        &self,
+        collection: String,
+        envelope_bytes: Vec<u8>,
+    ) -> Result<Option<String>, PeatError> {
+        use peat_mesh::transport::{TranslationContext, Translator, BLE_LITE_BRIDGE};
+        let bridge = CollectionGatedLiteBridge::for_ble_with_collections(LITE_BRIDGE_COLLECTIONS);
+        let ctx = TranslationContext::inbound(BLE_LITE_BRIDGE).with_collection(collection);
+        let doc = self
+            .runtime
+            .block_on(bridge.decode_inbound(&envelope_bytes, &ctx))
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        let Some(mesh_doc) = doc else {
+            return Ok(None);
+        };
+        let collection_name = ctx.collection.unwrap_or_default();
+        let id = self
+            .runtime
+            .block_on(self.node.publish_with_origin(
+                &collection_name,
+                mesh_doc,
+                Some(BLE_LITE_BRIDGE.to_string()),
+            ))
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        Ok(Some(id.to_string()))
+    }
 }
 
 // =============================================================================
@@ -9345,8 +9812,15 @@ impl peat_mesh::transport::Translator for CollectionGatedLiteBridge {
 /// Keep the list tight — every entry is one more codec the universal
 /// path encodes for, and double-emission with the typed BleTranslator
 /// would result if both lists overlap.
+// `nodes` (capabilities/roster) rides the universal codec — the typed
+// BleTranslator declines it (it only encodes tracks/platforms/alerts/
+// canned_messages), so without this entry capabilities never reach a BLE
+// frame and remote rosters stay empty. Safe to carry here now that
+// `put_node` publishes through the node layer (same wrapped representation
+// as the ingest), so the two sides converge instead of re-syncing forever.
 #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
-const LITE_BRIDGE_COLLECTIONS: &[&str] = &["markers"];
+const LITE_BRIDGE_COLLECTIONS: &[&str] =
+    &["markers", "demo", "nodes", "mission", "cells", "commands"];
 
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[async_trait::async_trait]
@@ -9857,6 +10331,12 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
+            name: "clearGlobalNodeHandleJni".into(),
+            sig: "()V".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_clearGlobalNodeHandleJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
             name: "nodeIdJni".into(),
             sig: "(J)Ljava/lang/String;".into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_nodeIdJni as *mut c_void,
@@ -9971,6 +10451,18 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
             name: "ingestPositionJni".into(),
             sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni as *mut c_void,
+        },
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "ingestInboundFrameJni".into(),
+            sig: "(JLjava/lang/String;[B)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestInboundFrameJni as *mut c_void,
+        },
+        #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+        NativeMethod {
+            name: "ingestInboundLiteFrameJni".into(),
+            sig: "(JLjava/lang/String;[B)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFrameJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -10501,6 +10993,13 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {
+                    name: "clearGlobalNodeHandleJni".into(),
+                    sig: "()V".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_clearGlobalNodeHandleJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
                     name: "nodeIdJni".into(),
                     sig: "(J)Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_nodeIdJni as *mut c_void,
@@ -10621,6 +11120,20 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "ingestPositionJni".into(),
                     sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth"))]
+                NativeMethod {
+                    name: "ingestInboundFrameJni".into(),
+                    sig: "(JLjava/lang/String;[B)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestInboundFrameJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+                NativeMethod {
+                    name: "ingestInboundLiteFrameJni".into(),
+                    sig: "(JLjava/lang/String;[B)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFrameJni
                         as *mut c_void,
                 },
                 #[cfg(feature = "sync")]

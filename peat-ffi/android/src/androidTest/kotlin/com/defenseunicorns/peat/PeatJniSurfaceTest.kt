@@ -320,6 +320,36 @@ class PeatJniSurfaceTest {
     }
 
     /**
+     * peat#978 surface gate: the three JNI entry points added for the
+     * BLE doc-sync fix — `clearGlobalNodeHandleJni`, `ingestInboundFrameJni`,
+     * `ingestInboundLiteFrameJni` — must be REGISTERED (RegisterNatives) so
+     * the AAR's matching `external fun` declarations resolve. A missing
+     * registration surfaces here as `UnsatisfiedLinkError` at AAR-test time,
+     * not as a downstream consumer link failure.
+     *
+     * Exercises the JNI marshaling + the handle-0 guard without a peer:
+     *  - `clearGlobalNodeHandleJni()` is a safe no-op (idempotent teardown).
+     *  - `ingestInbound{,Lite}FrameJni(0, ..)` returns null via the handle-0
+     *    guard — confirming String/ByteArray marshalling + the early return
+     *    (a null `Arc::from_raw(0)` would otherwise be UB).
+     */
+    @Test
+    fun bleIngestAndClearGlobalHandle_registered_andGuardHandleZero() {
+        // No-op clear must link + not throw (no node required).
+        PeatJni.clearGlobalNodeHandleJni()
+
+        val frame = byteArrayOf(0xB6.toByte(), 0x01, 0x02, 0x03)
+        assertNull(
+            "ingestInboundFrameJni(handle=0) must return null via the handle-0 guard",
+            PeatJni.ingestInboundFrameJni(0L, "tracks", frame),
+        )
+        assertNull(
+            "ingestInboundLiteFrameJni(handle=0) must return null via the handle-0 guard",
+            PeatJni.ingestInboundLiteFrameJni(0L, "demo", frame),
+        )
+    }
+
+    /**
      * peat#886 sanity check: the canonical PeatJni.kt shipped in
      * the AAR exposes every method this test suite — and any
      * consumer — calls. If a future refactor renames or removes
@@ -349,6 +379,7 @@ class PeatJniSurfaceTest {
             ::peatJniRefCreateNode,
             ::peatJniRefCreateNodeWithConfig,
             ::peatJniRefGetGlobalNodeHandle,
+            ::peatJniRefClearGlobalNodeHandle,
             ::peatJniRefFreeNode,
             // Peer state
             ::peatJniRefNodeId,
@@ -372,6 +403,8 @@ class PeatJniSurfaceTest {
             ::peatJniRefPublishNode,
             ::peatJniRefPublishMarker,
             ::peatJniRefIngestPosition,
+            ::peatJniRefIngestInboundFrame,
+            ::peatJniRefIngestInboundLiteFrame,
             // Blob transfer
             ::peatJniRefEnableBlobTransfer,
             ::peatJniRefBlobAddPeer,
@@ -388,10 +421,10 @@ class PeatJniSurfaceTest {
             // Test-only fault injection
             ::peatJniRefForceStoreError,
         )
-        // 37 PeatJni methods total. If this number changes, the
+        // 40 PeatJni methods total. If this number changes, the
         // count below must change too — and the new method needs
         // its own peatJniRef* shim added above.
-        assertEquals(37, refs.size)
+        assertEquals(40, refs.size)
     }
 
     // -- Reference shims --------------------------------------------------
@@ -414,6 +447,8 @@ class PeatJniSurfaceTest {
         PeatJni.createNodeWithConfigJni("a", "b", "c", false, null)
     @Suppress("unused")
     private fun peatJniRefGetGlobalNodeHandle(): Long = PeatJni.getGlobalNodeHandleJni()
+    @Suppress("unused")
+    private fun peatJniRefClearGlobalNodeHandle() = PeatJni.clearGlobalNodeHandleJni()
     @Suppress("unused")
     private fun peatJniRefFreeNode(h: Long) = PeatJni.freeNodeJni(h)
 
@@ -467,6 +502,12 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefIngestPosition(h: Long, j: String): String =
         PeatJni.ingestPositionJni(h, j)
+    @Suppress("unused")
+    private fun peatJniRefIngestInboundFrame(h: Long, c: String, b: ByteArray): String? =
+        PeatJni.ingestInboundFrameJni(h, c, b)
+    @Suppress("unused")
+    private fun peatJniRefIngestInboundLiteFrame(h: Long, c: String, b: ByteArray): String? =
+        PeatJni.ingestInboundLiteFrameJni(h, c, b)
 
     // Blob transfer
     @Suppress("unused")

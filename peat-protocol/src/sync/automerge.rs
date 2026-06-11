@@ -1287,6 +1287,18 @@ pub struct AutomergeIrohBackend {
 
     /// Monotonic Lamport counter for tombstone ordering (Issue #668)
     lamport_counter: Arc<AtomicU64>,
+
+    /// Shared in-flight origin map (ADR-059). MUST be owned by the
+    /// backend and `Arc::clone`d into every `IrohDocumentStore` that
+    /// `document_store()` hands out — `upsert_with_origin` (one
+    /// `IrohDocumentStore` instance) and the observer task spawned by
+    /// `observe()` (a *different* instance) only see the same stashed
+    /// origin if they share this map. Constructing a fresh
+    /// `PendingOrigins` per `document_store()` call silently defeats
+    /// echo-suppression: the observer always pops `None`, so every
+    /// transport-ingested doc is re-fanned back out (the BLE echo
+    /// storm diagnosed via peat_echo tracing).
+    pending_origins: Arc<crate::sync::pending_origins::PendingOrigins>,
 }
 
 impl AutomergeIrohBackend {
@@ -1313,6 +1325,7 @@ impl AutomergeIrohBackend {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             deletion_policy_registry: Arc::new(DeletionPolicyRegistry::new()),
             lamport_counter: Arc::new(AtomicU64::new(0)),
+            pending_origins: Arc::new(crate::sync::pending_origins::PendingOrigins::new()),
         }
     }
 
@@ -3565,7 +3578,10 @@ impl DataSyncBackend for AutomergeIrohBackend {
             deletion_policy_registry: Arc::clone(&self.deletion_policy_registry),
             lamport_counter: Arc::clone(&self.lamport_counter),
             node_id,
-            pending_origins: Arc::new(crate::sync::pending_origins::PendingOrigins::new()),
+            // Share the backend-owned map (NOT a fresh one) so the origin
+            // stashed by `upsert_with_origin` is visible to the observer
+            // task in `observe()`. See the field doc on `AutomergeIrohBackend`.
+            pending_origins: Arc::clone(&self.pending_origins),
         })
     }
 
