@@ -197,3 +197,49 @@ async fn rapid_same_key_burst_keeps_origin_present() {
 
     let _ = backend.shutdown().await;
 }
+
+/// Regression for the cross-instance `pending_origins` bug — the production
+/// BLE echo-storm root cause. `AutomergeIrohBackend::document_store()` used to
+/// mint a fresh `PendingOrigins` map on every call, so an origin stashed via
+/// one `IrohDocumentStore` instance was invisible to the observer task spawned
+/// by a *different* instance (the observer always popped `None`). The
+/// real call shape hits exactly this: `Node::publish_with_origin` and
+/// `Node::observe` each call `backend.document_store()` independently. The
+/// baseline `upsert_with_origin_propagates_to_observer` uses a SINGLE store, so
+/// it passes even with the bug; this test uses TWO and fails unless the map is
+/// owned on the backend and shared into each instance.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn origin_threads_across_separate_document_store_instances() {
+    let (backend, _tmp) = make_backend().await;
+
+    // Observer owns one IrohDocumentStore instance...
+    let observe_store = backend.document_store();
+    let mut stream = observe_store
+        .observe("tracks", &Query::All)
+        .expect("observe");
+
+    // ...the writer uses a DISTINCT instance (separate document_store() call).
+    let write_store = backend.document_store();
+    let doc = track_doc("track-xinst", 41.0, -75.0);
+    write_store
+        .upsert_with_origin("tracks", doc, Some("ble".into()))
+        .await
+        .expect("upsert");
+
+    let ev = next_updated_for(&mut stream, "track-xinst").await;
+    match ev {
+        ChangeEvent::Updated { origin, .. } => {
+            assert_eq!(
+                origin,
+                Some("ble".to_string()),
+                "origin must thread across separate document_store() instances \
+                 (shared pending_origins on the backend); a fresh per-call map \
+                 regresses this to None and re-opens the BLE echo storm"
+            );
+        }
+        _ => unreachable!("filtered by next_updated_for"),
+    }
+
+    let _ = backend.shutdown().await;
+}

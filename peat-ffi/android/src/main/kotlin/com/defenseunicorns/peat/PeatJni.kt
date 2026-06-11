@@ -124,6 +124,11 @@ object PeatJni {
 
     @JvmStatic external fun getGlobalNodeHandleJni(): Long
 
+    /// Release the owning reference [createNodeJni]/`create_node` stashed in the
+    /// native global. Call on node teardown so the node can be freed; safe to
+    /// call repeatedly and when no handle is stored.
+    @JvmStatic external fun clearGlobalNodeHandleJni()
+
     @JvmStatic external fun freeNodeJni(handle: Long)
 
     // -- Node identity / peer state ----------------------------------------
@@ -223,6 +228,24 @@ object PeatJni {
     @JvmStatic external fun publishMarkerJni(handle: Long, markerJson: String): Boolean
 
     @JvmStatic external fun ingestPositionJni(handle: Long, positionJson: String): String
+
+    /// Ingest an inbound BLE frame on the typed 0xB6 codec ("ble" origin).
+    /// Returns the published doc id, or null if the bytes addressed an unknown
+    /// collection (graceful decline). Built with the `bluetooth` feature.
+    @JvmStatic external fun ingestInboundFrameJni(
+        handle: Long,
+        collection: String,
+        postcardBytes: ByteArray,
+    ): String?
+
+    /// Ingest an inbound BLE frame on the universal-Document ("ble-lite")
+    /// codec — the counterpart for raw collections the typed translator
+    /// declines (e.g. the demo counter). Built with the `lite-bridge` feature.
+    @JvmStatic external fun ingestInboundLiteFrameJni(
+        handle: Long,
+        collection: String,
+        envelopeBytes: ByteArray,
+    ): String?
 
     // -- Blob transfer -----------------------------------------------------
 
