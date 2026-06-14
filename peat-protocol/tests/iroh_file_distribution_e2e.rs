@@ -1177,3 +1177,95 @@ async fn test_rc9_cancel_preserves_receiver_node_statuses() {
     assert_eq!(entry.progress_bytes, 15);
     assert_eq!(entry.total_bytes, 15);
 }
+
+/// `receive_sweep_once` must not abort when the store contains a malformed
+/// distribution document — a single corrupted doc must not permanently stall
+/// the inbox watcher for all remaining distributions.
+///
+/// This test validates the two preconditions that make the resilience fix
+/// in `receive_sweep_once` (peat#980) effective:
+///
+/// 1. `scan_distribution_document_ids` returns ALL keys — including the
+///    malformed one — because it never loads the Automerge payload.
+/// 2. `read_distribution_document` returns `Err` for the malformed entry,
+///    giving `receive_sweep_once` the opportunity to log-and-skip rather
+///    than propagate.
+///
+/// The well-formed doc alongside it must remain readable, confirming
+/// the store is not corrupted by the malformed neighbour.
+#[tokio::test]
+async fn test_receive_sweep_resilience_to_malformed_distribution_doc() {
+    use automerge::transaction::Transactable;
+    use automerge::{Automerge, ScalarValue, ROOT};
+    use peat_protocol::storage::scan_distribution_document_ids;
+
+    let temp = TempDir::new().unwrap();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let (blob_store, doc_store) = create_integrated_stores(addr, temp.path()).await;
+    let distribution = IrohFileDistribution::new(Arc::clone(&blob_store), Arc::clone(&doc_store));
+
+    // One well-formed distribution doc.
+    let token = blob_store
+        .create_blob_from_bytes(b"payload", BlobMetadata::with_name_and_type("f.bin", "x"))
+        .await
+        .unwrap();
+    let handle = distribution
+        .distribute(
+            &token,
+            DistributionScope::AllNodes,
+            TransferPriority::Normal,
+        )
+        .await
+        .unwrap();
+
+    // One malformed entry: metadata field present but not deserializable as
+    // DistributionMetadata (mirrors the pattern in
+    // `test_scan_distribution_documents_skips_malformed`).
+    let mut bad = Automerge::new();
+    bad.transact::<_, _, automerge::AutomergeError>(|tx| {
+        tx.put(
+            ROOT,
+            "metadata",
+            ScalarValue::Bytes(b"not-valid-json".to_vec()),
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    doc_store
+        .put("file_distributions:malformed-sweep", &bad)
+        .unwrap();
+
+    // Precondition 1: scan_distribution_document_ids returns BOTH keys.
+    // The key-only scan never loads Automerge payloads, so the malformed
+    // entry is not filtered — receive_sweep_once will encounter it.
+    let ids = scan_distribution_document_ids(doc_store.as_ref())
+        .expect("key scan must succeed even with a malformed entry");
+    assert!(
+        ids.contains(&handle.distribution_id),
+        "well-formed distribution must appear in key scan, got {:?}",
+        ids
+    );
+    assert!(
+        ids.contains(&"malformed-sweep".to_string()),
+        "malformed key must appear in key scan — receive_sweep_once sees it, got {:?}",
+        ids
+    );
+
+    // Precondition 2: read_distribution_document returns Err for the malformed
+    // entry, not Ok(None).  receive_sweep_once handles Err by logging and
+    // inserting into `handled`; if this returned Ok(None) instead the watcher
+    // would still be safe, but Err is the actual signal for bad payloads.
+    let result = read_distribution_document(doc_store.as_ref(), "malformed-sweep");
+    assert!(
+        result.is_err(),
+        "read_distribution_document must return Err for a malformed entry, got Ok({:?})",
+        result.unwrap()
+    );
+
+    // Well-formed doc is still readable — the store is not corrupted by its
+    // malformed neighbour, and receive_sweep_once would load it successfully.
+    let well_formed = read_distribution_document(doc_store.as_ref(), &handle.distribution_id)
+        .expect("read must succeed for well-formed doc")
+        .expect("well-formed doc must be present");
+    assert_eq!(well_formed.distribution_id, handle.distribution_id);
+}

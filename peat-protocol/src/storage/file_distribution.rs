@@ -526,6 +526,22 @@ pub fn scan_distribution_documents(
     Ok(out)
 }
 
+/// Scan distribution document keys without loading any document bodies.
+///
+/// Uses `keys_with_prefix` so no Automerge payloads are loaded or
+/// decrypted. Intended as the first step of a scan-then-load loop
+/// where the caller can filter by its `handled` set before paying the
+/// per-document deserialization cost — see peat#980.
+#[cfg(feature = "automerge-backend")]
+pub fn scan_distribution_document_ids(store: &AutomergeStore) -> Result<Vec<String>> {
+    let prefix = format!("{IROH_DISTRIBUTION_COLLECTION}:");
+    Ok(store
+        .keys_with_prefix(&prefix)?
+        .into_iter()
+        .filter_map(|full_key| full_key.strip_prefix(&prefix).map(str::to_string))
+        .collect())
+}
+
 /// Write one receiver's `NodeTransferStatus` into the distribution
 /// document's `node_statuses` Automerge map at the receiver's own
 /// `peer.fmt_short()` key.
@@ -1343,24 +1359,57 @@ async fn receive_sweep_once(
     handled: &mut std::collections::HashSet<String>,
     attempt_counts: &mut std::collections::HashMap<String, u32>,
 ) -> Result<()> {
-    let docs = scan_distribution_documents(document_store.as_ref())?;
+    // Key-only scan: no Automerge decode for IDs already in `handled`.
+    // Docs are loaded individually for the unhandled subset only (peat#980).
+    let all_ids = scan_distribution_document_ids(document_store.as_ref())?;
+    let unhandled: Vec<String> = all_ids
+        .into_iter()
+        .filter(|id| !handled.contains(id))
+        .collect();
+
     debug!(
-        doc_count = docs.len(),
+        new_ids = unhandled.len(),
         already_handled = handled.len(),
         "receive sweep"
     );
-    for (doc_id, doc) in docs {
-        if handled.contains(&doc_id) {
-            continue;
-        }
 
+    if unhandled.is_empty() {
+        return Ok(());
+    }
+
+    // Pre-fetch originated IDs once per sweep — one lock acquisition
+    // instead of one per document (peat#980).
+    let originated_ids: std::collections::HashSet<String> =
+        { originated.read().await.keys().cloned().collect() };
+
+    for doc_id in unhandled {
         // Self-skip: distributions this node originated live in the
         // in-memory `distributions` map; a receiver never has an entry
         // there because that map is populated only by `distribute()`.
-        if originated.read().await.contains_key(&doc_id) {
+        if originated_ids.contains(&doc_id) {
             handled.insert(doc_id);
             continue;
         }
+
+        let doc = match read_distribution_document(document_store.as_ref(), &doc_id) {
+            Ok(Some(d)) => d,
+            Ok(None) => {
+                // Deleted between key scan and load — won't reappear.
+                handled.insert(doc_id);
+                continue;
+            }
+            Err(e) => {
+                // Malformed doc (encoding bug, version skew, disk corruption).
+                // Mark handled so the watcher doesn't re-abort on every sweep.
+                debug!(
+                    doc_id = %doc_id,
+                    error = %e,
+                    "skipping malformed distribution document during sweep"
+                );
+                handled.insert(doc_id);
+                continue;
+            }
+        };
 
         debug!(
             distribution_id = %doc.distribution_id,
