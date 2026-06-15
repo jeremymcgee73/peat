@@ -43,15 +43,17 @@ static PEER_EVENT_MANAGER_CLASS: LazyLock<Mutex<Option<GlobalRef>>> =
     LazyLock::new(|| Mutex::new(None));
 
 // Global reference to the currently-registered DocumentChangeListener instance.
-// Only one subscription is supported at a time (mirrors UniFFI's PeatNode::subscribe
-// constraint). Held as a GlobalRef so it survives across JNI thread attaches.
+// Only one subscription is supported at a time (mirrors UniFFI's
+// PeatNode::subscribe constraint). Held as a GlobalRef so it survives across
+// JNI thread attaches.
 #[cfg(feature = "sync")]
 static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<GlobalRef>>> =
     LazyLock::new(|| Mutex::new(None));
 
 // Flag controlling the lifetime of the document-change subscription task.
-// Set to true by subscribeDocumentChangesJni, false by unsubscribeDocumentChangesJni.
-// The spawned tokio task polls this on each recv to know whether to exit.
+// Set to true by subscribeDocumentChangesJni, false by
+// unsubscribeDocumentChangesJni. The spawned tokio task polls this on each recv
+// to know whether to exit.
 #[cfg(feature = "sync")]
 static DOCUMENT_SUBSCRIPTION_ACTIVE: LazyLock<std::sync::atomic::AtomicBool> =
     LazyLock::new(|| std::sync::atomic::AtomicBool::new(false));
@@ -144,8 +146,9 @@ fn clear_owning_node_slot(slot: &Mutex<i64>) {
 }
 
 // Global BLE transport reference for Android JNI access
-// Kotlin signals BLE state (started/stopped, peer discovery) into this transport
-// which makes TransportManager aware of BLE availability for PACE routing.
+// Kotlin signals BLE state (started/stopped, peer discovery) into this
+// transport which makes TransportManager aware of BLE availability for PACE
+// routing.
 #[cfg(all(feature = "bluetooth", target_os = "android"))]
 static ANDROID_BLE_TRANSPORT: LazyLock<
     Mutex<Option<Arc<PeatBleTransport<peat_btle::platform::android::AndroidAdapter>>>>,
@@ -194,6 +197,16 @@ uniffi::setup_scaffolding!();
 
 // FFIBuffer wrappers for Dart FFI bindings
 pub mod dart_ffi;
+
+// Shared water-supply Counter — a self-contained Automerge CRDT doc carried
+// over BLE (CRDT-over-Automerge-over-BLE). See docs/crdt-counter-over-ble.md.
+#[cfg(feature = "sync")]
+mod water_counter;
+
+// Generic CRDT key-value documents (nodes/commands/cells/mission) — same
+// Automerge-over-BLE pattern as the counter, for record collections.
+#[cfg(feature = "sync")]
+mod crdt_kv;
 
 /// Get the Peat library version
 #[uniffi::export]
@@ -341,12 +354,14 @@ pub struct TransportConfigFFI {
     /// - low_power: Minimal battery impact, reduced range/speed
     pub ble_power_profile: Option<String>,
     /// Transport preference order (optional)
-    /// List of transport names in order of preference, e.g., ["iroh", "ble", "lora"]
-    /// Used by TransportManager's PACE policy for transport selection
+    /// List of transport names in order of preference, e.g., ["iroh", "ble",
+    /// "lora"] Used by TransportManager's PACE policy for transport
+    /// selection
     pub transport_preference: Option<Vec<String>>,
     /// Per-collection transport routing (optional)
-    /// JSON-encoded CollectionRouteTable for explicit collection->transport bindings.
-    /// Collections not listed fall through to PACE/legacy scoring.
+    /// JSON-encoded CollectionRouteTable for explicit collection->transport
+    /// bindings. Collections not listed fall through to PACE/legacy
+    /// scoring.
     pub collection_routes_json: Option<String>,
 }
 
@@ -747,11 +762,98 @@ pub struct PeatNode {
     /// Held alive between `start_outbound_frames` and `stop_outbound_frames`.
     #[cfg(all(feature = "sync", feature = "bluetooth"))]
     outbound_fanout: std::sync::Mutex<Option<peat_mesh::transport::FanoutHandle>>,
+    /// Dedup set for BLE multi-hop relay: frame-hash -> last-relayed instant.
+    ///
+    /// peat-mesh's fan-out re-fans an ingested frame to OTHER transports but
+    /// SUPPRESSES same-transport (BLE->BLE) re-emit to avoid a broadcast loop
+    /// (ADR-059 echo-suppression). That suppression also blocks legitimate
+    /// multi-hop relay in an all-BLE topology (A -> B -> C): B applies A's
+    /// frame but never forwards it to C, so C can stay permanently stale.
+    /// We re-emit each freshly-ingested frame onto the BLE outbound queue
+    /// so B relays it to C. The dedup (bounded, TTL-swept) throttles
+    /// identical re-advertises so a relayed frame isn't re-broadcast in a
+    /// loop — a NEW value (different bytes) always relays immediately;
+    /// redundant re-adverts within the TTL are dropped. See
+    /// peat#978-adjacent relay gap.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
+    relay_seen: std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>>,
+    /// Shared water-supply Counter (CRDT-over-Automerge-over-BLE).
+    /// Self-contained Automerge doc; its save() bytes ride the BLE frame
+    /// bus and merge natively.
+    #[cfg(feature = "sync")]
+    water_counter: water_counter::WaterCounter,
+    /// Generic CRDT KV documents (nodes/commands/cells/mission), Automerge over
+    /// the same crdt frame as the counter — mesh-wide convergence, no
+    /// lite-bridge.
+    #[cfg(feature = "sync")]
+    crdt_kv: crdt_kv::CrdtKvDocs,
 }
 
 #[cfg(feature = "sync")]
 #[uniffi::export]
 impl PeatNode {
+    // ── Shared water-supply Counter (CRDT-over-Automerge-over-BLE) ──────────
+    // The doc's save() bytes are carried over the BLE frame bus; merge is
+    // commutative/idempotent, so the caller can broadcast/relay freely.
+
+    // The Automerge doc bytes cross the FFI as a HEX string (the well-trodden
+    // String marshalling path; the doc is tiny so 2x size is irrelevant). The
+    // caller broadcasts the hex over the BLE bridge and feeds inbound hex to
+    // `crdt_counter_merge`.
+
+    /// Current merged value of the shared water-supply Counter.
+    pub fn crdt_counter_value(&self) -> i64 {
+        self.water_counter.value()
+    }
+
+    /// Apply `delta` liters to the shared Counter; returns the doc's save()
+    /// bytes (hex) for the caller to broadcast to peers.
+    pub fn crdt_counter_increment(&self, delta: i64) -> String {
+        hex::encode(self.water_counter.increment(delta))
+    }
+
+    /// Merge an inbound peer doc (hex of its save() bytes); returns the new
+    /// value. Safe with duplicate / stale / relayed / out-of-order input.
+    pub fn crdt_counter_merge(&self, hex_doc: String) -> i64 {
+        match hex::decode(hex_doc.trim()) {
+            Ok(bytes) => self.water_counter.merge(&bytes),
+            Err(_) => self.water_counter.value(),
+        }
+    }
+
+    /// Current save() bytes (hex), for periodic re-broadcast (catch-up).
+    pub fn crdt_counter_snapshot(&self) -> String {
+        hex::encode(self.water_counter.snapshot())
+    }
+
+    // ── Generic CRDT KV documents (nodes/commands/cells/mission) ────────────
+    // Records are key -> JSON-string in a per-collection Automerge doc; merge is
+    // set-union across keys (LWW per key). Same crdt-frame transport as the
+    // counter; doc bytes cross the FFI as hex.
+
+    /// Upsert `key = value_json` in `collection`; returns the doc's save()
+    /// bytes (hex) to broadcast.
+    pub fn crdt_kv_put(&self, collection: String, key: String, value_json: String) -> String {
+        hex::encode(self.crdt_kv.put(&collection, &key, &value_json))
+    }
+
+    /// All records in `collection` as a JSON object `{key: value}`.
+    pub fn crdt_kv_all(&self, collection: String) -> String {
+        self.crdt_kv.all_json(&collection)
+    }
+
+    /// Merge an inbound peer doc (hex) into `collection`.
+    pub fn crdt_kv_merge(&self, collection: String, hex_doc: String) {
+        if let Ok(bytes) = hex::decode(hex_doc.trim()) {
+            self.crdt_kv.merge(&collection, &bytes);
+        }
+    }
+
+    /// Current save() bytes (hex) of `collection`, for periodic re-broadcast.
+    pub fn crdt_kv_snapshot(&self, collection: String) -> String {
+        hex::encode(self.crdt_kv.snapshot(&collection))
+    }
+
     /// Get this node's unique identifier (hex-encoded)
     pub fn node_id(&self) -> String {
         hex::encode(self.iroh_transport.endpoint_id().as_bytes())
@@ -791,9 +893,10 @@ impl PeatNode {
 
     /// Start sync operations
     ///
-    /// The authenticated accept loop (with formation handshake) is already running
-    /// from sync_backend.initialize() in create_node(). This method starts the
-    /// sync coordination layer: event-based and polling-based sync handlers.
+    /// The authenticated accept loop (with formation handshake) is already
+    /// running from sync_backend.initialize() in create_node(). This method
+    /// starts the sync coordination layer: event-based and polling-based
+    /// sync handlers.
     pub fn start_sync(&self) -> Result<(), PeatError> {
         #[cfg(target_os = "android")]
         android_log("start_sync: called");
@@ -946,8 +1049,9 @@ impl PeatNode {
     }
 
     /// Request a full document sync with all connected peers.
-    /// This pushes all local documents to each peer and pulls any documents they have.
-    /// Useful for ensuring newly created documents propagate after the initial connection.
+    /// This pushes all local documents to each peer and pulls any documents
+    /// they have. Useful for ensuring newly created documents propagate
+    /// after the initial connection.
     pub fn request_sync(&self) -> Result<(), PeatError> {
         if let Some(coordinator) = self.storage_backend.sync_coordinator() {
             let peers = self.iroh_transport.connected_peers();
@@ -1134,8 +1238,8 @@ impl PeatNode {
     ///
     /// - Published via `publishDocumentJni` (which goes through
     ///   `peat_mesh::Node::publish`, the document layer)
-    /// - Received from a peer via Automerge sync (which writes into
-    ///   the document layer's CRDT, not the raw store)
+    /// - Received from a peer via Automerge sync (which writes into the
+    ///   document layer's CRDT, not the raw store)
     ///
     /// The JNI counterpart `getDocumentJni` deliberately uses
     /// `peat_mesh::Node::get()` instead so it round-trips with
@@ -1205,14 +1309,15 @@ impl PeatNode {
 
     /// Subscribe to document changes
     ///
-    /// Returns a SubscriptionHandle that must be kept alive to receive callbacks.
-    /// When the handle is dropped or cancel() is called, the subscription stops.
+    /// Returns a SubscriptionHandle that must be kept alive to receive
+    /// callbacks. When the handle is dropped or cancel() is called, the
+    /// subscription stops.
     ///
     /// The callback will receive DocumentChange events for all documents.
     /// Filter by collection in your callback implementation if needed.
     ///
-    /// Note: Only one subscription per node is supported. Calling subscribe again
-    /// will fail if a subscription is already active.
+    /// Note: Only one subscription per node is supported. Calling subscribe
+    /// again will fail if a subscription is already active.
     pub fn subscribe(
         &self,
         callback: Box<dyn DocumentCallback>,
@@ -1280,9 +1385,10 @@ impl PeatNode {
 
     /// Subscribe to document changes using a poll-based model.
     ///
-    /// Returns a [`SubscriptionHandle`] whose [`SubscriptionHandle::poll_changes`]
-    /// method drains buffered [`DocumentChange`] events. Callers drive delivery
-    /// by periodically calling `poll_changes` (e.g. from a Dart isolate loop or
+    /// Returns a [`SubscriptionHandle`] whose
+    /// [`SubscriptionHandle::poll_changes`] method drains buffered
+    /// [`DocumentChange`] events. Callers drive delivery by periodically
+    /// calling `poll_changes` (e.g. from a Dart isolate loop or
     /// `Timer.periodic`) — no foreign callback interface is required.
     ///
     /// Drop or call [`SubscriptionHandle::cancel`] on the handle to stop.
@@ -1366,8 +1472,10 @@ impl PeatNode {
 /// # Arguments
 ///
 /// * `config` - Node configuration including:
-///   - `app_id`: Formation/application identifier (use same value for all nodes in your swarm)
-///   - `shared_key`: Base64-encoded 32-byte secret key (generate with `openssl rand -base64 32`)
+///   - `app_id`: Formation/application identifier (use same value for all nodes
+///     in your swarm)
+///   - `shared_key`: Base64-encoded 32-byte secret key (generate with `openssl
+///     rand -base64 32`)
 ///   - `bind_address`: Optional address to bind (default: "0.0.0.0:0")
 ///   - `storage_path`: Directory for persistent storage
 ///
@@ -1561,15 +1669,17 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     ));
 
     // Create sync backend (AutomergeIrohBackend) for authenticated P2P sync
-    // Note: AutomergeIrohBackend wraps storage::AutomergeBackend for the DataSyncBackend trait
+    // Note: AutomergeIrohBackend wraps storage::AutomergeBackend for the
+    // DataSyncBackend trait
     let sync_backend = Arc::new(AutomergeIrohBackend::new(
         Arc::clone(&storage_backend),
         Arc::clone(&transport),
     ));
 
-    // IMPORTANT (Issue #275): Subscribe to peer events BEFORE initializing sync backend.
-    // The initialize() call spawns the accept loop, so we need to subscribe first
-    // to catch all connection events including the initial ones.
+    // IMPORTANT (Issue #275): Subscribe to peer events BEFORE initializing sync
+    // backend. The initialize() call spawns the accept loop, so we need to
+    // subscribe first to catch all connection events including the initial
+    // ones.
     let mut event_rx = transport.subscribe_peer_events();
 
     // TIMING: Sync backend initialization
@@ -1602,7 +1712,8 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     #[cfg(not(target_os = "android"))]
     eprintln!("[Peat TIMING] Sync backend init: {}ms", sync_init_ms);
 
-    // Start background task to listen for peer events and forward to Java (Issue #275)
+    // Start background task to listen for peer events and forward to Java (Issue
+    // #275)
     let cleanup_running = Arc::new(AtomicBool::new(true));
     let cleanup_flag = Arc::clone(&cleanup_running);
     let runtime_arc = Arc::new(runtime);
@@ -1662,13 +1773,14 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         android_log("Peer event listener task exiting");
     });
 
-    // IMPORTANT (Issue #378): Use the storage_backend from sync_backend, NOT a new one!
-    // Creating a separate AutomergeBackend would cause sync coordinator state to be split,
-    // resulting in data not being received from peers.
+    // IMPORTANT (Issue #378): Use the storage_backend from sync_backend, NOT a new
+    // one! Creating a separate AutomergeBackend would cause sync coordinator
+    // state to be split, resulting in data not being received from peers.
     let storage_backend = sync_backend.storage_backend();
 
     // Create TransportManager for multi-transport coordination (ADR-032, #555)
-    // Build TransportManagerConfig from FFI config (PACE policy + collection routes)
+    // Build TransportManagerConfig from FFI config (PACE policy + collection
+    // routes)
     let mut tm_config = TransportManagerConfig::default();
 
     if let Some(ref transport_config) = config.transport {
@@ -1898,6 +2010,12 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         transport_manager,
         iroh_transport: transport,
         store,
+        #[cfg(feature = "sync")]
+        water_counter: water_counter::WaterCounter::load_or_init(
+            storage_path.join("water.automerge"),
+        ),
+        #[cfg(feature = "sync")]
+        crdt_kv: crdt_kv::CrdtKvDocs::new(storage_path.clone()),
         storage_path,
         runtime: runtime_arc,
         cleanup_running,
@@ -1907,6 +2025,8 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         outbound_queue: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         outbound_fanout: std::sync::Mutex::new(None),
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        relay_seen: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Publish an OWNING reference to the JNI-visible global so a Kotlin bridge
@@ -1914,6 +2034,16 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     // without risking use-after-free: the prior code stashed a non-owning
     // alias whose sole owner was the Dart handle, so Dart's GC finalizer could
     // free the node out from under a `getGlobalNodeHandleJni` consumer.
+    //
+    // Android-only: the global is consumed solely by the JNI bridges (BLE /
+    // Wi-Fi Direct). iOS reaches BLE via the independent UniFFI poll bridge and
+    // never reads it, so storing an owning Arc there would only leak — the
+    // node's sole owner on iOS must be the Dart UniFFI handle so `close()`/
+    // dispose actually drops it and releases the redb file lock. Without this
+    // gate, an in-app Stop on iOS left the node (and its redb store) alive, so
+    // the next Start hit "Failed to open redb database" on the still-locked
+    // file. iOS has no `clearGlobalNodeHandleJni` counterpart to release it.
+    #[cfg(target_os = "android")]
     set_global_node_handle(&node_arc);
     Ok(node_arc)
 }
@@ -2022,7 +2152,8 @@ pub struct CellInfo {
     pub leader_id: Option<String>,
     /// Last update timestamp (Unix millis)
     pub last_update: i64,
-    /// Optional scenario command piggybacked on cell (e.g., "START_SCENARIO", "STOP_SCENARIO")
+    /// Optional scenario command piggybacked on cell (e.g., "START_SCENARIO",
+    /// "STOP_SCENARIO")
     pub scenario_command: Option<String>,
 }
 
@@ -2241,19 +2372,18 @@ pub struct MarkerInfo {
 // (Rust-side emit/parse only; downstream consumers in other repos
 // have their own contracts).
 //
-// - **Emit:** `serialize_node_json` and `serialize_nodes_get_json`
-//   both render `Option::None` as JSON `null` via `serde_json::json!`
-//   macro semantics. There is no second emit shape from this codec.
+// - **Emit:** `serialize_node_json` and `serialize_nodes_get_json` both render
+//   `Option::None` as JSON `null` via `serde_json::json!` macro semantics.
+//   There is no second emit shape from this codec.
 //
-// - **Parse:** `parse_node_json` and `parse_node_publish_json`
-//   both treat JSON `null` AND a missing key the same way — both yield
-//   `None`. `serde_json::Value` indexing returns `Value::Null` for
-//   missing keys, and the typed accessors (`as_i64`, `as_str`, …)
-//   return `None` on a null variant. So receivers don't need to
-//   distinguish "absent" from "explicit null" — they're equivalent on
-//   the read side. Locked in by
-//   `legacy_json_without_battery_or_heart_parses_with_none` (absent)
-//   and `battery_and_heart_reject_non_numeric` (explicit null).
+// - **Parse:** `parse_node_json` and `parse_node_publish_json` both treat JSON
+//   `null` AND a missing key the same way — both yield `None`.
+//   `serde_json::Value` indexing returns `Value::Null` for missing keys, and
+//   the typed accessors (`as_i64`, `as_str`, …) return `None` on a null
+//   variant. So receivers don't need to distinguish "absent" from "explicit
+//   null" — they're equivalent on the read side. Locked in by
+//   `legacy_json_without_battery_or_heart_parses_with_none` (absent) and
+//   `battery_and_heart_reject_non_numeric` (explicit null).
 //
 // - **Forward-compat:** parsers ignore unknown keys. Any wire shape a
 //   future-version peer adds passes through unchanged.
@@ -2640,7 +2770,8 @@ impl PeatNode {
     }
 
     /// Add a known blob peer by hex EndpointId and socket address.
-    /// Uses peat-mesh's `add_peer_from_hex` so no iroh types cross into peat-ffi.
+    /// Uses peat-mesh's `add_peer_from_hex` so no iroh types cross into
+    /// peat-ffi.
     pub fn blob_add_peer(&self, peer_id_hex: &str, address: &str) -> Result<(), PeatError> {
         let store_guard = self.blob_store.read().map_err(|_| PeatError::SyncError {
             msg: "blob_store lock poisoned".to_string(),
@@ -2746,7 +2877,8 @@ impl PeatNode {
         store.blob_exists_locally(&hash)
     }
 
-    /// Get the blob endpoint ID as hex (returns None if blob transfer is disabled).
+    /// Get the blob endpoint ID as hex (returns None if blob transfer is
+    /// disabled).
     pub fn blob_endpoint_id(&self) -> Option<String> {
         let store_guard = self.blob_store.read().ok()?;
         let store = store_guard.as_ref()?;
@@ -2974,9 +3106,9 @@ fn parse_node_json(id: &str, json: &str) -> Result<NodeInfo, PeatError> {
 /// peat#835.
 ///
 /// Errors:
-/// - `InvalidInput` if the JSON is malformed or `id` is missing/empty
-///   (consumed as the storage key downstream; an empty id would
-///   collide with `getNodesJni`'s scan results).
+/// - `InvalidInput` if the JSON is malformed or `id` is missing/empty (consumed
+///   as the storage key downstream; an empty id would collide with
+///   `getNodesJni`'s scan results).
 fn parse_node_publish_json(json_str: &str) -> Result<NodeInfo, PeatError> {
     let v: serde_json::Value =
         serde_json::from_str(json_str).map_err(|e| PeatError::InvalidInput {
@@ -3019,35 +3151,31 @@ fn parse_node_publish_json(json_str: &str) -> Result<NodeInfo, PeatError> {
 /// Parse the `last_heartbeat` field on a publish-side JSON envelope.
 ///
 /// Three intents we must honor faithfully:
-/// 1. **Wire absent → stamp `now()`.** Real publishers (Kotlin
-///    self-PLI, BLE-bridged peripheral relay) don't carry a
-///    timestamp; the JNI surface always meant "this publish is fresh."
-/// 2. **Wire `0` → preserve `0`.** Per `NodeInfo`'s field doc,
-///    `last_heartbeat = 0` is the documented stale-record sentinel
-///    ("1970-01-01 stale"). The earlier `> 0` filter silently
-///    overrode this — a publisher sending the documented stale
-///    marker got `Utc::now()` back, the *opposite* signal. That was
-///    a writer/reader-asymmetry regression of the same class
-///    peat#835 was opened to fix; round-4 drops the filter.
-/// 3. **Wire absurdly far in the future → clamp to `now()`.** A peer
-///    with a future-skewed clock can publish `i64::MAX` or any
-///    timestamp ahead of local time; downstream Kotlin staleness UI
-///    consumes the value raw via `getStalenessString` and would
-///    show the node as "always fresh." Cap acceptance at
-///    `now() + 60_000ms` (60 s grace for legitimate clock drift in
-///    distributed systems); beyond that, treat as adversarial /
+/// 1. **Wire absent → stamp `now()`.** Real publishers (Kotlin self-PLI,
+///    BLE-bridged peripheral relay) don't carry a timestamp; the JNI surface
+///    always meant "this publish is fresh."
+/// 2. **Wire `0` → preserve `0`.** Per `NodeInfo`'s field doc, `last_heartbeat
+///    = 0` is the documented stale-record sentinel ("1970-01-01 stale"). The
+///    earlier `> 0` filter silently overrode this — a publisher sending the
+///    documented stale marker got `Utc::now()` back, the *opposite* signal.
+///    That was a writer/reader-asymmetry regression of the same class peat#835
+///    was opened to fix; round-4 drops the filter.
+/// 3. **Wire absurdly far in the future → clamp to `now()`.** A peer with a
+///    future-skewed clock can publish `i64::MAX` or any timestamp ahead of
+///    local time; downstream Kotlin staleness UI consumes the value raw via
+///    `getStalenessString` and would show the node as "always fresh." Cap
+///    acceptance at `now() + 60_000ms` (60 s grace for legitimate clock drift
+///    in distributed systems); beyond that, treat as adversarial /
 ///    misconfigured and stamp local `now()`.
 ///
-/// 4. **Wire negative → collapse to the stale-marker (`0`).** Round-4
-///    let negatives pass through with a doc-comment claiming downstream
-///    time-delta arithmetic still produced a sensible age; that's
-///    wrong: `now - i64::MIN` overflows i64, and Kotlin `Long`
-///    subtraction silently wraps, producing nonsense staleness output
-///    (or panic in Rust debug builds). Negative timestamps are
-///    pathological — pre-epoch publish makes no sense in this product
-///    — and collapsing them onto the documented stale-marker (`0`)
-///    keeps the UI's arithmetic safe while preserving the "very stale"
-///    intent.
+/// 4. **Wire negative → collapse to the stale-marker (`0`).** Round-4 let
+///    negatives pass through with a doc-comment claiming downstream time-delta
+///    arithmetic still produced a sensible age; that's wrong: `now - i64::MIN`
+///    overflows i64, and Kotlin `Long` subtraction silently wraps, producing
+///    nonsense staleness output (or panic in Rust debug builds). Negative
+///    timestamps are pathological — pre-epoch publish makes no sense in this
+///    product — and collapsing them onto the documented stale-marker (`0`)
+///    keeps the UI's arithmetic safe while preserving the "very stale" intent.
 fn parse_publish_last_heartbeat(v: &serde_json::Value) -> i64 {
     let now_ms = chrono::Utc::now().timestamp_millis();
     // 60 s grace covers normal NTP drift between mobile devices on
@@ -3162,18 +3290,16 @@ fn coerce_json_number_to_i64(v: &serde_json::Value) -> Option<i64> {
 /// Parse a JSON `Value` into a battery percentage, clamping into the
 /// physical 0..=100 range.
 ///
-/// - Accepts integer or float JSON numbers (`85`, `85.0`, `85.5` →
-///   `85`). See [`coerce_json_number_to_i64`] for why both forms.
-/// - Numeric values clamp on out-of-range. The silent-`None`-on-
-///   overflow shape `as_i64().and_then(|n| i32::try_from(n).ok())`
-///   produced was the same bug class peat#835 was opened to prevent:
-///   a pathological 2³² `battery_percent` becomes "no battery
-///   sensor," visually identical to the legitimate `None` case.
-///   Clamp fails-safe to 0 or 100 instead.
-/// - Non-numeric (string, object, missing key, JSON null) returns
-///   `None`. We accept "no battery sensor" but reject silent type
-///   coercion — a `"85"` *string* wire payload is a publisher bug,
-///   not a value to interpret.
+/// - Accepts integer or float JSON numbers (`85`, `85.0`, `85.5` → `85`). See
+///   [`coerce_json_number_to_i64`] for why both forms.
+/// - Numeric values clamp on out-of-range. The silent-`None`-on- overflow shape
+///   `as_i64().and_then(|n| i32::try_from(n).ok())` produced was the same bug
+///   class peat#835 was opened to prevent: a pathological 2³² `battery_percent`
+///   becomes "no battery sensor," visually identical to the legitimate `None`
+///   case. Clamp fails-safe to 0 or 100 instead.
+/// - Non-numeric (string, object, missing key, JSON null) returns `None`. We
+///   accept "no battery sensor" but reject silent type coercion — a `"85"`
+///   *string* wire payload is a publisher bug, not a value to interpret.
 ///
 /// Wire form: number in 0–100 (integer or float), or `null` / absent
 /// for "unknown."
@@ -3186,12 +3312,11 @@ fn parse_battery_percent(v: &serde_json::Value) -> Option<i32> {
 /// 0..=250 range.
 ///
 /// - Accepts integer or float JSON numbers; floats round.
-/// - Lower bound is **0**, not 30: athletic resting bradycardia can
-///   dip into the 20s, and a sensor reporting 0/asystole is a real
-///   emergency signal that the UI should surface, not silently
-///   round up. The earlier 30 floor masked these. Upper bound stays
-///   250 (well above maximal exertion ~220−age) to catch overflow
-///   payloads.
+/// - Lower bound is **0**, not 30: athletic resting bradycardia can dip into
+///   the 20s, and a sensor reporting 0/asystole is a real emergency signal that
+///   the UI should surface, not silently round up. The earlier 30 floor masked
+///   these. Upper bound stays 250 (well above maximal exertion ~220−age) to
+///   catch overflow payloads.
 /// - Non-numeric returns `None` ("no wearable sensor present").
 ///
 /// Wire form: number in 0–250 (integer or float), or `null` / absent
@@ -4147,8 +4272,9 @@ mod tests {
             );
         }
 
-        /// Dropping the `FanoutHandle` (mirroring `unsubscribeOutboundFramesJni`'s
-        /// teardown) stops further frames from reaching the sink.
+        /// Dropping the `FanoutHandle` (mirroring
+        /// `unsubscribeOutboundFramesJni`'s teardown) stops further
+        /// frames from reaching the sink.
         #[tokio::test]
         async fn drop_handle_stops_subsequent_delivery() {
             let fx = fixture();
@@ -4370,7 +4496,8 @@ mod tests {
         /// `BleTranslator::encode_outbound` (the same path the real fan-out
         /// uses), then decode them back through `decode_inbound` and publish
         /// with `Some("ble")` origin (ADR-059 echo-suppression invariant).
-        /// Tests the same primitives that `PeatNode::ingest_inbound_frame` uses.
+        /// Tests the same primitives that `PeatNode::ingest_inbound_frame`
+        /// uses.
         #[tokio::test]
         async fn ingest_inbound_frame_roundtrip_publishes_with_ble_origin() {
             let backend: Arc<dyn DataSyncBackend> = Arc::new(InMemoryBackend::new_initialized());
@@ -4829,7 +4956,8 @@ mod tests {
         }
     }
 
-    /// Wrapper-tier E2E tests for the poll API added for Dart/Flutter consumers.
+    /// Wrapper-tier E2E tests for the poll API added for Dart/Flutter
+    /// consumers.
     ///
     /// These tests exercise the full path through the `PeatNode` wrapper —
     /// `subscribe_poll` / `poll_changes`, `start_outbound_frames` /
@@ -4851,13 +4979,15 @@ mod tests {
             }
         }
 
-        /// `subscribe_poll` + `poll_changes` + `cancel` through the `PeatNode` wrapper.
+        /// `subscribe_poll` + `poll_changes` + `cancel` through the `PeatNode`
+        /// wrapper.
         ///
-        /// Creates a real node via `create_node`, subscribes with `subscribe_poll`,
-        /// publishes a document via the mesh document layer (the path that actually
-        /// triggers `subscribe_to_changes`), and verifies the change arrives through
-        /// `poll_changes`. Also confirms the drain is idempotent and that `cancel`
-        /// is safe to call multiple times.
+        /// Creates a real node via `create_node`, subscribes with
+        /// `subscribe_poll`, publishes a document via the mesh document
+        /// layer (the path that actually
+        /// triggers `subscribe_to_changes`), and verifies the change arrives
+        /// through `poll_changes`. Also confirms the drain is
+        /// idempotent and that `cancel` is safe to call multiple times.
         #[test]
         fn subscribe_poll_drain_and_cancel() {
             let tmp = tempfile::tempdir().unwrap();
@@ -4900,14 +5030,17 @@ mod tests {
         }
 
         /// `start_outbound_frames` → publish → `poll_outbound_frames` →
-        /// `ingest_inbound_frame` → `stop_outbound_frames` → idempotent re-start.
+        /// `ingest_inbound_frame` → `stop_outbound_frames` → idempotent
+        /// re-start.
         ///
         /// Covers the full wrapper path for the BLE poll API:
-        /// - `start_outbound_frames` idempotency (second call is a no-op, not an error)
-        /// - A document published to "tracks" via the mesh layer produces an outbound
-        ///   BLE frame visible through `poll_outbound_frames`
-        /// - The polled frame can be fed into a second node via `ingest_inbound_frame`
-        ///   and the decoded document appears in that node's mesh store
+        /// - `start_outbound_frames` idempotency (second call is a no-op, not
+        ///   an error)
+        /// - A document published to "tracks" via the mesh layer produces an
+        ///   outbound BLE frame visible through `poll_outbound_frames`
+        /// - The polled frame can be fed into a second node via
+        ///   `ingest_inbound_frame` and the decoded document appears in that
+        ///   node's mesh store
         /// - `stop_outbound_frames` + `start_outbound_frames` re-registers the
         ///   translator without a duplicate-id collision
         #[test]
@@ -5118,11 +5251,12 @@ mod tests {
     }
 
     /// Wrapped-vs-flat document-shape parsing (peat#978). Docs published
-    /// through the node layer arrive wrapped as `{id, fields:{..}, updated_at}`;
-    /// legacy `storage_backend` writes are flat. `parse_node/cell/command_json`
-    /// must read both shapes identically — the contract `LITE_BRIDGE_COLLECTIONS`
-    /// now depends on for nodes/cells/commands to round-trip over BLE. The
-    /// lite-bridge E2E test uses the flat `demo` shape, so it exercised only the
+    /// through the node layer arrive wrapped as `{id, fields:{..},
+    /// updated_at}`; legacy `storage_backend` writes are flat.
+    /// `parse_node/cell/command_json` must read both shapes identically —
+    /// the contract `LITE_BRIDGE_COLLECTIONS` now depends on for
+    /// nodes/cells/commands to round-trip over BLE. The lite-bridge E2E
+    /// test uses the flat `demo` shape, so it exercised only the
     /// fallback-to-root branch; these lock in the wrapped-`fields` branch.
     mod doc_shape_parse_tests {
         use super::*;
@@ -7346,7 +7480,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_testJni(
 
 /// JNI: Create a Peat node (simplified for testing)
 ///
-/// Kotlin signature: external fun createNodeJni(appId: String, sharedKey: String, storagePath: String): Long
+/// Kotlin signature: external fun createNodeJni(appId: String, sharedKey:
+/// String, storagePath: String): Long
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
@@ -7696,7 +7831,8 @@ fn serialize_document_for_get_jni(doc: &peat_mesh::sync::Document) -> String {
 /// `publishDocumentJni` — needed by instrumented tests that verify
 /// sync convergence by reading on the receiver side. peat-mesh#138 M4.
 ///
-/// Kotlin signature: external fun getDocumentJni(handle: Long, collection: String, docId: String): String?
+/// Kotlin signature: external fun getDocumentJni(handle: Long, collection:
+/// String, docId: String): String?
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
@@ -7774,7 +7910,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
 ///
 /// Returns 1 on success, 0 if the handle is invalid.
 ///
-/// Kotlin signature: external fun forceStoreErrorForTestingJni(handle: Long): Boolean
+/// Kotlin signature: external fun forceStoreErrorForTestingJni(handle: Long):
+/// Boolean
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_forceStoreErrorForTestingJni(
@@ -7914,7 +8051,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(
 /// Called by Kotlin when the Android BLE stack is ready or shutting down.
 /// This makes `is_available()` return true/false for PACE routing.
 ///
-/// Kotlin signature: external fun bleSetStartedJni(handle: Long, started: Boolean)
+/// Kotlin signature: external fun bleSetStartedJni(handle: Long, started:
+/// Boolean)
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleSetStartedJni(
@@ -7997,7 +8135,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleAddPeerJni(
 /// Called by Kotlin when a BLE peer is disconnected/lost.
 /// This makes `can_reach(peer)` return false for PACE routing.
 ///
-/// Kotlin signature: external fun bleRemovePeerJni(handle: Long, peerId: String)
+/// Kotlin signature: external fun bleRemovePeerJni(handle: Long, peerId:
+/// String)
 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_bleRemovePeerJni(
@@ -8287,8 +8426,9 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getCommandsJni(
 
 /// JNI: Publish a node (self-position/PLI) to the Peat network
 ///
-/// Kotlin signature: external fun publishNodeJni(handle: Long, nodeJson: String): Boolean
-/// Stores the node in the "nodes" collection for sync to peers.
+/// Kotlin signature: external fun publishNodeJni(handle: Long, nodeJson:
+/// String): Boolean Stores the node in the "nodes" collection for sync to
+/// peers.
 ///
 /// Expected JSON format:
 /// ```json
@@ -8425,9 +8565,9 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getMarkersJni(
 /// universal-Document transport on every registered radio
 /// (LiteBridgeTranslator on BLE, iroh sync for cross-mesh peers).
 ///
-/// Kotlin signature: `external fun publishMarkerJni(handle: Long, markerJson: String): Boolean`
-/// Returns `1` (JNI_TRUE) on success, `0` (JNI_FALSE) on failure
-/// (invalid handle, malformed JSON, missing required fields, storage
+/// Kotlin signature: `external fun publishMarkerJni(handle: Long, markerJson:
+/// String): Boolean` Returns `1` (JNI_TRUE) on success, `0` (JNI_FALSE) on
+/// failure (invalid handle, malformed JSON, missing required fields, storage
 /// error). The Kotlin caller maps the boolean return back to a
 /// success / "publish failed" log path — same shape as
 /// `publishNodeJni`.
@@ -8521,7 +8661,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni(
 /// JSON not an object, or backend publish error. Foundation step 3 of the
 /// peat-mesh-completion work.
 ///
-/// Kotlin signature: `external fun publishDocumentJni(handle: Long, collection: String, json: String): String`
+/// Kotlin signature: `external fun publishDocumentJni(handle: Long, collection:
+/// String, json: String): String`
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishDocumentJni(
@@ -8599,7 +8740,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishDocumentJni(
 /// transport set; an unknown origin produces a publish-time error
 /// (logged + empty return string).
 ///
-/// Kotlin signature: `external fun publishDocumentWithOriginJni(handle: Long, collection: String, json: String, origin: String): String`
+/// Kotlin signature: `external fun publishDocumentWithOriginJni(handle: Long,
+/// collection: String, json: String, origin: String): String`
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishDocumentWithOriginJni(
@@ -8768,7 +8910,8 @@ async fn publish_document_into_node_with_origin(
 /// `i32::MIN` are rejected rather than silently truncated. See
 /// [`parse_peripheral_id`].
 ///
-/// Kotlin signature: `external fun ingestPositionJni(handle: Long, json: String): String`
+/// Kotlin signature: `external fun ingestPositionJni(handle: Long, json:
+/// String): String`
 ///
 /// Returns the assigned track-document id on success, or empty string on any
 /// failure (handle invalid, bluetooth feature not built, JSON malformed,
@@ -8831,7 +8974,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestPositionJni(
 /// JNI: Ingest an inbound frame received over BLE into the mesh.
 ///
 /// Kotlin signature:
-/// `external fun ingestInboundFrameJni(handle: Long, collection: String, postcardBytes: ByteArray): String?`
+/// `external fun ingestInboundFrameJni(handle: Long, collection: String,
+/// postcardBytes: ByteArray): String?`
 ///
 /// Thin wrapper over [`PeatNode::ingest_inbound_frame`], which decodes the
 /// frame via the `BleTranslator` and publishes it into the mesh tagged with
@@ -8904,7 +9048,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestInboundFrameJ
 /// collections the typed translator declines (e.g. the `demo` counter).
 ///
 /// Kotlin signature:
-/// `external fun ingestInboundLiteFrameJni(handle: Long, collection: String, envelopeBytes: ByteArray): String?`
+/// `external fun ingestInboundLiteFrameJni(handle: Long, collection: String,
+/// envelopeBytes: ByteArray): String?`
 #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFrameJni(
@@ -8958,6 +9103,55 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFr
             std::ptr::null_mut()
         }
     }
+}
+
+/// JNI: ingest an inbound CRDT-counter frame (CRDT-over-Automerge-over-BLE).
+///
+/// `hex_bytes` is the UTF-8 hex of the shared Automerge doc's `save()` bytes —
+/// the payload of a `0xAF` frame whose transport byte is `2` (crdt). Merges it
+/// into the shared counter (idempotent/commutative) and returns the new value,
+/// or -1 on error. Operates on the SAME `PeatNode` Dart created (the global
+/// handle is an owning alias), so Dart's `crdtCounterValue()` sees the result.
+///
+/// Routes by `collection`: `"supply"` merges the Counter (returns the new
+/// value); any other collection merges the generic CRDT KV doc (returns 0).
+/// Returns -1 on error.
+///
+/// Kotlin: `external fun ingestCrdtFrameJni(handle: Long, collection: String,
+/// hexBytes: ByteArray): Long`
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_ingestCrdtFrameJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    collection: JString,
+    hex_bytes: JByteArray,
+) -> i64 {
+    if handle == 0 {
+        return -1;
+    }
+    let collection_str: String = match env.get_string(&collection) {
+        Ok(s) => s.into(),
+        Err(_) => return -1,
+    };
+    let bytes: Vec<u8> = match env.convert_byte_array(&hex_bytes) {
+        Ok(b) => b,
+        Err(_) => return -1,
+    };
+    let hex = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let node_owner = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let v = if collection_str == "supply" {
+        node_owner.crdt_counter_merge(hex)
+    } else {
+        node_owner.crdt_kv_merge(collection_str, hex);
+        0
+    };
+    std::mem::forget(node_owner);
+    v
 }
 
 /// Pure-Rust helper backing [`Java_..._ingestPositionJni`]. Parses the JSON
@@ -9082,9 +9276,9 @@ fn parse_peripheral_id(value: Option<&serde_json::Value>) -> anyhow::Result<u32>
 
 /// Connect to a known peer by node ID and address (bypasses mDNS).
 ///
-/// Kotlin signature: external fun connectPeerJni(handle: Long, nodeId: String, address: String): Boolean
-/// Used by the dual-transport test to connect Android to rpi-ci2 over QUIC
-/// when mDNS is unreliable.
+/// Kotlin signature: external fun connectPeerJni(handle: Long, nodeId: String,
+/// address: String): Boolean Used by the dual-transport test to connect Android
+/// to rpi-ci2 over QUIC when mDNS is unreliable.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_connectPeerJni(
@@ -9167,12 +9361,13 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_connectPeerJni(
 /// JNI: Subscribe to document change notifications
 ///
 /// Kotlin signature:
-/// `external fun subscribeDocumentChangesJni(handle: Long, listener: DocumentChangeListener): Boolean`
+/// `external fun subscribeDocumentChangesJni(handle: Long, listener:
+/// DocumentChangeListener): Boolean`
 ///
-/// The listener receives `onChange(collection, docId)` for every document upsert
-/// and `onError(message)` if the underlying broadcast channel lags or closes.
-/// Calls from the Rust side happen on the tokio runtime thread owned by the
-/// PeatNode; the listener must be safe to invoke from any thread (consumers
+/// The listener receives `onChange(collection, docId)` for every document
+/// upsert and `onError(message)` if the underlying broadcast channel lags or
+/// closes. Calls from the Rust side happen on the tokio runtime thread owned by
+/// the PeatNode; the listener must be safe to invoke from any thread (consumers
 /// typically post back to a main-thread Handler before touching UI state).
 ///
 /// Replacing an existing subscription is allowed: the previous listener's
@@ -9540,6 +9735,78 @@ impl PeatNode {
             }
         })
     }
+
+    /// Re-emit a freshly-ingested BLE frame onto the outbound queue so this
+    /// node RELAYS it to its other BLE peers — multi-hop A->B->C.
+    /// peat-mesh's fan-out already re-fans an ingested frame to OTHER
+    /// transports (BLE->Wi-Fi/iroh) but suppresses same-transport BLE->BLE
+    /// re-emit to avoid a broadcast loop; that suppression is exactly what
+    /// strands an all-BLE follower. Re-emitting here closes that hop.
+    /// Deduped by frame content with a short TTL so a relayed frame isn't
+    /// re-broadcast in a loop: a NEW value (different bytes)
+    /// relays immediately, while identical re-advertises inside the TTL window
+    /// are dropped (this is what keeps it from recreating the storm the
+    /// suppression was guarding against). No-op unless an outbound subscription
+    /// is actively draining the queue, so an idle node doesn't grow it.
+    fn relay_ble_frame(&self, transport_id: &str, collection: &str, bytes: &[u8]) {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use std::time::{Duration, Instant};
+
+        const RELAY_DEDUP_TTL: Duration = Duration::from_secs(5);
+        const RELAY_SEEN_CAP: usize = 2048;
+
+        // Do NOT relay presence ("nodes"): its heartbeat timestamp changes every
+        // beat, so every frame is unique and escapes the content dedup — relaying
+        // it ~Nx-amplifies BLE traffic (congestion → missed heartbeats → roster
+        // liveness flapping) AND re-broadcasts stale node-identity docs from
+        // peers' stores (resurfacing zombie identities, so the roster flips
+        // between a node's old id and its callsign). Presence reaches direct
+        // neighbours via each node's own advertise; only app STATE needs
+        // multi-hop relay (counter "demo", "cells", "mission", "commands",
+        // "markers"), and those re-advertise identical bytes so the dedup
+        // throttles them to one relay per change.
+        if collection == "nodes" {
+            return;
+        }
+
+        let active = match self.outbound_fanout.lock() {
+            Ok(g) => g.is_some(),
+            Err(e) => e.into_inner().is_some(),
+        };
+        if !active {
+            return;
+        }
+
+        let mut h = DefaultHasher::new();
+        transport_id.hash(&mut h);
+        collection.hash(&mut h);
+        bytes.hash(&mut h);
+        let key = h.finish();
+
+        let now = Instant::now();
+        {
+            let mut seen = self.relay_seen.lock().unwrap_or_else(|e| e.into_inner());
+            seen.retain(|_, t| now.duration_since(*t) < RELAY_DEDUP_TTL);
+            if seen.contains_key(&key) {
+                return; // identical frame relayed recently — drop to break
+                        // loops
+            }
+            if seen.len() >= RELAY_SEEN_CAP {
+                seen.clear();
+            }
+            seen.insert(key, now);
+        }
+
+        self.outbound_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(OutboundFrame {
+                transport_id: transport_id.to_string(),
+                collection: collection.to_string(),
+                bytes: bytes.to_vec(),
+            });
+    }
 }
 
 #[cfg(all(feature = "sync", feature = "bluetooth"))]
@@ -9675,6 +9942,8 @@ impl PeatNode {
                 Some("ble".to_string()),
             ))
             .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        // Multi-hop: relay this frame to our other BLE peers (deduped).
+        self.relay_ble_frame("ble", &collection_name, &postcard_bytes);
         Ok(Some(id.to_string()))
     }
 
@@ -9683,7 +9952,8 @@ impl PeatNode {
     /// [`ingest_inbound_frame`]. Decodes via the `CollectionGatedLiteBridge`
     /// and republishes with `Some("ble-lite")` origin so the mesh re-fans it
     /// to the other transports without looping back to BLE. Used for raw
-    /// collections (e.g. the `demo` counter) that the typed translator declines.
+    /// collections (e.g. the `demo` counter) that the typed translator
+    /// declines.
     #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
     pub fn ingest_inbound_lite_frame(
         &self,
@@ -9709,7 +9979,27 @@ impl PeatNode {
                 Some(BLE_LITE_BRIDGE.to_string()),
             ))
             .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+        // Multi-hop: relay this lite frame to our other BLE peers (deduped).
+        self.relay_ble_frame(BLE_LITE_BRIDGE, &collection_name, &envelope_bytes);
         Ok(Some(id.to_string()))
+    }
+
+    /// Publish a JSON document through the **node layer** — the same path the
+    /// Android `publishDocumentJni` uses — so the write reaches the ADR-059
+    /// fan-out and is emitted over the bridged transports (BLE/Wi-Fi). The
+    /// `id` field in the JSON, when present, becomes the document id
+    /// (returned).
+    ///
+    /// Use this instead of `put_document` when the write must propagate to
+    /// peers via the bridged radios: `put_document`/`put_node` write straight
+    /// to `storage_backend`, which the fan-out does not observe, so those never
+    /// emit a BLE frame. Needed by the iOS bridge (which drives the poll API
+    /// from Dart and has no JNI `publishDocumentJni`).
+    #[cfg(feature = "sync")]
+    pub fn publish_document(&self, collection: String, json: String) -> Result<String, PeatError> {
+        self.runtime
+            .block_on(publish_document_into_node(&self.node, &collection, &json))
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
     }
 }
 
@@ -9840,7 +10130,8 @@ impl peat_mesh::transport::OutboundSink for JniOutboundSink {
 /// `BleTranslator` in `TransportManager`'s fan-out.
 ///
 /// Kotlin signature:
-/// `external fun subscribeOutboundFramesJni(handle: Long, listener: OutboundFrameListener): Boolean`
+/// `external fun subscribeOutboundFramesJni(handle: Long, listener:
+/// OutboundFrameListener): Boolean`
 ///
 /// The listener receives `onFrame(transportId, collection, bytes)` for
 /// each encoded document the translator produces. Calls fire on the
@@ -10040,7 +10331,8 @@ fn dispatch_outbound_frame(transport_id: &str, collection: &str, bytes: &[u8]) {
 /// JNI: Enable blob transfer on the PeatNode.
 ///
 /// Kotlin signature:
-/// `external fun enableBlobTransferJni(handle: Long, bindAddr: String?): Boolean`
+/// `external fun enableBlobTransferJni(handle: Long, bindAddr: String?):
+/// Boolean`
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_enableBlobTransferJni(
@@ -10077,7 +10369,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_enableBlobTransferJ
 /// JNI: Add a known blob peer.
 ///
 /// Kotlin signature:
-/// `external fun blobAddPeerJni(handle: Long, peerIdHex: String, address: String): Boolean`
+/// `external fun blobAddPeerJni(handle: Long, peerIdHex: String, address:
+/// String): Boolean`
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobAddPeerJni(
@@ -10122,7 +10415,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobAddPeerJni(
 /// JNI: Store bytes as a blob. Returns the content hash as a hex string.
 ///
 /// Kotlin signature:
-/// `external fun blobPutJni(handle: Long, data: ByteArray, contentType: String): String?`
+/// `external fun blobPutJni(handle: Long, data: ByteArray, contentType:
+/// String): String?`
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobPutJni(
@@ -10273,8 +10567,9 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_blobEndpointIdJni(
 
 /// Register native methods for PeatJni class
 ///
-/// This must be called from Kotlin after System.load() to register native methods.
-/// Android's classloader isolation prevents JNI_OnLoad from finding the class.
+/// This must be called from Kotlin after System.load() to register native
+/// methods. Android's classloader isolation prevents JNI_OnLoad from finding
+/// the class.
 ///
 /// Kotlin usage:
 /// ```kotlin
@@ -11200,7 +11495,8 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
             android_log(
                 "JNI_OnLoad: PeatJni class not found (this is OK if loading before class init)",
             );
-            // Class not loaded yet - this is OK, nativeInit will be called later
+            // Class not loaded yet - this is OK, nativeInit will be called
+            // later
         }
     }
 
