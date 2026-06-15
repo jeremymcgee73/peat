@@ -10,7 +10,8 @@
 //   u32 return:           [0]=value(u32)  [1]=status(i8)  [2..4]=error_buf
 //   i8/bool return:       [0]=value(i8)   [1]=status(i8)  [2..4]=error_buf
 //   u64 handle return:    [0]=handle(u64) [1]=status(i8)  [2..4]=error_buf
-//   RustBuffer return:    [0..2]=buf(u64,u64,ptr) [3]=status(i8) [4..6]=error_buf
+//   RustBuffer return:    [0..2]=buf(u64,u64,ptr) [3]=status(i8)
+// [4..6]=error_buf
 //
 // Arg buffer elements per type:
 //   u64 handle / u64 callback:  1 element (.u64)
@@ -118,6 +119,12 @@ unsafe fn ret_u32(e: *mut Elem, v: u32, s: &CallStatus) {
     write_err(e, 1, s);
 }
 
+// i64 return: ret[0]=value(i64), ret[1]=status, ret[2..4]=error
+unsafe fn ret_i64(e: *mut Elem, v: i64, s: &CallStatus) {
+    (*e.add(0)).i64 = v;
+    write_err(e, 1, s);
+}
+
 // i8/bool return: ret[0]=value(i8), ret[1]=status, ret[2..4]=error
 unsafe fn ret_i8(e: *mut Elem, v: i8, s: &CallStatus) {
     (*e.add(0)).i8 = v;
@@ -202,6 +209,18 @@ extern "C" {
         data: RustBuf,
         s: *mut CallStatus,
     ) -> RustBuf;
+    fn uniffi_peat_ffi_fn_method_peatnode_ingest_inbound_lite_frame(
+        h: u64,
+        col: RustBuf,
+        data: RustBuf,
+        s: *mut CallStatus,
+    ) -> RustBuf;
+    fn uniffi_peat_ffi_fn_method_peatnode_publish_document(
+        h: u64,
+        col: RustBuf,
+        json: RustBuf,
+        s: *mut CallStatus,
+    ) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_list_documents(
         h: u64,
         col: RustBuf,
@@ -244,6 +263,46 @@ extern "C" {
         s: *mut CallStatus,
     );
     fn uniffi_peat_ffi_fn_method_peatnode_sync_stats(h: u64, s: *mut CallStatus) -> RustBuf;
+
+    // Shared water-supply Counter (CRDT-over-Automerge-over-BLE)
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_counter_value(h: u64, s: *mut CallStatus) -> i64;
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_counter_increment(
+        h: u64,
+        delta: i64,
+        s: *mut CallStatus,
+    ) -> RustBuf;
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_counter_merge(
+        h: u64,
+        bytes: RustBuf,
+        s: *mut CallStatus,
+    ) -> i64;
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_counter_snapshot(
+        h: u64,
+        s: *mut CallStatus,
+    ) -> RustBuf;
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_kv_put(
+        h: u64,
+        collection: RustBuf,
+        key: RustBuf,
+        value: RustBuf,
+        s: *mut CallStatus,
+    ) -> RustBuf;
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_kv_all(
+        h: u64,
+        collection: RustBuf,
+        s: *mut CallStatus,
+    ) -> RustBuf;
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_kv_merge(
+        h: u64,
+        collection: RustBuf,
+        hex: RustBuf,
+        s: *mut CallStatus,
+    );
+    fn uniffi_peat_ffi_fn_method_peatnode_crdt_kv_snapshot(
+        h: u64,
+        collection: RustBuf,
+        s: *mut CallStatus,
+    ) -> RustBuf;
 
     // SubscriptionHandle methods
     fn uniffi_peat_ffi_fn_method_subscriptionhandle_cancel(h: u64, s: *mut CallStatus);
@@ -327,6 +386,107 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_func_peat_version(
 }
 
 // PeatNode methods -----------------------------------------------------------
+
+// Shared water-supply Counter (CRDT-over-Automerge-over-BLE) -----------------
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_counter_value(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_counter_value((*a.add(0)).u64, &mut s);
+    ret_i64(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_counter_increment(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let h = (*a.add(0)).u64;
+    let delta = (*a.add(1)).i64;
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_counter_increment(h, delta, &mut s);
+    ret_rbuf(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_counter_merge(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let h = (*a.add(0)).u64;
+    let bytes = read_buf(a, 1);
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_counter_merge(h, bytes, &mut s);
+    ret_i64(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_counter_snapshot(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_counter_snapshot((*a.add(0)).u64, &mut s);
+    ret_rbuf(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_kv_put(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_kv_put(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        read_buf(a, 7),
+        &mut s,
+    );
+    ret_rbuf(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_kv_all(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_kv_all((*a.add(0)).u64, read_buf(a, 1), &mut s);
+    ret_rbuf(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_kv_merge(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_crdt_kv_merge(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        &mut s,
+    );
+    ret_void(r, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_crdt_kv_snapshot(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_crdt_kv_snapshot(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        &mut s,
+    );
+    ret_rbuf(r, v, &s);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_all_peer_transport_states(
@@ -495,6 +655,36 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_ingest_inb
 ) {
     let mut s = CallStatus::new();
     let v = uniffi_peat_ffi_fn_method_peatnode_ingest_inbound_frame(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        &mut s,
+    );
+    ret_rbuf(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_ingest_inbound_lite_frame(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_ingest_inbound_lite_frame(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        &mut s,
+    );
+    ret_rbuf(r, v, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_publish_document(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_publish_document(
         (*a.add(0)).u64,
         read_buf(a, 1),
         read_buf(a, 4),
