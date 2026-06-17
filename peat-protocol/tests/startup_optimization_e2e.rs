@@ -141,7 +141,7 @@ async fn test_fast_constructor_is_faster_than_mdns_constructor() {
     for i in 0..3 {
         let start = Instant::now();
         let seed = format!("mdns-timing-test/node-{}", i);
-        let _ = IrohTransport::from_seed_with_discovery_at_addr(&seed, bind_addr)
+        let _ = IrohTransport::from_seed_with_discovery_at_addr(&seed, bind_addr, false)
             .await
             .unwrap();
         mdns_times.push(start.elapsed().as_millis());

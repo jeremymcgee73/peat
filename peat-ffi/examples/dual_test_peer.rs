@@ -56,6 +56,7 @@ fn main() {
             ble_power_profile: Some("balanced".into()),
             transport_preference: None,
             collection_routes_json: None,
+            enable_n0_relay: false,
         }),
     };
 
