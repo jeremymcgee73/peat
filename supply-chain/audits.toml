@@ -2065,6 +2065,12 @@ user-id = 184815 # Kit Plummer (kitplummer)
 start = "2026-02-27"
 end = "2027-03-26"
 
+[[trusted.peat-ffi]]
+criteria = "safe-to-deploy"
+user-id = 184815 # Kit Plummer (kitplummer)
+start = "2026-06-16"
+end = "2027-03-26"
+
 [[trusted.peat-lite]]
 criteria = "safe-to-deploy"
 user-id = 184815 # Kit Plummer (kitplummer)

@@ -19,6 +19,9 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [policy.peat]
 audit-as-crates-io = true
 
+[policy.peat-ffi]
+audit-as-crates-io = true
+
 [policy.peat-protocol]
 audit-as-crates-io = true
 
