@@ -28,7 +28,21 @@ name = "peat-ffi"
 #     test-side Err-branch coverage on getDocumentJni.
 # All additive; no JNI ABI break. peat-atak-plugin and peat-mesh
 # consumers continue to link against 0.2.3+ symbols unchanged.
-version = "0.2.5"
+#
+# 0.2.6 (was 0.2.5): fix the default-feature (`sync`-only) cdylib link.
+# src/dart_ffi.rs unconditionally declared/defined the FFI-buffer bindings
+# for the bluetooth-gated PeatNode methods (poll/start/stop_outbound_frames,
+# ingest_inbound_frame, ingest_inbound_lite_frame, publish_document), whose
+# `#[uniffi::export]` definitions are cfg-gated. Under `sync`-only those
+# definitions vanish but the dart_ffi references remained → dangling symbols
+# that broke strict (macOS/iOS) cdylib links (and `cargo publish`'s
+# default-feature verify). Gate the dart_ffi entries with the matching cfg.
+# Additive/no ABI change for the full `sync,bluetooth,lite-bridge` build that
+# Android/iOS ship. See peat#986. Also moves `ingest_inbound_lite_frame` into
+# its own `lite-bridge`-gated `#[uniffi::export]` block so `sync,bluetooth`
+# without `lite-bridge` compiles (was E0599: the export macro emitted a call to
+# the per-method-cfg'd-out fn). peat-ffi now builds in every feature combo.
+version = "0.2.6"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"

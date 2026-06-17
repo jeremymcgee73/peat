@@ -9947,6 +9947,34 @@ impl PeatNode {
         Ok(Some(id.to_string()))
     }
 
+    /// Publish a JSON document through the **node layer** — the same path the
+    /// Android `publishDocumentJni` uses — so the write reaches the ADR-059
+    /// fan-out and is emitted over the bridged transports (BLE/Wi-Fi). The
+    /// `id` field in the JSON, when present, becomes the document id
+    /// (returned).
+    ///
+    /// Use this instead of `put_document` when the write must propagate to
+    /// peers via the bridged radios: `put_document`/`put_node` write straight
+    /// to `storage_backend`, which the fan-out does not observe, so those never
+    /// emit a BLE frame. Needed by the iOS bridge (which drives the poll API
+    /// from Dart and has no JNI `publishDocumentJni`).
+    #[cfg(feature = "sync")]
+    pub fn publish_document(&self, collection: String, json: String) -> Result<String, PeatError> {
+        self.runtime
+            .block_on(publish_document_into_node(&self.node, &collection, &json))
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
+    }
+}
+
+// `ingest_inbound_lite_frame` lives in its OWN cfg-gated `#[uniffi::export]`
+// block (not the `all(sync, bluetooth)` block above) so that under
+// `sync,bluetooth` WITHOUT `lite-bridge` the whole export — including the
+// generated scaffolding's call to the method — is stripped before the macro
+// runs. With a per-method `#[cfg(lite-bridge)]` inside the broader block, the
+// export macro still emitted a call to the cfg'd-out method (E0599). See peat#986.
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
+#[uniffi::export]
+impl PeatNode {
     /// Ingest an inbound BLE frame that arrived on the universal-Document
     /// (peat-lite / `ble-lite`) codec, as opposed to the typed 0xB6 path in
     /// [`ingest_inbound_frame`]. Decodes via the `CollectionGatedLiteBridge`
@@ -9954,7 +9982,6 @@ impl PeatNode {
     /// to the other transports without looping back to BLE. Used for raw
     /// collections (e.g. the `demo` counter) that the typed translator
     /// declines.
-    #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
     pub fn ingest_inbound_lite_frame(
         &self,
         collection: String,
@@ -9982,24 +10009,6 @@ impl PeatNode {
         // Multi-hop: relay this lite frame to our other BLE peers (deduped).
         self.relay_ble_frame(BLE_LITE_BRIDGE, &collection_name, &envelope_bytes);
         Ok(Some(id.to_string()))
-    }
-
-    /// Publish a JSON document through the **node layer** — the same path the
-    /// Android `publishDocumentJni` uses — so the write reaches the ADR-059
-    /// fan-out and is emitted over the bridged transports (BLE/Wi-Fi). The
-    /// `id` field in the JSON, when present, becomes the document id
-    /// (returned).
-    ///
-    /// Use this instead of `put_document` when the write must propagate to
-    /// peers via the bridged radios: `put_document`/`put_node` write straight
-    /// to `storage_backend`, which the fan-out does not observe, so those never
-    /// emit a BLE frame. Needed by the iOS bridge (which drives the poll API
-    /// from Dart and has no JNI `publishDocumentJni`).
-    #[cfg(feature = "sync")]
-    pub fn publish_document(&self, collection: String, json: String) -> Result<String, PeatError> {
-        self.runtime
-            .block_on(publish_document_into_node(&self.node, &collection, &json))
-            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
     }
 }
 

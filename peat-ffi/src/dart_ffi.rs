@@ -203,18 +203,26 @@ extern "C" {
         s: *mut CallStatus,
     ) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_get_tracks(h: u64, s: *mut CallStatus) -> RustBuf;
+    // BLE-bridge methods: gated to match the `#[uniffi::export]` definitions
+    // (cfg(all(sync, bluetooth)), + lite-bridge for the lite variant). Without
+    // these gates, the declarations reference scaffolding fns that don't exist
+    // under the default `sync`-only feature set → dangling symbols on strict
+    // (macOS/iOS) cdylib links. See peat#986.
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
     fn uniffi_peat_ffi_fn_method_peatnode_ingest_inbound_frame(
         h: u64,
         col: RustBuf,
         data: RustBuf,
         s: *mut CallStatus,
     ) -> RustBuf;
+    #[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
     fn uniffi_peat_ffi_fn_method_peatnode_ingest_inbound_lite_frame(
         h: u64,
         col: RustBuf,
         data: RustBuf,
         s: *mut CallStatus,
     ) -> RustBuf;
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
     fn uniffi_peat_ffi_fn_method_peatnode_publish_document(
         h: u64,
         col: RustBuf,
@@ -233,6 +241,7 @@ extern "C" {
         id: RustBuf,
         s: *mut CallStatus,
     ) -> RustBuf;
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
     fn uniffi_peat_ffi_fn_method_peatnode_poll_outbound_frames(
         h: u64,
         s: *mut CallStatus,
@@ -250,8 +259,10 @@ extern "C" {
     fn uniffi_peat_ffi_fn_method_peatnode_put_node(h: u64, node: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_put_track(h: u64, t: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_request_sync(h: u64, s: *mut CallStatus);
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
     fn uniffi_peat_ffi_fn_method_peatnode_start_outbound_frames(h: u64, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_start_sync(h: u64, s: *mut CallStatus);
+    #[cfg(all(feature = "sync", feature = "bluetooth"))]
     fn uniffi_peat_ffi_fn_method_peatnode_stop_outbound_frames(h: u64, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_stop_sync(h: u64, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_subscribe(h: u64, cb: u64, s: *mut CallStatus) -> u64;
@@ -648,6 +659,7 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_get_tracks
     ret_rbuf(r, v, &s);
 }
 
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_ingest_inbound_frame(
     a: *const Elem,
@@ -663,6 +675,7 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_ingest_inb
     ret_rbuf(r, v, &s);
 }
 
+#[cfg(all(feature = "sync", feature = "bluetooth", feature = "lite-bridge"))]
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_ingest_inbound_lite_frame(
     a: *const Elem,
@@ -678,6 +691,7 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_ingest_inb
     ret_rbuf(r, v, &s);
 }
 
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_publish_document(
     a: *const Elem,
@@ -738,6 +752,7 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_peer_trans
     ret_rbuf(r, v, &s);
 }
 
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_poll_outbound_frames(
     a: *const Elem,
@@ -824,6 +839,7 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_request_sy
     ret_void(r, &s);
 }
 
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_start_outbound_frames(
     a: *const Elem,
@@ -844,6 +860,7 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_start_sync
     ret_void(r, &s);
 }
 
+#[cfg(all(feature = "sync", feature = "bluetooth"))]
 #[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_stop_outbound_frames(
     a: *const Elem,
