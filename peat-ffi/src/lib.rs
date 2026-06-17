@@ -363,6 +363,17 @@ pub struct TransportConfigFFI {
     /// bindings. Collections not listed fall through to PACE/legacy
     /// scoring.
     pub collection_routes_json: Option<String>,
+    /// Enable iroh's n0 hosted public relay pool + DNS discovery at runtime
+    /// (peat-flutter relay toggle). Default `false` keeps the local-only,
+    /// no-phone-home posture (`presets::Empty`). When `true`, the iroh
+    /// endpoint is built with `presets::N0`, routing traffic through n0's
+    /// PUBLIC relay infrastructure (`*.iroh.network`) so internet-connected
+    /// devices can sync without a shared LAN. Opt-in only.
+    ///
+    /// MUST remain the last field: the hand-maintained Dart FFI codec in
+    /// peat-flutter (`peat_ffi.dart`) reads/writes record fields in
+    /// declaration order, and the field was appended there too.
+    pub enable_n0_relay: bool,
 }
 
 /// Configuration for creating a PeatNode
@@ -1567,6 +1578,14 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     // in large-scale deployments (see 384-node hierarchical simulations).
     let seed = format!("{}/{}", config.app_id, config.storage_path);
     let storage_path_for_store = storage_path.clone();
+    // Runtime relay posture (peat-flutter relay toggle): opt into n0's hosted
+    // public relay pool only when the caller asked for it. Defaults to the
+    // local-only posture so unconfigured callers don't phone home.
+    let enable_n0_relay = config
+        .transport
+        .as_ref()
+        .map(|t| t.enable_n0_relay)
+        .unwrap_or(false);
 
     let (store, transport, store_ms, transport_ms) = runtime.block_on(async {
         let store_start = Instant::now();
@@ -1594,7 +1613,9 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
 
         // Create transport WITH mDNS discovery wired into the endpoint
         let transport_future = async {
-            let result = IrohTransport::from_seed_with_discovery_at_addr(&seed, bind_addr).await;
+            let result =
+                IrohTransport::from_seed_with_discovery_at_addr(&seed, bind_addr, enable_n0_relay)
+                    .await;
             (result, transport_start.elapsed().as_millis())
         };
 
@@ -3545,6 +3566,50 @@ mod tests {
         let version = peat_version();
         assert!(!version.is_empty());
         assert!(version.contains('.'));
+    }
+
+    /// `create_node` must honor `TransportConfigFFI.enable_n0_relay` in BOTH
+    /// postures, proving the runtime relay flag flows the whole stack:
+    /// peat-ffi `NodeConfig` -> `IrohTransport::from_seed_with_discovery_at_addr`
+    /// -> `relay_policy_builder` (presets::N0 vs Empty). Both must construct and
+    /// bind a working endpoint. Binding does not require reaching n0, so this
+    /// runs offline; the live relay path is covered by peat-mesh's `#[ignore]`d
+    /// `relay_n0_sync_e2e` and the manual two-device test.
+    #[cfg(feature = "sync")]
+    #[test]
+    fn create_node_honors_enable_n0_relay_in_both_postures() {
+        fn make(suffix: &str, enable_n0_relay: bool) -> Arc<PeatNode> {
+            let storage = std::env::temp_dir().join(format!(
+                "peat-ffi-relay-test-{}-{}",
+                std::process::id(),
+                suffix
+            ));
+            let _ = std::fs::remove_dir_all(&storage);
+            let node = create_node(NodeConfig {
+                app_id: "relay-toggle-ffi-test".to_string(),
+                shared_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: storage.to_string_lossy().into_owned(),
+                transport: Some(TransportConfigFFI {
+                    enable_ble: false,
+                    ble_mesh_id: None,
+                    ble_power_profile: None,
+                    transport_preference: None,
+                    collection_routes_json: None,
+                    enable_n0_relay,
+                }),
+            })
+            .unwrap_or_else(|e| panic!("create_node (relay={enable_n0_relay}) failed: {e:?}"));
+            // Endpoint must be bound either way.
+            assert!(
+                !node.endpoint_addr().is_empty(),
+                "bound endpoint must report an address (relay={enable_n0_relay})"
+            );
+            node
+        }
+
+        let _local = make("off", false);
+        let _relayed = make("on", true);
     }
 
     #[test]
@@ -7626,6 +7691,10 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
             ble_power_profile: power_profile,
             transport_preference: None,
             collection_routes_json: None,
+            // This legacy/convenience entry doesn't expose the relay toggle;
+            // keep the local-only posture. The Dart `create_node` path sets
+            // this from the About-tab toggle.
+            enable_n0_relay: false,
         })
     } else {
         None

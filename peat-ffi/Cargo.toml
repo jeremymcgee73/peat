@@ -42,7 +42,7 @@ name = "peat-ffi"
 # its own `lite-bridge`-gated `#[uniffi::export]` block so `sync,bluetooth`
 # without `lite-bridge` compiles (was E0599: the export macro emitted a call to
 # the per-method-cfg'd-out fn). peat-ffi now builds in every feature combo.
-version = "0.2.6"
+version = "0.2.7"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
