@@ -284,7 +284,7 @@ repository = "https://github.com/defenseunicorns/peat"
 # conflict. rc.31 also carries the internal HierarchyLevel rename
 # (ADR-066 Phase 3) + the iroh rc.0→rc.1 train; both are internal to
 # peat-mesh and require no peat-protocol source change.
-peat-mesh = { version = ">=0.9.0-rc.31, <0.9.1", default-features = false }
+peat-mesh = { version = ">=0.9.0-rc.42, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
