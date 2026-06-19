@@ -418,6 +418,12 @@ pub struct DistributionDocument {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_at: Option<DateTime<Utc>>,
+    /// Collection/topic this distribution is published under (ADR-071).
+    /// A receiver converges this distribution when one of its durable
+    /// subscriptions matches `collection` and it lacks the blob — independent
+    /// of `target_nodes`. `None` = untagged (directed-send only).
+    #[serde(default)]
+    pub collection: Option<String>,
     /// Per-target-node transfer status, keyed by the same short endpoint id
     /// used in `target_nodes`. Receivers append/update their own entry.
     #[serde(default)]
@@ -456,6 +462,13 @@ struct DistributionMetadata {
     status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cancelled_at: Option<DateTime<Utc>>,
+    /// Collection/topic this distribution is published under (ADR-071).
+    /// Interest-driven convergence matches a receiver's durable subscriptions
+    /// against this. `None` = legacy / untagged (no subscription match;
+    /// reached only via directed `target_nodes`). Backward-compatible: older
+    /// documents without the field deserialize to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    collection: Option<String>,
 }
 
 /// Automerge field on the distribution document holding the sender's
@@ -665,6 +678,7 @@ fn distribution_document_from_automerge(
             started_at: metadata.started_at,
             status: metadata.status,
             cancelled_at: metadata.cancelled_at,
+            collection: metadata.collection,
             node_statuses,
         });
     }
@@ -742,6 +756,11 @@ pub struct IrohFileDistribution {
     /// Handle to the receive-side watcher (set by
     /// [`Self::start_receive_watcher`]). Aborted on drop.
     receive_watcher_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Optional interest-driven convergence evaluator (ADR-071). When set, the
+    /// receive watcher delivers a distribution this node *needs* (e.g. a
+    /// subscribed collection) even if it isn't in the sender's `target_nodes`.
+    /// `None` preserves the directed-only (`target_nodes`) behavior.
+    need_evaluator: Option<Arc<dyn NeedEvaluator>>,
 }
 
 #[cfg(feature = "automerge-backend")]
@@ -777,7 +796,17 @@ impl IrohFileDistribution {
             progress_channels,
             watcher_handle: Some(watcher_handle),
             receive_watcher_handle: std::sync::Mutex::new(None),
+            need_evaluator: None,
         }
+    }
+
+    /// Attach an interest-driven convergence evaluator (ADR-071). With one set,
+    /// the receive watcher converges any distribution this node *needs* (e.g. a
+    /// subscribed collection) and lacks, in addition to those it is directly
+    /// targeted for. Call before [`Self::start_receive_watcher`].
+    pub fn with_need_evaluator(mut self, evaluator: Arc<dyn NeedEvaluator>) -> Self {
+        self.need_evaluator = Some(evaluator);
+        self
     }
 
     /// Start the receive-side watcher: a background task that polls
@@ -786,6 +815,12 @@ impl IrohFileDistribution {
     /// `sink`. Distributions this instance originated (present in the
     /// in-memory `distributions` map via `distribute()`) are skipped —
     /// a sender is not its own receiver.
+    ///
+    /// When a [`NeedEvaluator`] is attached via [`Self::with_need_evaluator`],
+    /// the watcher *also* converges any distribution this node needs by
+    /// interest — e.g. a subscribed `collection` — even if it is not in
+    /// `target_nodes` (ADR-071 interest-driven convergence). Without one, only
+    /// the directed `target_nodes` path delivers.
     ///
     /// Idempotent per instance: a second call aborts the prior receive
     /// watcher and starts a fresh one. The task is aborted on drop.
@@ -798,6 +833,7 @@ impl IrohFileDistribution {
         let document_store = Arc::clone(&self.document_store);
         let blob_store = Arc::clone(&self.blob_store);
         let originated = Arc::clone(&self.distributions);
+        let need = self.need_evaluator.clone();
         let handle = tokio::spawn(async move {
             watch_receive_documents(
                 document_store,
@@ -806,6 +842,7 @@ impl IrohFileDistribution {
                 own_short_id,
                 originated,
                 poll_interval,
+                need,
             )
             .await;
         });
@@ -923,6 +960,10 @@ impl IrohFileDistribution {
             started_at: handle.started_at,
             status: "distributing".to_string(),
             cancelled_at: None,
+            // TODO(ADR-071 Phase 1 follow-on): plumb the collection/topic from
+            // the send API so subscribers can converge by interest. Untagged
+            // for now — distributions still reach receivers via target_nodes.
+            collection: None,
         };
         let metadata_bytes = serde_json::to_vec(&metadata)
             .map_err(|e| anyhow::anyhow!("Failed to serialize metadata: {}", e))?;
@@ -1111,6 +1152,79 @@ async fn watch_distribution_documents(
 // (restart idempotency). Everything orchestration-shaped (targeting,
 // dedup, fetch, retry, status writes, the test fault seam) lives in
 // this module so every consumer gets identical, tested behavior.
+
+/// Receiver-side "do I need this distribution?" evaluation (ADR-071).
+///
+/// Interest-driven convergence: a node converges a distribution when it *needs*
+/// the data and lacks it — independent of any sender-chosen `target_nodes`.
+/// Need is sender-ignorant and receiver-evaluated, and the predicate is
+/// pluggable: collection subscription is the first input, with version-gap and
+/// capability advertisement to follow on the same decision. The evaluator
+/// answers only the "need" half; "lacks it" remains the `already_delivered`
+/// gate, and explicit directed sends still flow via `target_nodes`.
+#[cfg(feature = "automerge-backend")]
+#[async_trait::async_trait]
+pub trait NeedEvaluator: Send + Sync {
+    /// Return `true` if this node needs `doc` by interest, regardless of
+    /// whether it appears in `doc.target_nodes`.
+    async fn needs(&self, doc: &DistributionDocument) -> bool;
+}
+
+/// Subscription-backed [`NeedEvaluator`]: needs a distribution when its
+/// `collection` is one this node holds a durable subscription to. The interest
+/// set is shared (`Arc<RwLock<…>>`) so the consumer — the gRPC sidecar — can
+/// register/deregister subscriptions at runtime and the watcher sees it live.
+#[cfg(feature = "automerge-backend")]
+#[derive(Clone, Default)]
+pub struct CollectionSubscriptionNeed {
+    subscribed: Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
+}
+
+#[cfg(feature = "automerge-backend")]
+impl CollectionSubscriptionNeed {
+    /// Build over a shared subscription set the consumer also holds and mutates.
+    pub fn new(subscribed: Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>) -> Self {
+        Self { subscribed }
+    }
+
+    /// The shared subscription set, so the consumer can register interest.
+    pub fn subscriptions(&self) -> Arc<tokio::sync::RwLock<std::collections::HashSet<String>>> {
+        Arc::clone(&self.subscribed)
+    }
+}
+
+#[cfg(feature = "automerge-backend")]
+#[async_trait::async_trait]
+impl NeedEvaluator for CollectionSubscriptionNeed {
+    async fn needs(&self, doc: &DistributionDocument) -> bool {
+        match &doc.collection {
+            Some(collection) => self.subscribed.read().await.contains(collection),
+            None => false,
+        }
+    }
+}
+
+/// Pure receive-gate decision (ADR-071): deliver when this node is an explicit
+/// directed target (`target_nodes`) OR it needs the data by interest. Kept pure
+/// so the convergence policy is unit-tested without a live mesh.
+#[cfg(feature = "automerge-backend")]
+fn should_deliver(is_directed_target: bool, needed_by_interest: bool) -> bool {
+    is_directed_target || needed_by_interest
+}
+
+/// Whether a non-deliverable distribution can be marked permanently `handled`
+/// (and so skipped by the peat#980 key-only scan) versus left re-evaluable.
+///
+/// It can flip to deliverable later only via a runtime subscription change,
+/// which is possible only when both (a) the doc is tagged with a `collection`
+/// and (b) a [`NeedEvaluator`] is attached to consult subscriptions against.
+/// Absent either, the interest answer is fixed for the life of the watcher, so
+/// the doc is safe to skip permanently. (ADR-071; without this guard a tagged
+/// doc on a node with no evaluator would be re-decoded every sweep.)
+#[cfg(feature = "automerge-backend")]
+fn can_skip_permanently(has_collection: bool, has_evaluator: bool) -> bool {
+    !(has_collection && has_evaluator)
+}
 
 /// Where a received blob's bytes go, and whether a prior delivery
 /// already satisfied a distribution. The receive watcher
@@ -1349,6 +1463,11 @@ fn should_defer_fetch(prior_attempts: u32, completed_holder_exists: bool) -> boo
 /// (so the receive path skips them — a sender is not its own
 /// receiver). For [`IrohFileDistribution`] this is the in-memory
 /// `distributions` map populated by `distribute()`.
+// Internal receive-sweep orchestration; the parameter list is the set of
+// per-sweep collaborators (stores, sink, identity, dedup/attempt state, and the
+// optional need evaluator). Bundling them into a struct would obscure more than
+// it clarifies for a single private call site.
+#[allow(clippy::too_many_arguments)]
 #[cfg(feature = "automerge-backend")]
 async fn receive_sweep_once(
     document_store: &Arc<AutomergeStore>,
@@ -1358,6 +1477,7 @@ async fn receive_sweep_once(
     originated: &DistributionsMap,
     handled: &mut std::collections::HashSet<String>,
     attempt_counts: &mut std::collections::HashMap<String, u32>,
+    need: Option<&Arc<dyn NeedEvaluator>>,
 ) -> Result<()> {
     // Key-only scan: no Automerge decode for IDs already in `handled`.
     // Docs are loaded individually for the unhandled subset only (peat#980).
@@ -1419,11 +1539,26 @@ async fn receive_sweep_once(
             "receive: seen distribution doc"
         );
 
-        // Targeting check: my short endpoint id must be in the
-        // sender's resolved target_nodes list.
-        if !doc.target_nodes.contains(&own_short_id.to_string()) {
-            debug!(distribution_id = %doc.distribution_id, "receive: not a target, skipping");
-            handled.insert(doc_id);
+        // Delivery decision (ADR-071): deliver if this node is an explicit
+        // directed target OR it needs the data by interest (subscription now;
+        // version-gap / capability later). The "lacks it" half is the
+        // `already_delivered` gate below.
+        let is_directed_target = doc.target_nodes.contains(&own_short_id.to_string());
+        let needed_by_interest = match need {
+            Some(evaluator) => evaluator.needs(&doc).await,
+            None => false,
+        };
+        if !should_deliver(is_directed_target, needed_by_interest) {
+            debug!(
+                distribution_id = %doc.distribution_id,
+                collection = ?doc.collection,
+                "receive: not a directed target and not needed by interest, skipping"
+            );
+            // Mark handled (permanent skip, preserving the peat#980 key-only
+            // scan) unless this doc could still flip to deliverable later.
+            if can_skip_permanently(doc.collection.is_some(), need.is_some()) {
+                handled.insert(doc_id);
+            }
             continue;
         }
 
@@ -1618,6 +1753,7 @@ async fn watch_receive_documents(
     own_short_id: String,
     originated: DistributionsMap,
     poll_interval: Duration,
+    need: Option<Arc<dyn NeedEvaluator>>,
 ) {
     info!(
         endpoint = %own_short_id,
@@ -1646,6 +1782,7 @@ async fn watch_receive_documents(
             &originated,
             &mut handled,
             &mut attempt_counts,
+            need.as_ref(),
         )
         .await
         {
@@ -1828,6 +1965,7 @@ impl FileDistribution for IrohFileDistribution {
                         started_at: legacy.started_at,
                         status: "cancelled".to_string(),
                         cancelled_at: Some(Utc::now()),
+                        collection: legacy.collection,
                     };
                     // Pre-serialize each receiver's NodeTransferStatus
                     // here so the closure below only does infallible
@@ -2027,12 +2165,14 @@ mod tests {
             started_at: Utc::now(),
             status: "distributing".to_string(),
             cancelled_at: None,
+            collection: Some("imagery".to_string()),
             node_statuses,
         };
 
         let bytes = serde_json::to_vec(&doc).expect("serialize");
         let restored: DistributionDocument = serde_json::from_slice(&bytes).expect("deserialize");
 
+        assert_eq!(restored.collection.as_deref(), Some("imagery"));
         assert_eq!(restored.distribution_id, "dist-1");
         assert_eq!(restored.target_nodes, vec!["node-a".to_string()]);
         assert_eq!(restored.node_statuses.len(), 1);
@@ -2062,6 +2202,7 @@ mod tests {
             started_at: Utc::now(),
             status: "distributing".to_string(),
             cancelled_at: None,
+            collection: None,
             node_statuses: HashMap::new(),
         };
         let mut value = serde_json::to_value(&current).unwrap();
@@ -2137,5 +2278,212 @@ mod tests {
         // pulls from it and is never stranded.
         assert!(!should_defer_fetch(RECEIVE_FETCH_GRACE_ATTEMPTS, true));
         assert!(!should_defer_fetch(RECEIVE_FETCH_GRACE_ATTEMPTS + 10, true));
+    }
+
+    // ---- ADR-071: interest-driven convergence ----
+
+    #[cfg(feature = "automerge-backend")]
+    fn doc_with(collection: Option<&str>, target_nodes: Vec<&str>) -> DistributionDocument {
+        DistributionDocument {
+            distribution_id: "d-conv".to_string(),
+            blob_hash: "abc".to_string(),
+            blob_size: 1,
+            blob_metadata: BlobMetadata::default(),
+            scope: DistributionScope::AllNodes,
+            priority: TransferPriority::Normal,
+            target_nodes: target_nodes.into_iter().map(String::from).collect(),
+            started_at: Utc::now(),
+            status: "distributing".to_string(),
+            cancelled_at: None,
+            collection: collection.map(String::from),
+            node_statuses: HashMap::new(),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "automerge-backend")]
+    fn should_deliver_directed_or_needed() {
+        // Directed target (membership/explicit) — delivers regardless of need.
+        assert!(should_deliver(true, false));
+        // Needed by interest though NOT a directed target — the convergence
+        // case this ADR adds.
+        assert!(should_deliver(false, true));
+        // Both true — delivers.
+        assert!(should_deliver(true, true));
+        // Neither — skip.
+        assert!(!should_deliver(false, false));
+    }
+
+    #[test]
+    #[cfg(feature = "automerge-backend")]
+    fn can_skip_permanently_only_keeps_re_evaluable_tagged_docs() {
+        // Tagged doc + evaluator attached: a later subscription could converge
+        // it, so it must stay re-evaluable (NOT permanently handled).
+        assert!(!can_skip_permanently(true, true));
+        // Tagged doc but NO evaluator: the interest answer is fixed at false
+        // for the watcher's life, so it must be marked handled — otherwise it
+        // is re-decoded every sweep (the peat#980 regression). This is the
+        // default path for every consumer that hasn't opted in.
+        assert!(can_skip_permanently(true, false));
+        // Untagged docs can only ever arrive via directed target_nodes, so
+        // they are always safe to skip permanently here.
+        assert!(can_skip_permanently(false, true));
+        assert!(can_skip_permanently(false, false));
+    }
+
+    /// End-to-end of the receive-side convergence wiring (ADR-071): drive
+    /// `receive_sweep_once` with a `NeedEvaluator` attached over a tagged doc
+    /// whose `target_nodes` does NOT include us, and assert (a) it is delivered
+    /// once we are subscribed, and (b) before subscribing it is NOT permanently
+    /// handled, so the later subscription converges it. Single-process — the
+    /// blob is held locally so `fetch_blob` resolves without a network hop.
+    #[tokio::test]
+    #[cfg(feature = "automerge-backend")]
+    async fn interest_subscription_converges_untargeted_distribution() {
+        use crate::storage::blob_traits::{BlobMetadata, BlobStore};
+        use automerge::transaction::Transactable;
+        use automerge::{Automerge, ScalarValue, ROOT};
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingSink {
+            delivered: Arc<StdMutex<Vec<String>>>,
+        }
+        #[async_trait::async_trait]
+        impl ReceiveSink for RecordingSink {
+            async fn already_delivered(&self, _doc: &DistributionDocument) -> bool {
+                false
+            }
+            async fn deliver(
+                &self,
+                doc: &DistributionDocument,
+                _blob_path: &std::path::Path,
+            ) -> Result<()> {
+                self.delivered
+                    .lock()
+                    .unwrap()
+                    .push(doc.distribution_id.clone());
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let blob_store =
+            NetworkedIrohBlobStore::bind(tmp.path().join("blobs"), "127.0.0.1:0".parse().unwrap())
+                .await
+                .expect("bind blob store");
+        let doc_store =
+            Arc::new(AutomergeStore::open(tmp.path().join("docs")).expect("open store"));
+
+        // Hold the blob locally so the receive path's fetch resolves without a
+        // network hop (keeps this a deterministic single-process test).
+        let token = blob_store
+            .create_blob_from_bytes(b"interest-payload", BlobMetadata::default())
+            .await
+            .expect("create local blob");
+
+        // Inject a TAGGED distribution doc with EMPTY target_nodes: we are not a
+        // directed target — only interest can converge it.
+        let dist_id = "d-interest";
+        let metadata = DistributionMetadata {
+            distribution_id: dist_id.to_string(),
+            blob_hash: token.hash.as_hex().to_string(),
+            blob_size: token.size_bytes,
+            blob_metadata: BlobMetadata::default(),
+            scope: DistributionScope::AllNodes,
+            priority: TransferPriority::Normal,
+            target_nodes: vec![],
+            started_at: Utc::now(),
+            status: "distributing".to_string(),
+            cancelled_at: None,
+            collection: Some("imagery".to_string()),
+        };
+        let bytes = serde_json::to_vec(&metadata).unwrap();
+        let mut am = Automerge::new();
+        am.transact::<_, _, automerge::AutomergeError>(|tx| {
+            tx.put(ROOT, METADATA_FIELD, ScalarValue::Bytes(bytes))?;
+            Ok(())
+        })
+        .unwrap();
+        doc_store
+            .put(&distribution_doc_key(dist_id), &am)
+            .expect("inject tagged distribution doc");
+
+        let originated: DistributionsMap = Arc::new(RwLock::new(HashMap::new()));
+        let mut handled = std::collections::HashSet::new();
+        let mut attempts = std::collections::HashMap::new();
+
+        let subs = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+        let need: Arc<dyn NeedEvaluator> =
+            Arc::new(CollectionSubscriptionNeed::new(Arc::clone(&subs)));
+        let delivered = Arc::new(StdMutex::new(Vec::new()));
+        let sink: Arc<dyn ReceiveSink> = Arc::new(RecordingSink {
+            delivered: Arc::clone(&delivered),
+        });
+
+        // Sweep 1: NOT yet subscribed → not delivered, and crucially NOT
+        // permanently handled (a runtime subscription could still converge it).
+        receive_sweep_once(
+            &doc_store,
+            &blob_store,
+            &sink,
+            "me-short",
+            &originated,
+            &mut handled,
+            &mut attempts,
+            Some(&need),
+        )
+        .await
+        .expect("sweep 1");
+        assert!(
+            delivered.lock().unwrap().is_empty(),
+            "unsubscribed receiver must not converge the distribution"
+        );
+        assert!(
+            !handled.contains(dist_id),
+            "a tagged-but-unsubscribed doc with an evaluator attached must stay \
+             re-evaluable (not permanently handled) so a later subscription converges it"
+        );
+
+        // Subscribe, then sweep again over the SAME handled set: now it converges.
+        subs.write().await.insert("imagery".to_string());
+        receive_sweep_once(
+            &doc_store,
+            &blob_store,
+            &sink,
+            "me-short",
+            &originated,
+            &mut handled,
+            &mut attempts,
+            Some(&need),
+        )
+        .await
+        .expect("sweep 2");
+        assert_eq!(
+            delivered.lock().unwrap().as_slice(),
+            &[dist_id.to_string()],
+            "subscribed receiver must converge the untargeted, interest-matched distribution"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "automerge-backend")]
+    async fn subscription_need_matches_subscribed_collection() {
+        let subs = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+        let need = CollectionSubscriptionNeed::new(Arc::clone(&subs));
+
+        // Not subscribed to anything yet → no need, even for a tagged doc.
+        assert!(!need.needs(&doc_with(Some("imagery"), vec![])).await);
+
+        // Subscribe to "imagery" → now needs an imagery distribution we are
+        // NOT targeted in (the whole point: interest, not membership).
+        subs.write().await.insert("imagery".to_string());
+        assert!(need.needs(&doc_with(Some("imagery"), vec![])).await);
+
+        // A different collection we didn't subscribe to → no need.
+        assert!(!need.needs(&doc_with(Some("telemetry"), vec![])).await);
+
+        // An untagged distribution is never matched by subscription (it can
+        // only reach us via directed target_nodes).
+        assert!(!need.needs(&doc_with(None, vec!["me"])).await);
     }
 }
