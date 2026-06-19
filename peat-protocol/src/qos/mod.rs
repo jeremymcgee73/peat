@@ -162,25 +162,25 @@ impl From<MessagePriority> for QoSClass {
     }
 }
 
-impl From<QoSClass> for TransferPriority {
-    fn from(qos: QoSClass) -> Self {
-        match qos {
-            QoSClass::Critical => TransferPriority::Critical,
-            QoSClass::High => TransferPriority::High,
-            QoSClass::Normal => TransferPriority::Normal,
-            QoSClass::Low | QoSClass::Bulk => TransferPriority::Low,
-        }
+// Free functions rather than `From` impls: `TransferPriority` now lives in
+// peat-mesh (defenseunicorns/peat#992), so a cross-crate `From` between it and
+// the local `QoSClass` would violate the orphan rule. Used only at the
+// QoS↔distribution boundary.
+pub fn transfer_priority_from_qos(qos: QoSClass) -> TransferPriority {
+    match qos {
+        QoSClass::Critical => TransferPriority::Critical,
+        QoSClass::High => TransferPriority::High,
+        QoSClass::Normal => TransferPriority::Normal,
+        QoSClass::Low | QoSClass::Bulk => TransferPriority::Low,
     }
 }
 
-impl From<TransferPriority> for QoSClass {
-    fn from(priority: TransferPriority) -> Self {
-        match priority {
-            TransferPriority::Critical => QoSClass::Critical,
-            TransferPriority::High => QoSClass::High,
-            TransferPriority::Normal => QoSClass::Normal,
-            TransferPriority::Low => QoSClass::Low,
-        }
+pub fn qos_from_transfer_priority(priority: TransferPriority) -> QoSClass {
+    match priority {
+        TransferPriority::Critical => QoSClass::Critical,
+        TransferPriority::High => QoSClass::High,
+        TransferPriority::Normal => QoSClass::Normal,
+        TransferPriority::Low => QoSClass::Low,
     }
 }
 
@@ -217,30 +217,42 @@ mod tests {
     fn test_transfer_priority_conversion() {
         // QoSClass -> TransferPriority
         assert_eq!(
-            TransferPriority::from(QoSClass::Critical),
+            transfer_priority_from_qos(QoSClass::Critical),
             TransferPriority::Critical
         );
         assert_eq!(
-            TransferPriority::from(QoSClass::High),
+            transfer_priority_from_qos(QoSClass::High),
             TransferPriority::High
         );
         assert_eq!(
-            TransferPriority::from(QoSClass::Normal),
+            transfer_priority_from_qos(QoSClass::Normal),
             TransferPriority::Normal
         );
-        assert_eq!(TransferPriority::from(QoSClass::Low), TransferPriority::Low);
         assert_eq!(
-            TransferPriority::from(QoSClass::Bulk),
+            transfer_priority_from_qos(QoSClass::Low),
+            TransferPriority::Low
+        );
+        assert_eq!(
+            transfer_priority_from_qos(QoSClass::Bulk),
             TransferPriority::Low
         );
 
         // TransferPriority -> QoSClass
         assert_eq!(
-            QoSClass::from(TransferPriority::Critical),
+            qos_from_transfer_priority(TransferPriority::Critical),
             QoSClass::Critical
         );
-        assert_eq!(QoSClass::from(TransferPriority::High), QoSClass::High);
-        assert_eq!(QoSClass::from(TransferPriority::Normal), QoSClass::Normal);
-        assert_eq!(QoSClass::from(TransferPriority::Low), QoSClass::Low);
+        assert_eq!(
+            qos_from_transfer_priority(TransferPriority::High),
+            QoSClass::High
+        );
+        assert_eq!(
+            qos_from_transfer_priority(TransferPriority::Normal),
+            QoSClass::Normal
+        );
+        assert_eq!(
+            qos_from_transfer_priority(TransferPriority::Low),
+            QoSClass::Low
+        );
     }
 }
