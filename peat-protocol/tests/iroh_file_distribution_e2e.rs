@@ -728,6 +728,7 @@ async fn test_legacy_data_field_read_compat() {
         started_at: Utc::now(),
         status: "distributing".to_string(),
         cancelled_at: None,
+        collection: None,
         node_statuses: legacy_node_statuses,
     };
     let legacy_bytes = serde_json::to_vec(&legacy_doc).expect("serialize legacy");
@@ -815,6 +816,7 @@ async fn test_cancel_legacy_doc_preserves_node_statuses() {
         started_at: Utc::now(),
         status: "distributing".to_string(),
         cancelled_at: None,
+        collection: None,
         node_statuses: ns,
     };
     let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
@@ -1064,6 +1066,7 @@ async fn test_legacy_doc_with_rc9_receiver_write_is_visible() {
         started_at: Utc::now(),
         status: "distributing".to_string(),
         cancelled_at: None,
+        collection: None,
         node_statuses: HashMap::new(),
     };
     let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
