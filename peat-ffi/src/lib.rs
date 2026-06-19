@@ -1741,6 +1741,32 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     // in large-scale deployments (see 384-node hierarchical simulations).
     let seed = format!("{}/{}", config.app_id, config.storage_path);
     let storage_path_for_store = storage_path.clone();
+
+    // Stable per-device logical node_id for the canonical formation identity
+    // (the storage instance dir is unique + stable per install). Formation
+    // peers reconstruct this endpoint's iroh EndpointId from
+    // (formation_secret, node_id), so it must be stable across restarts.
+    let iroh_node_id = std::path::Path::new(&config.storage_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.app_id.clone());
+    // Raw formation secret = base64-decoded shared key (matches peat-mesh /
+    // peat-node). Empty/invalid → fall back to the legacy seed identity.
+    let formation_secret: Option<Vec<u8>> = if config.shared_key.trim().is_empty() {
+        None
+    } else {
+        use base64::Engine as _;
+        match base64::engine::general_purpose::STANDARD.decode(config.shared_key.trim()) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                android_log(&format!(
+                    "[identity] shared_key not valid base64 ({e}); using legacy seed identity"
+                ));
+                None
+            }
+        }
+    };
     // Runtime relay posture (peat-flutter relay toggle): opt into n0's hosted
     // public relay pool only when the caller asked for it. Defaults to the
     // local-only posture so unconfigured callers don't phone home.
@@ -1774,11 +1800,33 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
             (Err(last_err.unwrap()), store_start.elapsed().as_millis())
         });
 
-        // Create transport WITH mDNS discovery wired into the endpoint
+        // Create transport WITH mDNS discovery wired into the endpoint.
+        // With a formation secret present, derive the iroh identity the
+        // canonical way (HKDF(formation_secret, "iroh:" + node_id)) so the
+        // endpoint interops with peat-mesh-node / peat-node and is advertised
+        // on `_peat` with a concrete address (works on Android). Otherwise fall
+        // back to the legacy per-device seed identity.
         let transport_future = async {
-            let result =
-                IrohTransport::from_seed_with_discovery_at_addr(&seed, bind_addr, enable_n0_relay)
-                    .await;
+            let result = match formation_secret.as_deref() {
+                Some(secret) => {
+                    IrohTransport::from_formation_with_discovery_at_addr(
+                        secret,
+                        &iroh_node_id,
+                        &config.app_id,
+                        bind_addr,
+                        enable_n0_relay,
+                    )
+                    .await
+                }
+                None => {
+                    IrohTransport::from_seed_with_discovery_at_addr(
+                        &seed,
+                        bind_addr,
+                        enable_n0_relay,
+                    )
+                    .await
+                }
+            };
             (result, transport_start.elapsed().as_millis())
         };
 

@@ -321,3 +321,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Testing
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+
+# Local peat-mesh carrying the Android/_peat formation-identity discovery fix
+# (branch fix/android-mdns-discovery). Drop once released to crates.io.
+[patch.crates-io]
+peat-mesh = { path = "../peat-mesh" }
