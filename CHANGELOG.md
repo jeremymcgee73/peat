@@ -14,6 +14,33 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.26] - 2026-06-19
+
+### Changed — `peat-protocol`
+
+- **Distribution / file-transfer implementation relocated to peat-mesh**
+  (#993, peat#992). `peat-protocol::storage::{file_distribution,
+  model_distribution}` now re-export from `peat_mesh::storage::…` — peat-mesh is
+  the canonical iroh consumer (ADR-060 §5), so the transport-specific impl no
+  longer lives in the protocol layer. Public surface unchanged. Requires
+  peat-mesh rc.43. (peat-protocol's direct `iroh` dep is not yet dropped —
+  `network`/`transport`/`mesh_sync_transport` still use it.)
+
+### Added — `peat-protocol`
+
+- **ADR-071: subscription-based convergence seam** (#991). Receiver-evaluated,
+  sender-ignorant "need" (the `NeedEvaluator` abstraction, `collection` on the
+  distribution document, the `should_deliver`/`can_skip_permanently` gate),
+  opt-in via `IrohFileDistribution::with_need_evaluator` (default preserves
+  directed `target_nodes` delivery).
+
+### Added — `peat-ffi`
+
+- BLE-relay sync surface: CRDT-KV + Automerge counter + node-layer publish
+  (#983), runtime n0-relay toggle on `TransportConfigFFI` (#989), and
+  build/packaging fixes (#985, #987, #988). Workspace `peat-mesh` floor raised
+  to rc.42 (#990).
+
 ## [0.9.0-rc.24] - 2026-06-07
 
 **Proto package namespace `cap.*` → `peat.*` ([ADR-069](docs/adr/069-proto-package-namespace-peat.md), [peat#972](https://github.com/defenseunicorns/peat/issues/972)).** All 20 schema protos move from `package cap.<domain>.v1;` (a fossil of the project's original academic name, Capability Aggregation Protocol) to `package peat.<domain>.v1;`, matching the project name and the existing `peat.sidecar.v1` service namespace. The `peat-schema` Rust module tree is flattened, so the canonical path is `peat_schema::<domain>::v1::<Type>` (the pre-existing flat re-export means consumer imports are **unchanged**). **Breaking** only at the descriptor / reflection / fully-qualified-name layer (`cap.node.v1.Node` → `peat.node.v1.Node`) — affects buf, grpcurl reflection, and any FQN-keyed registry. **Not** breaking: proto3 binary wire, persisted Automerge/postcard documents (the package is not encoded in messages), gRPC method paths (these protos define messages only), or proto3 JSON keys. Pre-1.0 clean break, consistent with the ADR-066/068 precedent. The `spec/proto/` reference tree + `draft-peat-protocol-*.md` update is a deferred spec-doc follow-up.

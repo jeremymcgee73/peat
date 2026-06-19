@@ -104,7 +104,7 @@ uniffi = { version = "0.31", features = ["cli", "tokio"] }
 jni = "0.21"
 
 # Peat crates - no ditto-backend for Android cross-compilation
-peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.25", default-features = false }
+peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.26", default-features = false }
 # peat-mesh direct for blob storage (ADR-060). Pulls NetworkedIrohBlobStore
 # which we use behind the peat_mesh::storage::BlobStore trait.
 peat-mesh = { workspace = true, optional = true }
