@@ -117,8 +117,10 @@ bluetooth = ["peat-btle", "peat-mesh/bluetooth"]
 # Opt-in to n0's hosted relay pool and DNS pkarr discovery (issue #833).
 # Off by default: tactical/edge builds must not phone home through n0
 # infrastructure. Turn on only for environments that explicitly want
-# n0-hosted NAT traversal and global discovery.
-relay-n0-hosted = []
+# n0-hosted NAT traversal and global discovery. Forwards to peat-mesh, which
+# owns the IrohTransport endpoint construction (presets::Empty vs presets::N0)
+# after the ADR-062 relocation — without this forward the flag is a no-op.
+relay-n0-hosted = ["peat-mesh/relay-n0-hosted"]
 
 [dev-dependencies]
 proptest = { workspace = true }
