@@ -25,7 +25,12 @@ group = "com.defenseunicorns"
 // canonically). peat-mesh#145 was the first consumer to take this
 // path. peat-atak-plugin can migrate at its own pace; classpath
 // precedence keeps both copies working until then.
-version = "0.1.2"
+//
+// 0.1.3 (was 0.1.2): additive — non-blocking `connect_peer_nowait`
+// (fire-and-forget connect for UI callers that must not freeze on the
+// dial) plus the opt-in `relay-n0-hosted` feature passthrough. No JNI
+// ABI break; existing consumers link unchanged. See peat#995.
+version = "0.1.3"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"

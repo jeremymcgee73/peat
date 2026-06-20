@@ -14,6 +14,33 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.27] - 2026-06-20
+
+### Fixed — `peat-protocol`
+
+- **`relay-n0-hosted` feature now forwards to `peat-mesh`** (#995). After the
+  ADR-062 relocation moved `IrohTransport` endpoint construction (`presets::Empty`
+  vs `presets::N0`) into peat-mesh, `peat-protocol`'s `relay-n0-hosted` feature
+  was left an orphaned no-op (`= []`) — enabling it had no effect on the relay
+  posture. It now forwards to `peat-mesh/relay-n0-hosted`, so the documented
+  "flips every `IrohTransport` constructor to the n0-hosted preset" behavior
+  takes effect again. Still OFF by default (tactical/edge builds must not phone
+  home through n0 infrastructure).
+
+### Added — `peat-ffi`
+
+- **Non-blocking `PeatNode::connect_peer_nowait`** (#995) — a fire-and-forget
+  variant of `connect_peer` that spawns the dial + formation handshake + sync
+  trigger on the runtime and returns immediately, so UI consumers don't freeze
+  on the synchronous FFI call for the full dial duration. Background failures
+  are surfaced via `tracing` on every platform. Ships in the Maven AAR 0.1.3 cut.
+- **`relay-n0-hosted` feature passthrough** (#995) — forwards to the
+  `peat-mesh`/`peat-protocol` feature of the same name. OFF by default.
+
+### Pinned
+
+- `peat-mesh` `>=0.9.0-rc.43, <0.9.1` (unchanged from rc.26).
+
 ## [0.9.0-rc.26] - 2026-06-19
 
 ### Changed — `peat-protocol`
