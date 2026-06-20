@@ -165,6 +165,11 @@ extern "C" {
         s: *mut CallStatus,
     ) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_connect_peer(h: u64, addr: RustBuf, s: *mut CallStatus);
+    fn uniffi_peat_ffi_fn_method_peatnode_connect_peer_nowait(
+        h: u64,
+        addr: RustBuf,
+        s: *mut CallStatus,
+    );
     fn uniffi_peat_ffi_fn_method_peatnode_connected_peers(h: u64, s: *mut CallStatus) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_delete_document(
         h: u64,
@@ -516,6 +521,16 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_connect_pe
 ) {
     let mut s = CallStatus::new();
     uniffi_peat_ffi_fn_method_peatnode_connect_peer((*a.add(0)).u64, read_buf(a, 1), &mut s);
+    ret_void(r, &s);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_connect_peer_nowait(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_connect_peer_nowait((*a.add(0)).u64, read_buf(a, 1), &mut s);
     ret_void(r, &s);
 }
 

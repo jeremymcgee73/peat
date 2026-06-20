@@ -800,6 +800,77 @@ pub struct PeatNode {
     crdt_kv: crdt_kv::CrdtKvDocs,
 }
 
+/// Shared connect → formation-handshake → sync-trigger pipeline backing both
+/// [`PeatNode::connect_peer`] (blocking) and [`PeatNode::connect_peer_nowait`]
+/// (fire-and-forget).
+///
+/// Resolves once the dial and optional formation handshake complete: on success
+/// the peer is emitted as Connected and a delayed document-sync sweep is
+/// spawned. The error is returned to the caller, which decides whether to
+/// propagate it (blocking variant) or log-and-drop it (fire-and-forget
+/// variant). Keeping the body here means the two entry points cannot drift.
+#[cfg(feature = "sync")]
+async fn connect_peer_inner(
+    iroh_transport: &IrohTransport,
+    sync_backend: &AutomergeIrohBackend,
+    storage_backend: &AutomergeBackend,
+    peat_peer: PeatPeerInfo,
+) -> Result<(), PeatError> {
+    let conn_opt = iroh_transport
+        .connect_peer(&peat_peer)
+        .await
+        .map_err(|e| PeatError::ConnectionError { msg: e.to_string() })?;
+
+    // None: no new connection — the accept path is handling it.
+    let Some(conn) = conn_opt else {
+        return Ok(());
+    };
+    let peer_id = conn.remote_id();
+
+    let Some(formation_key) = sync_backend.formation_key() else {
+        // No formation key — emit Connected without handshake (backward compat).
+        iroh_transport.emit_peer_connected(peer_id);
+        return Ok(());
+    };
+
+    use peat_protocol::network::perform_initiator_handshake;
+    if let Err(e) = perform_initiator_handshake(&conn, &formation_key).await {
+        conn.close(1u32.into(), b"authentication failed");
+        iroh_transport.disconnect(&peer_id).ok();
+        return Err(PeatError::ConnectionError {
+            msg: format!("Formation handshake failed: {}", e),
+        });
+    }
+
+    // Emit Connected to trigger immediate sync handler spawning.
+    iroh_transport.emit_peer_connected(peer_id);
+
+    // Explicitly trigger document sync with the new peer. The event-based sync
+    // handler spawner should also handle this, but we trigger directly to
+    // ensure documents flow.
+    if let Some(coordinator) = storage_backend.sync_coordinator() {
+        let coord = Arc::clone(coordinator);
+        tokio::spawn(async move {
+            // Brief delay for the connection to stabilize.
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            match coord.sync_all_documents_with_peer(peer_id).await {
+                Ok(()) => {
+                    tracing::debug!(peer = ?peer_id, "sync_all_documents_with_peer succeeded");
+                    #[cfg(target_os = "android")]
+                    android_log("sync_all_documents_with_peer: SUCCESS");
+                }
+                Err(e) => {
+                    tracing::warn!(peer = ?peer_id, error = %e, "sync_all_documents_with_peer failed");
+                    #[cfg(target_os = "android")]
+                    android_log(&format!("sync_all_documents_with_peer: FAILED - {}", e));
+                }
+            }
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg(feature = "sync")]
 #[uniffi::export]
 impl PeatNode {
@@ -1129,73 +1200,48 @@ impl PeatNode {
         };
 
         let _guard = self.runtime.enter();
+        self.runtime.block_on(connect_peer_inner(
+            &self.iroh_transport,
+            &self.sync_backend,
+            &self.storage_backend,
+            peat_peer,
+        ))
+    }
 
-        self.runtime.block_on(async {
-            let conn_opt = self
-                .iroh_transport
-                .connect_peer(&peat_peer)
-                .await
-                .map_err(|e| PeatError::ConnectionError { msg: e.to_string() })?;
+    /// Connect to a peer WITHOUT blocking the caller.
+    ///
+    /// Same connect + formation-handshake + sync-trigger as [`connect_peer`]
+    /// (they share [`connect_peer_inner`]), but spawned on the runtime so the
+    /// FFI call returns immediately. The dial completes in the background; on
+    /// success the peer appears in `connected_peers` and a Connected event
+    /// fires. Intended for UI callers: a Dart isolate blocks on a synchronous
+    /// FFI call, so `connect_peer`'s `block_on` freezes the UI for the whole
+    /// dial (~seconds for an unreachable peer). There is no synchronous caller
+    /// to hand a background failure to, so errors are surfaced via `tracing`
+    /// (and `android_log` on Android) and otherwise dropped.
+    pub fn connect_peer_nowait(&self, peer: PeerInfo) -> Result<(), PeatError> {
+        let peat_peer = PeatPeerInfo {
+            name: peer.name,
+            node_id: peer.node_id,
+            addresses: peer.addresses,
+            relay_url: peer.relay_url,
+        };
+        let iroh_transport = Arc::clone(&self.iroh_transport);
+        let sync_backend = Arc::clone(&self.sync_backend);
+        let storage_backend = Arc::clone(&self.storage_backend);
 
-            // If we got a new connection, perform formation handshake and emit Connected
-            if let Some(conn) = conn_opt {
-                let peer_id = conn.remote_id();
-
-                if let Some(formation_key) = self.sync_backend.formation_key() {
-                    use peat_protocol::network::perform_initiator_handshake;
-                    match perform_initiator_handshake(&conn, &formation_key).await {
-                        Ok(()) => {
-                            // Emit Connected to trigger immediate sync handler spawning
-                            self.iroh_transport.emit_peer_connected(peer_id);
-
-                            // Explicitly trigger document sync with the new peer.
-                            // The event-based sync handler spawner should handle this,
-                            // but we also trigger sync directly to ensure documents flow.
-                            if let Some(coordinator) = self.storage_backend.sync_coordinator() {
-                                let coord = Arc::clone(coordinator);
-                                let sync_peer = peer_id;
-                                tokio::spawn(async move {
-                                    // Brief delay for connection to stabilize
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(500))
-                                        .await;
-                                    #[cfg(target_os = "android")]
-                                    android_log(&format!(
-                                        "Triggering sync_all_documents_with_peer for {:?}",
-                                        sync_peer
-                                    ));
-                                    match coord.sync_all_documents_with_peer(sync_peer).await {
-                                        Ok(()) => {
-                                            #[cfg(target_os = "android")]
-                                            android_log("sync_all_documents_with_peer: SUCCESS");
-                                        }
-                                        Err(e) => {
-                                            #[cfg(target_os = "android")]
-                                            android_log(&format!(
-                                                "sync_all_documents_with_peer: FAILED - {}",
-                                                e
-                                            ));
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            conn.close(1u32.into(), b"authentication failed");
-                            self.iroh_transport.disconnect(&peer_id).ok();
-                            return Err(PeatError::ConnectionError {
-                                msg: format!("Formation handshake failed: {}", e),
-                            });
-                        }
-                    }
-                } else {
-                    // No formation key — emit Connected without handshake (backward compat)
-                    self.iroh_transport.emit_peer_connected(peer_id);
-                }
+        self.runtime.spawn(async move {
+            if let Err(e) =
+                connect_peer_inner(&iroh_transport, &sync_backend, &storage_backend, peat_peer)
+                    .await
+            {
+                tracing::warn!(error = %e, "connect_peer_nowait: background dial failed");
+                #[cfg(target_os = "android")]
+                android_log(&format!("connect_peer_nowait: {}", e));
             }
-            // If None, accept path is handling the connection
+        });
 
-            Ok(())
-        })
+        Ok(())
     }
 
     /// Disconnect from a peer by node ID
@@ -3610,6 +3656,110 @@ mod tests {
 
         let _local = make("off", false);
         let _relayed = make("on", true);
+    }
+
+    /// Wrapper-tier coverage for the `connect_peer_nowait` UniFFI export added
+    /// for non-blocking UI callers. These exercise the public `PeatNode`
+    /// surface through `create_node` — the same entry point Dart/Swift
+    /// consumers hit — so a signature/argument-slot drift between the method
+    /// and its hand-written Dart FFI shim, or a panic on the synchronous
+    /// return path, fails here rather than at downstream link time.
+    #[cfg(feature = "sync")]
+    mod connect_peer_nowait_wrapper_tests {
+        use super::*;
+
+        fn test_cfg(storage_path: &str) -> NodeConfig {
+            NodeConfig {
+                app_id: "connect-nowait-wrapper-test".to_string(),
+                shared_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: storage_path.to_string(),
+                transport: None,
+            }
+        }
+
+        /// Happy path: a fire-and-forget dial returns synchronously and the
+        /// background task converges the connection. Two in-process nodes share
+        /// `app_id`/`shared_key`; node A dials node B's bound loopback socket
+        /// via `connect_peer_nowait` and B must show up in A's
+        /// `connected_peers` shortly after — proving the spawned dial +
+        /// formation handshake + `emit_peer_connected` path runs end to end.
+        #[test]
+        fn nowait_connects_two_loopback_nodes() {
+            let tmp_a = tempfile::tempdir().unwrap();
+            let tmp_b = tempfile::tempdir().unwrap();
+            let node_a = create_node(test_cfg(tmp_a.path().to_str().unwrap())).expect("node_a");
+            let node_b = create_node(test_cfg(tmp_b.path().to_str().unwrap())).expect("node_b");
+
+            let addr_b = node_b
+                .endpoint_socket_addr()
+                .expect("node_b must report a bound loopback socket addr");
+            let peer_b = PeerInfo {
+                name: "node-b".to_string(),
+                node_id: node_b.node_id(),
+                addresses: vec![addr_b],
+                relay_url: None,
+            };
+
+            // The whole point of the API: the call returns without blocking on
+            // the dial.
+            node_a
+                .connect_peer_nowait(peer_b)
+                .expect("connect_peer_nowait must return Ok immediately");
+
+            // The background dial + handshake converges shortly after; poll with
+            // a bounded timeout rather than a fixed sleep.
+            let target = node_b.node_id();
+            let mut connected = false;
+            for _ in 0..120 {
+                if node_a.connected_peers().contains(&target) {
+                    connected = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert!(
+                connected,
+                "node_b must join node_a's connected_peers after a background connect_peer_nowait dial"
+            );
+        }
+
+        /// Contract + robustness: even for an unreachable peer the call returns
+        /// `Ok(())` immediately (the blocking `connect_peer` would stall on the
+        /// dial), and the doomed background task neither panics nor wedges the
+        /// node. Uses a valid node_id whose owner has been dropped, pointed at a
+        /// dead loopback port, so neither the direct address nor mDNS can
+        /// resolve it.
+        #[test]
+        fn nowait_returns_immediately_for_unreachable_peer_without_panic() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+
+            let donor_tmp = tempfile::tempdir().unwrap();
+            let donor = create_node(test_cfg(donor_tmp.path().to_str().unwrap())).expect("donor");
+            let dead_id = donor.node_id();
+            drop(donor); // owner gone — the id is well-formed but unroutable.
+
+            let peer = PeerInfo {
+                name: "unreachable".to_string(),
+                node_id: dead_id.clone(),
+                addresses: vec!["127.0.0.1:1".to_string()],
+                relay_url: None,
+            };
+            node.connect_peer_nowait(peer).expect(
+                "connect_peer_nowait must return Ok immediately, even for an unreachable peer",
+            );
+
+            // Let the doomed dial run; the node must stay responsive and the
+            // peer must never join.
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert!(
+                !node.connected_peers().contains(&dead_id),
+                "an unreachable peer must never appear in connected_peers"
+            );
+        }
     }
 
     #[test]

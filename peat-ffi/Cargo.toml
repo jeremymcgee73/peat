@@ -95,6 +95,11 @@ bluetooth = ["peat-protocol/bluetooth", "dep:peat-btle"]
 # consumer that asks for `lite-bridge` actually gets the wiring.
 # (Round-2 QA review on PR #841 flagged this as [WARNING].)
 lite-bridge = ["sync", "bluetooth", "peat-mesh/lite-bridge"]
+# Opt-in to n0's hosted iroh relay pool + pkarr DNS discovery (forwards to the
+# peat-mesh/peat-protocol feature of the same name). OFF by default — enabling it
+# routes peer traffic through n0's public CDN (*.iroh.network). Build with it via
+# `PEAT_FEATURES=...,relay-n0-hosted` (see ios/macos build-rust.sh).
+relay-n0-hosted = ["peat-mesh?/relay-n0-hosted", "peat-protocol/relay-n0-hosted"]
 
 [dependencies]
 # UniFFI for cross-language bindings (proc-macro only mode)
@@ -139,18 +144,20 @@ hex = "0.4"
 # Temporary directory for testing
 tempfile = "3"
 
-# Tracing: subscriber + env-filter so peat-mesh's internal
-# `tracing::warn!`/`info!`/`debug!` events (e.g. per-document sync
-# failures inside `sync_all_documents_with_peer` that previously
-# returned Ok at the outer call while individual doc syncs silently
-# failed) become visible on Android via the custom `android_log`-
-# backed writer wired in `JNI_OnLoad`. peat#850. Gated to Android
-# only — the iOS UniFFI binary doesn't need a logcat bridge and
-# shouldn't carry tracing-subscriber's transitive footprint
-# (`regex`, `sharded-slab`, etc.) for an Android-only call site.
-# (`tracing` / `tracing-subscriber` entries live below in the
-# `cfg(target_os = "android")` dependency table alongside
-# `peat-btle`, since cargo rejects duplicate target sections.)
+# Tracing facade: lets peat-ffi's own call sites (e.g. the background
+# dial failures in `connect_peer_nowait`, which have no synchronous
+# caller to return an error to) emit structured `tracing::warn!` events
+# on every platform. The facade is near-free with no subscriber
+# installed and pulls none of `tracing-subscriber`'s transitive
+# footprint, so it is safe in the general dependency set / iOS UniFFI
+# binary. The heavyweight `tracing-subscriber` + env-filter — which
+# routes peat-mesh's internal `tracing::warn!`/`info!`/`debug!` events
+# (e.g. per-document sync failures inside `sync_all_documents_with_peer`)
+# to logcat via the custom `android_log`-backed writer wired in
+# `JNI_OnLoad` (peat#850) — stays Android-only below, since iOS/desktop
+# embedders install their own subscriber and shouldn't carry
+# `tracing-subscriber`'s `regex`/`sharded-slab` footprint.
+tracing = "0.1"
 
 # BLE transport (optional, enabled by bluetooth feature)
 # Platform-specific adapter selected via target cfg in dependencies below
@@ -172,7 +179,8 @@ peat-btle = { workspace = true, features = ["ios"], optional = true }
 [target.'cfg(target_os = "android")'.dependencies]
 peat-btle = { workspace = true, features = ["android"], optional = true }
 # Android-only tracing bridge (see comment above the peat-btle target tables).
-tracing = "0.1"
+# `tracing` (the facade) is in the general `[dependencies]`; only the
+# heavyweight subscriber is gated to Android here.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # peat#925 follow-on: `ndk-context` is pulled in transitively by the
 # iroh 1.0.0-rc.0 cascade (swarm-discovery / iroh-mdns-address-lookup
