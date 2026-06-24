@@ -264,6 +264,20 @@ extern "C" {
     fn uniffi_peat_ffi_fn_method_peatnode_put_node(h: u64, node: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_put_track(h: u64, t: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_request_sync(h: u64, s: *mut CallStatus);
+    // Reconnect supervisor surface (roster population + event hooks).
+    fn uniffi_peat_ffi_fn_method_peatnode_roster_remember(
+        h: u64,
+        group_id: RustBuf,
+        peer: RustBuf,
+        s: *mut CallStatus,
+    );
+    fn uniffi_peat_ffi_fn_method_peatnode_reconnect_known_peers(h: u64, s: *mut CallStatus);
+    fn uniffi_peat_ffi_fn_method_peatnode_wake_reconnect(h: u64, s: *mut CallStatus);
+    fn uniffi_peat_ffi_fn_method_peatnode_on_peer_observed(
+        h: u64,
+        node_id: RustBuf,
+        s: *mut CallStatus,
+    );
     #[cfg(all(feature = "sync", feature = "bluetooth"))]
     fn uniffi_peat_ffi_fn_method_peatnode_start_outbound_frames(h: u64, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_start_sync(h: u64, s: *mut CallStatus);
@@ -971,4 +985,57 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_subscriptionhandle_
     let mut s = CallStatus::new();
     let v = uniffi_peat_ffi_fn_method_subscriptionhandle_poll_changes((*a.add(0)).u64, &mut s);
     ret_rbuf(r, v, &s);
+}
+
+// --- Reconnect supervisor surface -------------------------------------------
+// roster_remember(handle, group_id: String, peer: PeerInfo) -> void.
+// Args: [0]=handle, [1..3]=group_id buf, [4..6]=peer buf (PeerInfo Record,
+// serialized by the same Dart writer connect_peer uses).
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_roster_remember(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_roster_remember(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        &mut s,
+    );
+    ret_void(r, &s);
+}
+
+// reconnect_known_peers(handle) -> void. Gentle pass (no backoff reset).
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_reconnect_known_peers(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_reconnect_known_peers((*a.add(0)).u64, &mut s);
+    ret_void(r, &s);
+}
+
+// wake_reconnect(handle) -> void. Clears backoff, then a full pass.
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_wake_reconnect(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_wake_reconnect((*a.add(0)).u64, &mut s);
+    ret_void(r, &s);
+}
+
+// on_peer_observed(handle, node_id: String) -> void.
+// Args: [0]=handle, [1..3]=node_id buf.
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_on_peer_observed(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_on_peer_observed((*a.add(0)).u64, read_buf(a, 1), &mut s);
+    ret_void(r, &s);
 }

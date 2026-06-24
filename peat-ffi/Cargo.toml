@@ -145,6 +145,10 @@ async-trait = "0.1"
 # JSON serialization for document data
 serde_json = "1.0"
 
+# Serde derive — used by the persistent roster (RosterEntry <-> roster.json).
+# Workspace pin already enables the `derive` feature.
+serde = { workspace = true }
+
 # Hex encoding for node IDs
 hex = "0.4"
 
