@@ -208,6 +208,19 @@ mod water_counter;
 #[cfg(feature = "sync")]
 mod crdt_kv;
 
+// Persistent roster of known group peers — the reconnect foundation. Remembers
+// the group a node joined so it can re-dial members after a restart, network
+// change, or transport switch. See roster.rs.
+#[cfg(feature = "sync")]
+mod roster;
+
+// Per-peer reconnect supervisor — the dial state machine + backoff policy that
+// walks the roster and keeps a live path up to each member over whatever
+// transport is currently reachable. Pure policy; orchestration is in lib.rs.
+// See supervisor.rs.
+#[cfg(feature = "sync")]
+mod supervisor;
+
 /// Get the Peat library version
 #[uniffi::export]
 pub fn peat_version() -> String {
@@ -581,6 +594,81 @@ pub enum ChangeType {
     Delete,
 }
 
+/// Where a document change came from — a local write vs. a remote peer's sync.
+///
+/// This is the substrate-level signal a consumer needs to decide whether a
+/// change is worth surfacing to the user (e.g. a local notification). A
+/// *remote* change is something another node did and may warrant alerting;
+/// a *local* change is the user's own edit and usually is not. peat stays
+/// domain-agnostic: it reports origin, collection, and doc id — the consumer
+/// owns the notability policy and the notification text. Mirrors peat-mesh's
+/// internal `ChangeOrigin` (which isn't UniFFI-decorated) at the FFI boundary.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ChangeOrigin {
+    /// The change originated from a local write on this node.
+    Local,
+    /// The change arrived from a remote peer via sync. `peer_id` is that peer's
+    /// stable identifier (hex node id for the iroh transport; the store keeps it
+    /// transport-agnostic so BLE/Lite peers populate the same field).
+    Remote { peer_id: String },
+}
+
+#[cfg(feature = "sync")]
+impl From<_PeatMeshChangeOrigin> for ChangeOrigin {
+    fn from(o: _PeatMeshChangeOrigin) -> Self {
+        match o {
+            _PeatMeshChangeOrigin::Local => ChangeOrigin::Local,
+            _PeatMeshChangeOrigin::Remote(peer_id) => ChangeOrigin::Remote { peer_id },
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sync"))]
+mod change_event_tests {
+    use super::*;
+
+    #[test]
+    fn remote_change_splits_key_and_carries_peer() {
+        let dc = _PeatMeshDocChange {
+            key: "tracks:abc-123".to_string(),
+            origin: _PeatMeshChangeOrigin::Remote("peerhex".to_string()),
+        };
+        let out = document_change_from(dc);
+        assert_eq!(out.collection, "tracks");
+        assert_eq!(out.doc_id, "abc-123");
+        assert!(matches!(out.change_type, ChangeType::Upsert));
+        match out.origin {
+            ChangeOrigin::Remote { peer_id } => assert_eq!(peer_id, "peerhex"),
+            other => panic!("expected Remote origin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_change_without_separator_uses_default_collection() {
+        let dc = _PeatMeshDocChange {
+            key: "loosekey".to_string(),
+            origin: _PeatMeshChangeOrigin::Local,
+        };
+        let out = document_change_from(dc);
+        assert_eq!(out.collection, "default");
+        assert_eq!(out.doc_id, "loosekey");
+        assert!(matches!(out.origin, ChangeOrigin::Local));
+    }
+
+    #[test]
+    fn key_with_multiple_colons_splits_on_first() {
+        // split_once(':') keeps everything after the first colon as the id.
+        let dc = _PeatMeshDocChange {
+            key: "ns:weird:id".to_string(),
+            origin: _PeatMeshChangeOrigin::Local,
+        };
+        let out = document_change_from(dc);
+        assert_eq!(out.collection, "ns");
+        assert_eq!(out.doc_id, "weird:id");
+    }
+}
+
 /// Document change event for subscriptions
 #[cfg(feature = "sync")]
 #[derive(Debug, Clone, uniffi::Record)]
@@ -591,6 +679,37 @@ pub struct DocumentChange {
     pub doc_id: String,
     /// Type of change
     pub change_type: ChangeType,
+    /// Where the change came from — local edit vs. remote peer sync. Lets a
+    /// consumer notify on remote changes without alerting on its own edits.
+    pub origin: ChangeOrigin,
+}
+
+/// Build the FFI [`DocumentChange`] from peat-mesh's origin-tagged `DocChange`.
+///
+/// Splits the `"collection:doc_id"` key (falling back to the `"default"`
+/// collection when the key has no separator) and carries the [`ChangeOrigin`]
+/// through so consumers can distinguish a remote peer's change from a local
+/// edit. `change_type` is always `Upsert`: the change stream is key-granular
+/// and does not distinguish tombstone deletes at this layer (a delete arrives
+/// as an upsert of a tombstoned document), so detecting deletes would require
+/// reading the doc body — a domain concern left to the consumer.
+#[cfg(feature = "sync")]
+fn document_change_from(doc_change: _PeatMeshDocChange) -> DocumentChange {
+    let origin = ChangeOrigin::from(doc_change.origin);
+    match doc_change.key.split_once(':') {
+        Some((collection, doc_id)) => DocumentChange {
+            collection: collection.to_string(),
+            doc_id: doc_id.to_string(),
+            change_type: ChangeType::Upsert,
+            origin,
+        },
+        None => DocumentChange {
+            collection: "default".to_string(),
+            doc_id: doc_change.key,
+            change_type: ChangeType::Upsert,
+            origin,
+        },
+    }
 }
 
 /// Encoded BLE outbound frame produced by the `BleTranslator` fan-out.
@@ -711,6 +830,14 @@ impl Drop for SubscriptionHandle {
 
 /// A Peat network node with P2P sync capabilities
 ///
+/// Max concurrent in-flight reconnect dials (see
+/// [`PeatNode::reconnect_dial_semaphore`]). Mobile group sizes are small; this
+/// only bounds the cold-start volley when a large saved roster (or
+/// `wake_reconnect` clearing all backoffs) would otherwise dial every peer at
+/// once. Subsequent rounds are decorrelated by per-peer backoff jitter.
+#[cfg(feature = "sync")]
+const MAX_CONCURRENT_RECONNECT_DIALS: usize = 8;
+
 /// Wraps AutomergeIrohBackend for authenticated document sync.
 /// Requires matching app_id and shared_key for peer connections.
 #[cfg(feature = "sync")]
@@ -753,6 +880,24 @@ pub struct PeatNode {
     store: Arc<AutomergeStore>,
     #[allow(dead_code)] // Kept for potential future use (e.g., storage cleanup)
     storage_path: PathBuf,
+    /// Persistent roster of known group peers, for reconnection. Keyed by
+    /// node_id, scoped by group; holds only non-secret reachability hints.
+    /// Foundation for the per-peer reconnect supervisor (walks this roster to
+    /// keep a live path up to each known member over whatever transport is
+    /// currently reachable). See `roster.rs`.
+    #[cfg(feature = "sync")]
+    roster: Arc<roster::RosterStore>,
+    /// Per-peer reconnect supervisor: the dial state machine + backoff policy
+    /// driven by a periodic tick (and, later, external event hooks) to keep a
+    /// live path up to each roster member. See `supervisor.rs`.
+    #[cfg(feature = "sync")]
+    supervisor: Arc<supervisor::Supervisor>,
+    /// Caps concurrent in-flight reconnect dials so a cold start with a large
+    /// saved roster (or a `wake_reconnect` that clears every backoff) doesn't
+    /// fan out one simultaneous iroh dial + handshake per peer. See
+    /// [`MAX_CONCURRENT_RECONNECT_DIALS`].
+    #[cfg(feature = "sync")]
+    reconnect_dial_semaphore: Arc<tokio::sync::Semaphore>,
     /// Tokio runtime for async operations
     runtime: Arc<tokio::runtime::Runtime>,
     /// Flag to stop cleanup task on drop (used by background task)
@@ -1398,23 +1543,9 @@ impl PeatNode {
                     result = rx.recv() => {
                         match result {
                             Ok(doc_change) => {
-                                let doc_key = doc_change.key;
-                                // Parse the document key (format: "collection:doc_id")
-                                let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
-                                    DocumentChange {
-                                        collection: collection.to_string(),
-                                        doc_id: doc_id.to_string(),
-                                        change_type: ChangeType::Upsert,
-                                    }
-                                } else {
-                                    DocumentChange {
-                                        collection: "default".to_string(),
-                                        doc_id: doc_key,
-                                        change_type: ChangeType::Upsert,
-                                    }
-                                };
-
-                                callback.on_change(change);
+                                // Generic, origin-tagged change event — consumer
+                                // decides notability (e.g. notify on Remote).
+                                callback.on_change(document_change_from(doc_change));
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                 // Some messages were skipped due to slow receiver
@@ -1484,22 +1615,8 @@ impl PeatNode {
                     result = rx.recv() => {
                         match result {
                             Ok(doc_change) => {
-                                let doc_key = doc_change.key;
-                                let change = if let Some((collection, doc_id)) = doc_key.split_once(':') {
-                                    DocumentChange {
-                                        collection: collection.to_string(),
-                                        doc_id: doc_id.to_string(),
-                                        change_type: ChangeType::Upsert,
-                                    }
-                                } else {
-                                    DocumentChange {
-                                        collection: "default".to_string(),
-                                        doc_id: doc_key,
-                                        change_type: ChangeType::Upsert,
-                                    }
-                                };
                                 if let Ok(mut q) = pending_clone.lock() {
-                                    q.push_back(change);
+                                    q.push_back(document_change_from(doc_change));
                                 }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -2083,6 +2200,16 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         ),
         #[cfg(feature = "sync")]
         crdt_kv: crdt_kv::CrdtKvDocs::new(storage_path.clone()),
+        // Load the persisted roster (or start empty) before storage_path is
+        // moved into the struct below.
+        #[cfg(feature = "sync")]
+        roster: Arc::new(roster::RosterStore::load(&storage_path)),
+        #[cfg(feature = "sync")]
+        supervisor: Arc::new(supervisor::Supervisor::new()),
+        #[cfg(feature = "sync")]
+        reconnect_dial_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            MAX_CONCURRENT_RECONNECT_DIALS,
+        )),
         storage_path,
         runtime: runtime_arc,
         cleanup_running,
@@ -2110,9 +2237,338 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     // gate, an in-app Stop on iOS left the node (and its redb store) alive, so
     // the next Start hit "Failed to open redb database" on the still-locked
     // file. iOS has no `clearGlobalNodeHandleJni` counterpart to release it.
+    // Reconnect supervisor: periodic background tick. Holds a Weak ref so it
+    // never keeps the node alive on its own — when the node is dropped (e.g. an
+    // iOS Stop releasing the redb lock), the next upgrade() fails and the task
+    // exits. The `cleanup_running` flag gives an explicit early stop too.
+    #[cfg(feature = "sync")]
+    {
+        let weak = Arc::downgrade(&node_arc);
+        let stop = Arc::clone(&node_arc.cleanup_running);
+        node_arc.runtime.spawn(async move {
+            // Initial delay so inbound accepts / first handshakes settle before
+            // we start proactively dialing.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            while stop.load(Ordering::Relaxed) {
+                match weak.upgrade() {
+                    Some(node) => node.run_supervisor_tick(now_unix_ms()),
+                    None => break, // node dropped — nothing left to supervise
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        });
+    }
+
     #[cfg(target_os = "android")]
     set_global_node_handle(&node_arc);
     Ok(node_arc)
+}
+
+// =============================================================================
+// Shared dial path + reconnect supervisor orchestration
+// =============================================================================
+
+/// Unix-epoch milliseconds, or 0 if the clock is before the epoch. Used to
+/// drive the supervisor's backoff timing; monotonicity matters more than
+/// wall-clock accuracy, and a one-off 0 just makes a peer eligible sooner.
+#[cfg(feature = "sync")]
+fn now_unix_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Connect to a peer, run the formation handshake, and trigger document sync.
+///
+/// The single dial path shared by `connect_peer_nowait` (one-shot UI dial) and
+/// the reconnect supervisor. Returns `true` if the peer is up afterward — a new
+/// connection that passed the handshake, OR a peer the transport reports was
+/// already connected (the accept/existing path owns it). Returns `false` on a
+/// connect, handshake, or transport failure, which the supervisor turns into a
+/// backoff.
+#[cfg(feature = "sync")]
+async fn dial_peer_and_sync(
+    iroh_transport: &Arc<IrohTransport>,
+    sync_backend: &Arc<AutomergeIrohBackend>,
+    storage_backend: &Arc<AutomergeBackend>,
+    peer: &PeatPeerInfo,
+) -> bool {
+    let conn_opt = match iroh_transport.connect_peer(peer).await {
+        Ok(c) => c,
+        Err(e) => {
+            // Unconditional `tracing` so iOS/desktop consumers capture the dial
+            // failure (e.g. via OSLog), not just Android's native log.
+            tracing::warn!(error = %e, "dial_peer_and_sync: connect failed");
+            #[cfg(target_os = "android")]
+            android_log(&format!("dial_peer_and_sync: connect failed - {}", e));
+            return false;
+        }
+    };
+    // None means the transport already holds a connection to this peer; the
+    // accept path is handling it, so report it up.
+    let conn = match conn_opt {
+        Some(c) => c,
+        None => return true,
+    };
+    let peer_id = conn.remote_id();
+
+    let Some(formation_key) = sync_backend.formation_key() else {
+        // No formation key — emit Connected without handshake (backward compat).
+        iroh_transport.emit_peer_connected(peer_id);
+        return true;
+    };
+
+    use peat_protocol::network::perform_initiator_handshake;
+    match perform_initiator_handshake(&conn, &formation_key).await {
+        Ok(()) => {
+            iroh_transport.emit_peer_connected(peer_id);
+            if let Some(coordinator) = storage_backend.sync_coordinator() {
+                let coord = Arc::clone(coordinator);
+                let sync_peer = peer_id;
+                tokio::spawn(async move {
+                    // Brief delay for the connection to stabilize before sync.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    let _ = coord.sync_all_documents_with_peer(sync_peer).await;
+                });
+            }
+            true
+        }
+        Err(e) => {
+            conn.close(1u32.into(), b"authentication failed");
+            iroh_transport.disconnect(&peer_id).ok();
+            tracing::warn!(error = %e, "dial_peer_and_sync: handshake failed");
+            #[cfg(target_os = "android")]
+            android_log(&format!("dial_peer_and_sync: handshake failed - {}", e));
+            false
+        }
+    }
+}
+
+#[cfg(feature = "sync")]
+impl PeatNode {
+    /// Whether `node_id` has a live link on ANY registered transport (iroh,
+    /// BLE, …). This is how the supervisor dedups across transports: a peer
+    /// already reachable over BLE is treated as connected, so we don't also
+    /// dial it over iroh/relay. peat-mesh exposes no global cross-transport
+    /// connected iterator (peat#828), but it does answer this per-peer via the
+    /// transport manager, which is all the supervisor needs.
+    fn peer_connected_any_transport(&self, node_id: &str) -> bool {
+        let mesh_peer = peat_mesh::NodeId::new(node_id.to_string());
+        self.transport_manager
+            .available_instances_for_peer(&mesh_peer)
+            .into_iter()
+            .any(|tid| {
+                self.transport_manager
+                    .get_instance(&tid)
+                    .and_then(|t| t.peer_link_state(&mesh_peer))
+                    // Count a transport as connected only when it reports a real,
+                    // *measured* link quality. `peer_link_state` returns `Some`
+                    // whenever the transport has a record for the peer — which can
+                    // include a stale/failed record, surfaced as
+                    // `LinkQuality::Unknown`. Treating Unknown as connected would
+                    // make this dedup silently suppress a legitimate reconnect
+                    // ("the node never reconnects because the supervisor thinks it
+                    // already is"). Erring toward a cheap, idempotent re-dial on
+                    // Unknown is the safer failure mode.
+                    .is_some_and(|s| {
+                        !matches!(s.quality, peat_mesh::transport::LinkQuality::Unknown)
+                    })
+            })
+    }
+
+    /// Spawn a single dial for a roster member, marking it `Connecting` and
+    /// recording the outcome (connected + `last_seen`, or a backoff). The caller
+    /// must have already checked the peer is eligible and not connected.
+    /// Non-blocking: the dial runs on the runtime.
+    fn try_dial_roster_peer(&self, entry: roster::RosterEntry, now_ms: u64) {
+        self.supervisor.mark_connecting(&entry.node_id, now_ms);
+
+        let iroh_transport = Arc::clone(&self.iroh_transport);
+        let sync_backend = Arc::clone(&self.sync_backend);
+        let storage_backend = Arc::clone(&self.storage_backend);
+        let supervisor = Arc::clone(&self.supervisor);
+        let roster = Arc::clone(&self.roster);
+        let peer = PeatPeerInfo {
+            name: entry.name,
+            node_id: entry.node_id.clone(),
+            addresses: entry.addresses,
+            relay_url: entry.relay_url,
+        };
+        let node_id = entry.node_id;
+        let dial_permits = Arc::clone(&self.reconnect_dial_semaphore);
+
+        self.runtime.spawn(async move {
+            // Throttle the actual dial (peers are already marked Connecting, so
+            // the tick won't re-spawn them while they wait for a permit). Caps
+            // the cold-start fan-out; `acquire` only errors if the semaphore is
+            // closed (shutdown), in which case we just proceed.
+            let _permit = dial_permits.acquire_owned().await.ok();
+            let ok =
+                dial_peer_and_sync(&iroh_transport, &sync_backend, &storage_backend, &peer).await;
+            if ok {
+                supervisor.mark_connected(&node_id);
+                roster.mark_seen(&node_id, now_unix_ms());
+            } else {
+                supervisor.mark_failed(&node_id, now_unix_ms());
+            }
+        });
+    }
+
+    /// One reconcile-and-dial pass of the reconnect supervisor.
+    ///
+    /// Builds the cross-transport connected set (iroh's connected peers, plus
+    /// any roster member with a live link on another transport such as BLE),
+    /// reconciles it against supervisor state, stamps `last_seen` for peers that
+    /// just came up, prunes tracking for peers no longer in the roster, then
+    /// spawns a dial for every roster member that is disconnected and eligible.
+    fn run_supervisor_tick(&self, now_ms: u64) {
+        let entries = self.roster.list();
+
+        // "Connected" means connected over ANY transport. Start from iroh's set
+        // (which also covers inbound peers not in the roster), then fold in
+        // roster members reachable on a non-iroh transport so we don't
+        // redundantly dial a peer that's already up over BLE.
+        let mut connected: std::collections::HashSet<String> = self
+            .iroh_transport
+            .connected_peers()
+            .into_iter()
+            .map(|e| hex::encode(e.as_bytes()))
+            .collect();
+        for e in &entries {
+            if !connected.contains(&e.node_id) && self.peer_connected_any_transport(&e.node_id) {
+                connected.insert(e.node_id.clone());
+            }
+        }
+
+        // Ground supervisor state in reality; stamp freshly-connected members.
+        for id in self.supervisor.reconcile(&connected) {
+            if self.roster.get(&id).is_some() {
+                self.roster.mark_seen(&id, now_ms);
+            }
+        }
+
+        // Keep the supervisor map bounded to roster ∪ connected.
+        let mut keep = connected.clone();
+        keep.extend(entries.iter().map(|e| e.node_id.clone()));
+        self.supervisor.retain(&keep);
+
+        for entry in entries {
+            if connected.contains(&entry.node_id) {
+                continue; // already up over some transport
+            }
+            if !self.supervisor.eligible(&entry.node_id, now_ms) {
+                continue; // dialing, or backing off
+            }
+            self.try_dial_roster_peer(entry, now_ms);
+        }
+    }
+}
+
+#[cfg(feature = "sync")]
+#[uniffi::export]
+impl PeatNode {
+    /// Run one reconnect pass immediately, dialing any disconnected, eligible
+    /// roster member. Safe to call repeatedly — peers already connected or
+    /// mid-dial are skipped, and failures are rate-limited by backoff. A
+    /// "gentle" trigger: it does NOT clear backoffs (use [`Self::wake_reconnect`]
+    /// for that). Sits on top of the periodic background tick.
+    pub fn reconnect_known_peers(&self) {
+        self.run_supervisor_tick(now_unix_ms());
+    }
+
+    /// React to a hint that a *specific* roster member is reachable right now —
+    /// e.g. a BLE neighbour advertisement, or a relay "peer online" signal.
+    ///
+    /// If the peer is known, not already connected over any transport, and not
+    /// mid-dial/backoff, it is dialed immediately — bypassing the periodic tick
+    /// so the attempt lands inside a tight mobile background-execution budget.
+    /// If the peer is already reachable over some transport (e.g. it just
+    /// connected over BLE), this records that instead of dialing. Unknown peers
+    /// are a no-op.
+    pub fn on_peer_observed(&self, node_id: String) {
+        let Some(entry) = self.roster.get(&node_id) else {
+            return; // not a group member we track
+        };
+        let now = now_unix_ms();
+        if self.peer_connected_any_transport(&node_id) {
+            // Already up over some transport — record it, don't redial.
+            self.supervisor.mark_connected(&node_id);
+            self.roster.mark_seen(&node_id, now);
+            return;
+        }
+        if self.supervisor.eligible(&node_id, now) {
+            self.try_dial_roster_peer(entry, now);
+        }
+    }
+
+    /// React to a change that may have broadly restored connectivity — the
+    /// network came up, or the app returned to foreground. Clears all backoffs
+    /// so every known peer is immediately eligible, then runs one reconnect
+    /// pass. Use [`Self::on_peer_observed`] when you know which peer is
+    /// reachable; use this when you don't.
+    pub fn wake_reconnect(&self) {
+        self.supervisor.reset_backoff_all();
+        self.run_supervisor_tick(now_unix_ms());
+    }
+}
+
+// =============================================================================
+// Persistent roster (reconnect foundation)
+// =============================================================================
+//
+// Exposes the on-disk roster of known group peers so a consumer can remember
+// the group it joined and re-dial members after a restart, network change, or
+// transport switch. The roster stores only non-secret reachability data; it is
+// NOT a substitute for the formation key, which authenticates each connection.
+// This is the foundation slice — the per-peer reconnect supervisor (backoff +
+// cross-transport dedup) and the event hooks that drive it land on top.
+#[cfg(feature = "sync")]
+#[uniffi::export]
+impl PeatNode {
+    /// Insert or update a known peer in the roster (keyed by `node_id`) and
+    /// persist it. Idempotent — re-upserting refreshes addresses/relay/name and
+    /// never moves `last_seen_ms` backwards.
+    pub fn roster_upsert(&self, entry: roster::RosterEntry) {
+        self.roster.upsert(entry);
+    }
+
+    /// Convenience: remember a `PeerInfo` (the same struct handed to
+    /// `connect_peer`) under a group, stamping last-seen as "never" (0). This is
+    /// the call a consumer makes for each member when joining a group (e.g. from
+    /// a scanned join token), so the reconnect supervisor can re-dial them.
+    /// Idempotent; re-remembering refreshes addresses/relay/name.
+    pub fn roster_remember(&self, group_id: String, peer: PeerInfo) {
+        self.roster.upsert(roster::RosterEntry {
+            node_id: peer.node_id,
+            group_id,
+            name: peer.name,
+            addresses: peer.addresses,
+            relay_url: peer.relay_url,
+            last_seen_ms: 0,
+        });
+    }
+
+    /// Remove a peer from the roster. Returns true if it was present.
+    pub fn roster_remove(&self, node_id: String) -> bool {
+        self.roster.remove(&node_id)
+    }
+
+    /// Fetch a single roster entry by `node_id`.
+    pub fn roster_get(&self, node_id: String) -> Option<roster::RosterEntry> {
+        self.roster.get(&node_id)
+    }
+
+    /// All roster entries, sorted by `node_id`.
+    pub fn roster_list(&self) -> Vec<roster::RosterEntry> {
+        self.roster.list()
+    }
+
+    /// Roster entries for a single group.
+    pub fn roster_list_by_group(&self, group_id: String) -> Vec<roster::RosterEntry> {
+        self.roster.list_by_group(&group_id)
+    }
 }
 
 // Add new error variants for sync operations
@@ -3676,6 +4132,273 @@ mod tests {
                 storage_path: storage_path.to_string(),
                 transport: None,
             }
+        }
+
+        /// Surface-tier round-trip for the reconnect-supervisor ROSTER methods,
+        /// driven through a real `PeatNode` (the `#[uniffi::export]` surface a
+        /// consumer calls) rather than the internal `RosterStore`. A delegation
+        /// or arg-marshalling bug in `roster_remember` / `roster_list` /
+        /// `roster_get` / `roster_remove` / `roster_list_by_group` fails here,
+        /// not at downstream link time. (The `RosterStore` internals have their
+        /// own unit tests in `roster.rs`; this proves the node methods wire up.)
+        #[test]
+        fn roster_remember_list_get_remove_round_trip() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+
+            // A well-formed node_id from a throwaway node (the id is the roster
+            // key); roster_remember is the per-member call a consumer makes from
+            // a scanned join token.
+            let donor_tmp = tempfile::tempdir().unwrap();
+            let donor = create_node(test_cfg(donor_tmp.path().to_str().unwrap())).expect("donor");
+            let peer_id = donor.node_id();
+            drop(donor);
+
+            let peer = PeerInfo {
+                name: "bravo".to_string(),
+                node_id: peer_id.clone(),
+                addresses: vec!["127.0.0.1:19001".to_string()],
+                relay_url: Some("https://relay.example".to_string()),
+            };
+
+            // remember -> list/get see it, under the right group, fields intact.
+            node.roster_remember("group-1".to_string(), peer);
+            assert_eq!(
+                node.roster_list().len(),
+                1,
+                "remembered peer in roster_list"
+            );
+            let got = node
+                .roster_get(peer_id.clone())
+                .expect("roster_get finds the remembered peer");
+            assert_eq!(got.node_id, peer_id);
+            assert_eq!(got.group_id, "group-1");
+            assert_eq!(got.name, "bravo");
+            assert_eq!(got.addresses, vec!["127.0.0.1:19001".to_string()]);
+            assert_eq!(got.relay_url.as_deref(), Some("https://relay.example"));
+
+            // list_by_group is scoped to the group.
+            assert_eq!(node.roster_list_by_group("group-1".to_string()).len(), 1);
+            assert!(
+                node.roster_list_by_group("other".to_string()).is_empty(),
+                "roster_list_by_group is scoped to the group"
+            );
+
+            // remove -> reports presence, then get is None and the roster empties.
+            assert!(
+                node.roster_remove(peer_id.clone()),
+                "roster_remove returns true for a present peer"
+            );
+            assert!(
+                node.roster_get(peer_id.clone()).is_none(),
+                "roster_get is None after remove"
+            );
+            assert!(node.roster_list().is_empty(), "roster empty after remove");
+            assert!(
+                !node.roster_remove(peer_id),
+                "roster_remove returns false for an absent peer"
+            );
+        }
+
+        /// Surface-tier check that `DocumentChange.origin` is carried through
+        /// the `subscribe_poll` -> `poll_changes` path on a real `PeatNode`: a
+        /// locally published document surfaces as a `DocumentChange` tagged
+        /// `ChangeOrigin::Local`. This proves the wrapped Record actually
+        /// carries the new origin field out through the subscribe surface (not
+        /// just that `document_change_from` maps it — that conversion, including
+        /// the `Remote { peer_id }` variant, is covered by `change_event_tests`).
+        /// The full cross-node Remote round-trip is a sync-tier e2e gate
+        /// (peat-mesh), which doesn't substitute for surface coverage but is the
+        /// right tier for driving an actual peer-synced change.
+        #[test]
+        fn subscribe_poll_surfaces_document_change_origin() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+            let sub = node.subscribe_poll().expect("subscribe_poll");
+
+            // Publish through the mesh document layer — the same path the
+            // existing subscribe_poll_drain_and_cancel test uses to feed
+            // subscribe_to_changes(); a local publish is tagged Local.
+            let mesh_node = Arc::clone(&node.node);
+            node.runtime
+                .block_on(publish_document_into_node(
+                    &mesh_node,
+                    "test",
+                    r#"{"id":"doc-001","x":1}"#,
+                ))
+                .expect("publish_document_into_node");
+
+            let mut origin: Option<ChangeOrigin> = None;
+            for _ in 0..40 {
+                if let Some(ch) = sub
+                    .poll_changes()
+                    .into_iter()
+                    .find(|c| c.collection == "test")
+                {
+                    origin = Some(ch.origin);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert!(
+                matches!(origin, Some(ChangeOrigin::Local)),
+                "a locally published document must surface through poll_changes \
+                 tagged ChangeOrigin::Local; got {origin:?}"
+            );
+        }
+
+        /// Surface-tier coverage for the `ChangeOrigin::Remote { peer_id }`
+        /// variant on the subscribe exit path (the sibling test covers `Local`).
+        /// A remote-sync receive tags the origin-broadcast change `Remote(peer)`;
+        /// `AutomergeStore::put_with_origin` is exactly the entry point the sync
+        /// coordinator's receive path uses, so injecting through it fires the
+        /// same `subscribe_to_changes_with_origin` broadcast `subscribe_poll`
+        /// reads — deterministically, with no flaky two-node network sync. This
+        /// asserts the wrapped `DocumentChange` surfaces `Remote { peer_id }`
+        /// with the id intact: the marshalling regression the internal
+        /// `document_change_from` test can't see, and the whole point of the
+        /// field (consumers notify only on remote changes).
+        #[test]
+        fn subscribe_poll_surfaces_remote_origin() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+            let sub = node.subscribe_poll().expect("subscribe_poll");
+
+            // Inject a Remote-attributed change straight into the origin-tagged
+            // broadcast via the same store call the receive-from-peer path uses.
+            // Key is "collection:doc_id" (document_change_from splits on ':').
+            let doc = automerge::Automerge::new();
+            node.store
+                .put_with_origin(
+                    "test:doc-r1",
+                    &doc,
+                    _PeatMeshChangeOrigin::Remote("peerhex".to_string()),
+                )
+                .expect("put_with_origin");
+
+            let mut origin: Option<ChangeOrigin> = None;
+            for _ in 0..40 {
+                if let Some(ch) = sub
+                    .poll_changes()
+                    .into_iter()
+                    .find(|c| c.collection == "test")
+                {
+                    origin = Some(ch.origin);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            match origin {
+                Some(ChangeOrigin::Remote { peer_id }) => assert_eq!(
+                    peer_id, "peerhex",
+                    "Remote origin must carry the publishing origin id"
+                ),
+                other => {
+                    panic!("expected ChangeOrigin::Remote {{ peer_id: peerhex }}, got {other:?}")
+                }
+            }
+        }
+
+        /// Surface-tier round-trip for `roster_upsert`, which takes a
+        /// `RosterEntry` *by argument* — the encode direction the
+        /// `roster_remember` round-trip (a `PeerInfo` arg) never exercises.
+        /// Proves the `RosterEntry` marshalling on the way in, and that
+        /// re-upserting the same node id refreshes in place.
+        #[test]
+        fn roster_upsert_round_trip_through_the_node() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+
+            let donor_tmp = tempfile::tempdir().unwrap();
+            let donor = create_node(test_cfg(donor_tmp.path().to_str().unwrap())).expect("donor");
+            let peer_id = donor.node_id();
+            drop(donor);
+
+            node.roster_upsert(roster::RosterEntry {
+                node_id: peer_id.clone(),
+                group_id: "g1".to_string(),
+                name: "charlie".to_string(),
+                addresses: vec!["127.0.0.1:7000".to_string()],
+                relay_url: None,
+                last_seen_ms: 42,
+            });
+            let got = node
+                .roster_get(peer_id.clone())
+                .expect("roster_get after upsert");
+            assert_eq!(got.group_id, "g1");
+            assert_eq!(got.name, "charlie");
+            assert_eq!(got.addresses, vec!["127.0.0.1:7000".to_string()]);
+            assert_eq!(got.last_seen_ms, 42);
+
+            // Re-upsert on the same node id refreshes in place (no duplicate).
+            node.roster_upsert(roster::RosterEntry {
+                node_id: peer_id.clone(),
+                group_id: "g1".to_string(),
+                name: "charlie-2".to_string(),
+                addresses: vec![],
+                relay_url: Some("https://relay.example".to_string()),
+                last_seen_ms: 99,
+            });
+            assert_eq!(
+                node.roster_list().len(),
+                1,
+                "re-upsert must refresh, not duplicate"
+            );
+            let got2 = node
+                .roster_get(peer_id)
+                .expect("roster_get after re-upsert");
+            assert_eq!(got2.name, "charlie-2");
+            assert_eq!(got2.relay_url.as_deref(), Some("https://relay.example"));
+        }
+
+        /// Surface-tier smoke for the three reconnect triggers
+        /// (`reconnect_known_peers`, `wake_reconnect`, `on_peer_observed`) — they
+        /// are fire-and-forget (return void), so this drives them through the
+        /// `PeatNode` UniFFI surface and asserts they neither panic nor corrupt
+        /// roster state, both with an empty roster and with a remembered offline
+        /// peer (which makes them actually run a reconnect pass). Catches an
+        /// arg-marshalling or wiring break that an internal supervisor unit test
+        /// can't see.
+        #[test]
+        fn reconnect_triggers_callable_through_the_node() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+
+            // Empty roster: all three are safe no-ops, including on_peer_observed
+            // for an unknown id.
+            node.reconnect_known_peers();
+            node.wake_reconnect();
+            node.on_peer_observed("not-a-known-peer".to_string());
+            assert!(
+                node.roster_list().is_empty(),
+                "no-op triggers must not invent roster entries"
+            );
+
+            // With a remembered (unreachable) peer, the same calls drive a real
+            // reconnect pass without panicking and leave the roster intact.
+            let donor_tmp = tempfile::tempdir().unwrap();
+            let donor = create_node(test_cfg(donor_tmp.path().to_str().unwrap())).expect("donor");
+            let peer_id = donor.node_id();
+            drop(donor);
+            node.roster_remember(
+                "g1".to_string(),
+                PeerInfo {
+                    name: "bravo".to_string(),
+                    node_id: peer_id.clone(),
+                    addresses: vec!["127.0.0.1:65000".to_string()], // unreachable
+                    relay_url: None,
+                },
+            );
+
+            node.reconnect_known_peers();
+            node.on_peer_observed(peer_id.clone());
+            node.wake_reconnect();
+
+            assert_eq!(node.roster_list().len(), 1);
+            assert!(
+                node.roster_get(peer_id).is_some(),
+                "remembered peer survives the reconnect passes"
+            );
         }
 
         /// Happy path: a fire-and-forget dial returns synchronously and the
