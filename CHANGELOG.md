@@ -14,6 +14,46 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.28] - 2026-06-24
+
+### Added — `peat-ffi`
+
+- **Persistent peer roster** (#1000) — `RosterStore` (JSON on disk) tracks known
+  group members across restarts. Exposed via six new UniFFI surface methods:
+  `roster_remember`, `roster_upsert`, `roster_remove`, `roster_get`,
+  `roster_list`, `roster_list_by_group`. Also adds the `RosterEntry` UniFFI
+  Record. Stored as plain JSON (non-secret reachability hints only; no FIPS
+  concern).
+- **Per-peer reconnect supervisor** (#1000) — dial state machine
+  (`Idle → Connecting → Connected → Backoff`) with exponential backoff (2 s
+  base, 5 min cap) plus deterministic per-peer jitter to de-correlate
+  thundering-herd re-dials. Three new UniFFI surface methods:
+  `reconnect_known_peers` (gentle, honours backoff), `wake_reconnect` (clears
+  backoffs — call on foreground / network-up events), `on_peer_observed` (hint
+  that a specific roster member is reachable now). Concurrent in-flight dials
+  are bounded at `MAX_CONCURRENT_RECONNECT_DIALS = 8`.
+- **Cross-transport reconnect dedup** (#1000) — the supervisor's connected set
+  is the union of iroh peers and any roster member with a live link on any
+  transport (BLE, etc.), so a peer already reachable over BLE is not also dialed
+  over iroh/relay.
+- **Origin-tagged `DocumentChange`** (#1000) — new required field
+  `origin: ChangeOrigin` on the UniFFI `DocumentChange` Record. `ChangeOrigin`
+  is a new UniFFI enum with variants `Local` (own publish) and
+  `Remote { peer_id }` (sync from a peer). Enables consumers to notify only on
+  remote changes. **Coordinated binding regen required** — paired with
+  peat-flutter#13.
+- **Four Dart C-ABI shims** (#1000) — hand-rolled `#[no_mangle] extern "C"`
+  functions reformatting flat `FFIBuffer` arrays for `roster_remember`,
+  `reconnect_known_peers`, `wake_reconnect`, and `on_peer_observed`. Sit
+  alongside the existing shims in `dart_ffi.rs`.
+- **Contributor workflow guardrails** (#1000) — `CLAUDE.md` and `SKILL.md` now
+  require fork contributors to sync to upstream `main` before opening a PR, run
+  the verification checklist, and pass the consumer-reference grep gate.
+
+### Pinned
+
+- `peat-mesh` `>=0.9.0-rc.43, <0.9.1` (unchanged from rc.27).
+
 ## [0.9.0-rc.27] - 2026-06-20
 
 ### Fixed — `peat-protocol`
