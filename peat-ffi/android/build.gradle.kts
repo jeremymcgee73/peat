@@ -30,7 +30,15 @@ group = "com.defenseunicorns"
 // (fire-and-forget connect for UI callers that must not freeze on the
 // dial) plus the opt-in `relay-n0-hosted` feature passthrough. No JNI
 // ABI break; existing consumers link unchanged. See peat#995.
-version = "0.1.3"
+//
+// 0.1.4 (was 0.1.3): additive — persistent peer roster (six new UniFFI
+// exports), per-peer reconnect supervisor with backoff + cross-transport
+// dedup (three new UniFFI exports), origin-tagged DocumentChange (new
+// ChangeOrigin enum + required origin field — coordinated binding regen
+// required, paired with peat-flutter#13), and four Dart C-ABI shims for
+// the new reconnect surface. No JNI ABI break; existing JNI consumers
+// link unchanged. See peat#1000.
+version = "0.1.4"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"
