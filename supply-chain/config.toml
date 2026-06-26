@@ -22,6 +22,14 @@ audit-as-crates-io = true
 [policy.peat-ffi]
 audit-as-crates-io = true
 
+# Temporary: peat-mesh is pinned to a git commit (peat-mesh#266, unreleased)
+# via [patch.crates-io] in Cargo.toml. That git version (rc.43) matches a
+# published crates.io version, so cargo-vet needs to be told to audit it as
+# the crates.io crate. Remove when the override is dropped for a released
+# peat-mesh (see PR #1006 pre-merge checklist).
+[policy.peat-mesh]
+audit-as-crates-io = true
+
 [policy.peat-protocol]
 audit-as-crates-io = true
 
