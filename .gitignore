@@ -44,6 +44,9 @@ build/
 *.aab
 local.properties
 
+# Generated UniFFI bindings (build output; copied into consumers, never tracked)
+/bindings/
+
 # Xcode user state
 **/xcuserdata/
 
