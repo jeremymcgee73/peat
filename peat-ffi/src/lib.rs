@@ -1760,9 +1760,12 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
         match base64::engine::general_purpose::STANDARD.decode(config.shared_key.trim()) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
+                #[cfg(target_os = "android")]
                 android_log(&format!(
                     "[identity] shared_key not valid base64 ({e}); using legacy seed identity"
                 ));
+                #[cfg(not(target_os = "android"))]
+                eprintln!("[identity] shared_key not valid base64 ({e}); using legacy seed identity");
                 None
             }
         }
