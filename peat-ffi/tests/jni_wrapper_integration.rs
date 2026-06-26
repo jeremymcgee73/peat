@@ -170,12 +170,16 @@ fn scenario_create_node_returns_handle(raw: *mut jni::sys::JNIEnv) -> (i64, Temp
         let app_id = new_jstring(&mut env, APP_ID);
         let shared_key = new_jstring(&mut env, SHARED_KEY);
         let storage = new_jstring(&mut env, &storage_path);
+        // Empty bindAddress → None → legacy 0.0.0.0:0 auto-assign, preserving
+        // the prior behavior this scenario asserts against.
+        let bind_address = new_jstring(&mut env, "");
         peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
             env,
             null_class(),
             app_id,
             shared_key,
             storage,
+            bind_address,
         )
     };
     assert!(
