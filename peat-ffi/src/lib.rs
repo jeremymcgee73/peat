@@ -8467,10 +8467,51 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_testJni(
         .into_raw()
 }
 
+/// Normalize a JNI-provided bind-address string into the `Option<String>`
+/// that [`NodeConfig::bind_address`] expects (a full `host:port`
+/// `SocketAddr`, or `None` for the `0.0.0.0:0` auto-assign default).
+///
+/// Consumers typically source this from the platform Wi-Fi interface
+/// (e.g. Android `WifiManager`), which yields a bare IP with no port. To
+/// keep the consumer wiring simple we accept either form:
+/// - empty / whitespace          → `None` (auto-assign; unchanged behavior)
+/// - a bare IP (`192.168.1.5`)   → `Some("192.168.1.5:0")` (OS picks port)
+/// - a full `host:port`          → passed through verbatim
+///
+/// A non-empty value that is neither a bare IP nor a `SocketAddr` is passed
+/// through unchanged so `create_node`'s parse surfaces the error rather than
+/// silently falling back to the wildcard bind — a silent `0.0.0.0:0` is what
+/// breaks mDNS interface enumeration on Android, the very failure this
+/// parameter exists to let consumers avoid.
+#[cfg(feature = "sync")]
+fn normalize_bind_address(raw: String) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.parse::<SocketAddr>().is_ok() {
+        return Some(trimmed.to_string());
+    }
+    if trimmed.parse::<std::net::IpAddr>().is_ok() {
+        return Some(format!("{trimmed}:0"));
+    }
+    Some(trimmed.to_string())
+}
+
 /// JNI: Create a Peat node (simplified for testing)
 ///
 /// Kotlin signature: external fun createNodeJni(appId: String, sharedKey:
-/// String, storagePath: String): Long
+/// String, storagePath: String, bindAddress: String?): Long
+///
+/// `bindAddress` is the local interface to bind the iroh endpoint to — pass
+/// the device's Wi-Fi IP (bare `192.168.x.y`, or a full `host:port`) so mDNS
+/// discovery can enumerate a concrete interface instead of the wildcard
+/// `0.0.0.0`, which breaks interface enumeration on Android. Pass `null` or
+/// an empty string for the legacy auto-assign (`0.0.0.0:0`) behavior.
+///
+/// For relay / DNS discovery (cross-subnet), the consumer must also call
+/// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
+/// `Application.onCreate()` BEFORE the first `createNode` call.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
@@ -8479,6 +8520,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
     app_id: JString,
     shared_key: JString,
     storage_path: JString,
+    bind_address: JString,
 ) -> i64 {
     let app_id: String = match env.get_string(&app_id) {
         Ok(s) => s.into(),
@@ -8492,17 +8534,23 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
         Ok(s) => s.into(),
         Err(_) => return 0,
     };
+    // Nullable: a null/empty `bindAddress` keeps the auto-assign default.
+    let bind_address: Option<String> = env
+        .get_string(&bind_address)
+        .ok()
+        .map(Into::into)
+        .and_then(normalize_bind_address);
 
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "createNodeJni: app_id={}, storage_path={}",
-        app_id, storage_path
+        "createNodeJni: app_id={}, storage_path={}, bind_address={:?}",
+        app_id, storage_path, bind_address
     ));
 
     let config = NodeConfig {
         app_id,
         shared_key,
-        bind_address: None,
+        bind_address,
         storage_path,
         transport: None,
     };
@@ -8554,6 +8602,15 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
 /// initialized via JNI callbacks. Full BLE support is pending Android adapter
 /// integration in peat-btle.
 ///
+/// `bindAddress` is the local interface to bind the iroh endpoint to — pass
+/// the device's Wi-Fi IP (bare `192.168.x.y`, or a full `host:port`) so mDNS
+/// discovery can enumerate a concrete interface instead of the wildcard
+/// `0.0.0.0`, which breaks interface enumeration on Android. Pass `null` or
+/// an empty string for the legacy auto-assign (`0.0.0.0:0`) behavior. For
+/// relay / DNS discovery (cross-subnet), also call
+/// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
+/// `Application.onCreate()` BEFORE the first `createNode` call.
+///
 /// Kotlin signature:
 /// ```kotlin
 /// external fun createNodeWithConfigJni(
@@ -8561,7 +8618,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
 ///     sharedKey: String,
 ///     storagePath: String,
 ///     enableBle: Boolean,
-///     blePowerProfile: String?  // "aggressive", "balanced", or "low_power"
+///     blePowerProfile: String?, // "aggressive", "balanced", or "low_power"
+///     bindAddress: String?      // Wi-Fi IP, e.g. "192.168.1.5"; null = auto
 /// ): Long
 /// ```
 #[cfg(feature = "sync")]
@@ -8574,6 +8632,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     storage_path: JString,
     enable_ble: jboolean,
     ble_power_profile: JString,
+    bind_address: JString,
 ) -> i64 {
     let app_id: String = match env.get_string(&app_id) {
         Ok(s) => s.into(),
@@ -8598,13 +8657,21 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
         }
     });
 
+    // Nullable: a null/empty `bindAddress` keeps the auto-assign default.
+    let bind_address: Option<String> = env
+        .get_string(&bind_address)
+        .ok()
+        .map(Into::into)
+        .and_then(normalize_bind_address);
+
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "createNodeWithConfigJni: app_id={}, storage_path={}, enable_ble={}, power_profile={:?}",
+        "createNodeWithConfigJni: app_id={}, storage_path={}, enable_ble={}, power_profile={:?}, bind_address={:?}",
         app_id,
         storage_path,
         enable_ble != 0,
-        power_profile
+        power_profile,
+        bind_address
     ));
 
     // Build transport configuration
@@ -8627,7 +8694,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     let config = NodeConfig {
         app_id,
         shared_key,
-        bind_address: None,
+        bind_address,
         storage_path,
         transport: transport_config,
     };
