@@ -2679,6 +2679,125 @@ impl PeerDiscovery for IrohPeerDiscovery {
             });
         }
 
+        // Android / peat-controlled `_peat._udp` browse path. iroh's own
+        // swarm-discovery cannot enumerate the wildcard-bound interface on
+        // Android, so the `mdns_discovery()` stream above yields nothing there
+        // (the node advertises but never discovers). The peat-controlled browse
+        // DOES discover peers; consume its event stream and dial each by its
+        // advertised concrete addresses via `connect_peer` — `connect_by_id`
+        // alone can't resolve them because the iroh address book is empty on
+        // Android. On desktop this runs harmlessly alongside the iroh path: the
+        // `get_connection` dedup below stops it from double-dialing a peer the
+        // iroh path already connected.
+        if let Some(mut peat_events) = self.transport.peat_mdns_events() {
+            let transport = Arc::clone(&self.transport);
+            let formation_key_peat = formation_key.clone();
+            let availability_check = self.peer_availability_check.clone();
+
+            tokio::spawn(async move {
+                use crate::network::formation_handshake::perform_initiator_handshake;
+                use crate::network::PeerInfo as NetworkPeerInfo;
+                use peat_mesh::discovery::DiscoveryEvent as PeatMdnsEvent;
+
+                tracing::info!("Starting peat-controlled mDNS browse connection handler");
+
+                while let Some(event) = peat_events.recv().await {
+                    let discovered = match event {
+                        PeatMdnsEvent::PeerFound(peer) | PeatMdnsEvent::PeerUpdated(peer) => peer,
+                        PeatMdnsEvent::PeerLost(node_id) => {
+                            tracing::debug!(
+                                %node_id,
+                                "peat mDNS peer lost (no longer advertising)"
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Bridge the browse descriptor into the dialable form
+                    // (SocketAddrs → strings, node_id preserved) via the
+                    // `From<discovery::PeerInfo>` impl in peat-mesh.
+                    let peer: NetworkPeerInfo = discovered.into();
+
+                    // The node_id must be a hex EndpointId to be dialable; a peer
+                    // that advertised a non-hex id (e.g. a formation id) is
+                    // skipped rather than panicking.
+                    let peer_id = match peer.endpoint_id() {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::debug!(
+                                node_id = %peer.node_id,
+                                error = %e,
+                                "peat mDNS peer has non-hex node_id — skipping"
+                            );
+                            continue;
+                        }
+                    };
+
+                    if transport.get_connection(&peer_id).is_some() {
+                        tracing::debug!(
+                            peer_id = %peer_id,
+                            "Already connected to peat-mDNS-discovered peer"
+                        );
+                        continue;
+                    }
+
+                    // Same circuit-breaker gate as the iroh path (peat#873):
+                    // skip peers the breaker has marked unreachable so we don't
+                    // allocate fresh QUIC handshake state per rediscovery.
+                    if let Some(check) = availability_check.as_ref() {
+                        if !check(&peer_id) {
+                            tracing::debug!(
+                                peer_id = %peer_id,
+                                "Skipping peat-mDNS peer — circuit breaker open (peat#873)"
+                            );
+                            continue;
+                        }
+                    }
+
+                    tracing::info!(
+                        peer_id = %peer_id,
+                        "peat mDNS discovered peer, dialing by advertised address"
+                    );
+                    match transport.connect_peer(&peer).await {
+                        Ok(Some(conn)) => {
+                            match perform_initiator_handshake(&conn, &formation_key_peat).await {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        peer_id = %peer_id,
+                                        "peat mDNS peer connected and authenticated"
+                                    );
+                                    transport.emit_peer_connected(peer_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        error = %e,
+                                        "peat mDNS peer failed authentication"
+                                    );
+                                    conn.close(1u32.into(), b"authentication failed");
+                                    transport.disconnect(&peer_id).ok();
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                peer_id = %peer_id,
+                                "peat mDNS peer connection handled by accept path"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                peer_id = %peer_id,
+                                error = %e,
+                                "Failed to dial peat-mDNS-discovered peer"
+                            );
+                        }
+                    }
+                }
+                tracing::debug!("peat-controlled mDNS browse connection handler stopped");
+            });
+        }
+
         // Check if topology-driven connection management is configured
         #[cfg(feature = "automerge-backend")]
         let has_topology_events = {
