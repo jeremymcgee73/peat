@@ -36,6 +36,15 @@ audit-as-crates-io = true
 [policy.peat-schema]
 audit-as-crates-io = true
 
+# Temporary: the git-pinned peat-mesh (peat-mesh#266, unreleased) carries
+# commits not in the published rc.43, so the [[trusted.peat-mesh]] coverage
+# doesn't apply. peat-mesh is a first-party defenseunicorns crate; exempt the
+# pinned commit until it's released and the [patch.crates-io] override is
+# dropped (see PR #1006 pre-merge checklist).
+[[exemptions.peat-mesh]]
+version = "0.9.0-rc.43@git:c863d16b358b146067d759e691021bc49d182446"
+criteria = "safe-to-deploy"
+
 [[exemptions.arc-swap]]
 version = "1.9.1"
 criteria = "safe-to-deploy"
