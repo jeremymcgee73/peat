@@ -978,8 +978,14 @@ async fn connect_peer_inner(
         return Ok(());
     };
 
-    use peat_protocol::network::perform_initiator_handshake;
-    if let Err(e) = perform_initiator_handshake(&conn, &formation_key).await {
+    // peat-mesh#267: dial-side formation auth must use peat-mesh's
+    // `respond_to_formation_auth` to match the peer's rc.43 acceptor
+    // (`run_formation_auth`). peat-protocol's legacy `perform_initiator_handshake`
+    // speaks an incompatible wire format → peers reject "formation auth failed".
+    if let Err(e) =
+        peat_mesh::storage::mesh_sync_transport::respond_to_formation_auth(&formation_key, &conn)
+            .await
+    {
         conn.close(1u32.into(), b"authentication failed");
         iroh_transport.disconnect(&peer_id).ok();
         return Err(PeatError::ConnectionError {
@@ -2408,8 +2414,10 @@ async fn dial_peer_and_sync(
         return true;
     };
 
-    use peat_protocol::network::perform_initiator_handshake;
-    match perform_initiator_handshake(&conn, &formation_key).await {
+    // peat-mesh#267: use peat-mesh's dial-side handshake (see connect_peer_inner).
+    match peat_mesh::storage::mesh_sync_transport::respond_to_formation_auth(&formation_key, &conn)
+        .await
+    {
         Ok(()) => {
             iroh_transport.emit_peer_connected(peer_id);
             if let Some(coordinator) = storage_backend.sync_coordinator() {
