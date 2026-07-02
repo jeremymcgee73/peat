@@ -29,6 +29,15 @@ ignore = [
     # re-pins to a vulnerable hickory version is caught loudly instead of
     # silently suppressed. peat#924 QA WARNING follow-up.
 
+    # quick-xml DoS (quadratic duplicate-attr check; unbounded namespace-decl
+    # allocation) — transitive via iroh -> plist -> netdev; fix is quick-xml
+    # >=0.41.0, not yet pulled by iroh's netdev chain. peat never feeds
+    # attacker-controlled XML to quick-xml (plist parses only local system
+    # network-interface metadata). Mirrored in .github/workflows/ci.yml
+    # --ignore set. Drop when iroh's netdev chain ships a fixed quick-xml.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic dup-attr DoS; transitive via iroh, not attacker-reachable" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml namespace-decl allocation DoS; transitive via iroh, not attacker-reachable" },
+
     # Workspace crates
     # RUSTSEC-2025-0141 (bincode unmaintained) — bincode removed from the
     # dependency tree; ignore dropped so a re-introduction is caught.
