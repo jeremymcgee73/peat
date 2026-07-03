@@ -33,6 +33,16 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; used in peat-ffi, evaluate migration to postcard" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; macro-only, low risk" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; compile-time only, low risk" },
+    # quick-xml DoS (fixed in 0.41.0). peat-protocol's direct CoT-XML parser
+    # (the network-reachable path on the Linux fleet) is migrated to quick-xml
+    # 0.41 in this workspace, so that exposure is fixed. These ignores cover
+    # ONLY the residual quick-xml 0.38.4 copy pulled via netwatch -> netdev ->
+    # plist, which netdev gates behind cfg(macos/ios) — not compiled on Linux.
+    # plist has no release accepting quick-xml >=0.40 (1.9.0 pins ^0.39.2).
+    # MUST stay in sync with the cargo audit --ignore set in ci.yml; drop from
+    # BOTH when plist accepts quick-xml >=0.41.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic-runtime DoS; residual Apple-only copy via netdev -> plist (peat-protocol migrated to 0.41); no plist release allows quick-xml >=0.41 yet" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml namespace-allocation memory-exhaustion DoS; residual Apple-only copy via netdev -> plist (peat-protocol migrated to 0.41); no plist release allows quick-xml >=0.41 yet" },
 ]
 
 # --- License Policy ---

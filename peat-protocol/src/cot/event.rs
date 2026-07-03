@@ -252,7 +252,10 @@ impl CotEvent {
                     }
                 }
                 Ok(Event::Text(ref e)) if in_remarks => {
-                    remarks_text.push_str(&e.unescape().unwrap_or_default());
+                    // quick-xml 0.41 replaced BytesText::unescape() with
+                    // xml10_content() (decode + resolve XML 1.0 char refs and
+                    // predefined entities) — same semantics for CoT (XML 1.0).
+                    remarks_text.push_str(&e.xml10_content().unwrap_or_default());
                 }
                 Ok(Event::End(ref e)) => match e.name().as_ref() {
                     b"detail" => in_detail = false,

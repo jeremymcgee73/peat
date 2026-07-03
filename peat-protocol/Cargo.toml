@@ -98,7 +98,7 @@ futures-lite = { version = "2", optional = true }  # Minimal stream utilities (I
 negentropy = { version = "0.5", optional = true }  # Set reconciliation protocol (ADR-040, Issue #435)
 
 # TAK/CoT Integration (ADR-020, ADR-028)
-quick-xml = { version = "0.37", features = ["serialize"] }  # CoT XML encoding/decoding
+quick-xml = { version = "0.41", features = ["serialize"] }  # CoT XML encoding/decoding (>=0.41 patches RUSTSEC-2026-0194/0195)
 
 # Peat-Lite transport (ADR-035)
 log = { version = "0.4", optional = true }  # Logging for lite transport
