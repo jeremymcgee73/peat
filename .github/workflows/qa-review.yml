@@ -2,7 +2,7 @@ name: QA Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     branches: [main, develop]
 
 permissions:
@@ -34,10 +34,26 @@ jobs:
           SHORT_SHA="${{ github.event.pull_request.head.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          EXISTING=$(gh pr view "${{ github.event.pull_request.number }}" --json reviews --jq \
-            ".reviews[] | select(.body | contains(\"Peat QA Review (SHA: ${SHORT_SHA})\")) | .id" 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          # Hash of the PR title/body/base — the review INPUTS that live OUTSIDE the commit
+          # SHA. PR-description evidence is part of what we review, and an `edited` event can
+          # change it without changing the head SHA. Piped gh -> jq -> sha256sum so the
+          # untrusted title/body never enters the shell (no interpolation = no injection).
+          META=$(gh pr view "$PR_NUMBER" --json title,body,baseRefName --jq '{title,body,baseRefName}' | sha256sum | cut -c1-12)
+          echo "meta=${META}" >> "$GITHUB_OUTPUT"
+
+          REVIEWS=$(gh pr view "$PR_NUMBER" --json reviews)
+
+          # Skip only when a prior review matches BOTH the current head SHA AND the current
+          # title/body/base hash. Same SHA + a NEW hash (a title/description fix) must
+          # re-review, not skip — that was the bug: description fixes never re-triggered.
+          if echo "$REVIEWS" | jq -e \
+               --arg sha "Peat QA Review (SHA: ${SHORT_SHA})" \
+               --arg meta "peat-qa-meta: ${META}" \
+               '.reviews[] | select((.body | contains($sha)) and (.body | contains($meta)))' >/dev/null; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Review PR with Claude Code
@@ -45,6 +61,7 @@ jobs:
         env:
           GH_TOKEN:               ${{ secrets.GITHUB_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          META:                   ${{ steps.check.outputs.meta }}
         run: |
           set -uo pipefail
           set +e   # GH Actions defaults to bash -e; -e would abort before rc=$? captures the claude exit code
@@ -67,8 +84,8 @@ jobs:
           # "Check for existing review" step.
           already_posted() {
             gh pr view "$PR_NUMBER" --json reviews \
-              | jq -e --arg tag "Peat QA Review (SHA: ${SHORT_SHA})" \
-                   '.reviews[] | select(.body | contains($tag))' >/dev/null 2>&1
+              | jq -e --arg sha "Peat QA Review (SHA: ${SHORT_SHA})" --arg meta "peat-qa-meta: ${META}" \
+                   '.reviews[] | select((.body | contains($sha)) and (.body | contains($meta)))' >/dev/null 2>&1
           }
 
           submit_review() {
@@ -102,6 +119,11 @@ jobs:
               echo "::error::could not retrieve peat-bot token from host gh credential store"
               exit 1
             fi
+            # Stamp the title/body/base hash into the posted review so future runs can
+            # distinguish "already reviewed this exact PR state" from "description changed
+            # since". HTML comment: invisible in the rendered review, and its line never
+            # starts with a finding marker so the fail-closed grep above never trips on it.
+            printf '\n\n<!-- peat-qa-meta: %s -->\n' "$META" >> "$RUNNER_TEMP/peat-qa-review.md"
             if ! GH_TOKEN="$peat_bot_token" gh pr review "$PR_NUMBER" $verb --body-file "$RUNNER_TEMP/peat-qa-review.md"; then
               echo "::error::gh pr review ${verb} failed — verdict not posted"
               exit 1
@@ -123,6 +145,11 @@ jobs:
           Steps:
           1. Run: gh pr diff ${{ github.event.pull_request.number }}
           2. Run: gh pr view ${{ github.event.pull_request.number }}
+             NOTE: this review can be re-triggered by an `edited` event — a change to the PR
+             title or description with no new commit. Evaluate the criteria against the
+             CURRENT title/description fetched in this step, especially any finding that
+             would depend on PR-description evidence. A concern that the corrected
+             description now satisfies should not be flagged.
           3. Review the diff against these criteria:
              - Protocol/schema: backward-compatible with cap-schema; check ADR decisions
              - peat-mesh: must not break Automerge sync semantics or Iroh peer discovery
@@ -187,7 +214,7 @@ jobs:
             echo "::group::QA Review Opus 4.7 attempt ${attempt}/${MAX_OPUS_ATTEMPTS}"
 
             if already_posted; then
-              echo "Review for SHA ${SHORT_SHA} already posted; treating as success."
+              echo "Review for SHA ${SHORT_SHA} (meta ${META}) already posted; treating as success."
               echo "::endgroup::"
               exit 0
             fi
@@ -213,7 +240,7 @@ jobs:
           echo "::group::QA Review Sonnet 4.6 fallback"
 
           if already_posted; then
-            echo "Review for SHA ${SHORT_SHA} already posted; treating as success."
+            echo "Review for SHA ${SHORT_SHA} (meta ${META}) already posted; treating as success."
             echo "::endgroup::"
             exit 0
           fi
