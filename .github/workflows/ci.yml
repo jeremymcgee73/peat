@@ -240,10 +240,29 @@ jobs:
           # versions). Any future regression that re-pins to a vulnerable
           # hickory now fails the gate loudly instead of being silently
           # suppressed.
-          cargo audit 2>&1 || true
+          #
+          # RUSTSEC-2026-0194 / -0195 — quick-xml DoS (quadratic runtime;
+          # unbounded namespace allocation), both fixed in quick-xml 0.41.0.
+          # peat-protocol's direct CoT-XML parser — the network-reachable path
+          # on the Linux fleet — IS migrated to quick-xml 0.41 in this PR
+          # (peat-protocol/Cargo.toml), so that exposure is fixed, not ignored.
+          # This ignore covers ONLY the residual quick-xml 0.38.4 copy pulled
+          # via netwatch -> netdev -> plist; netdev gates plist behind
+          # cfg(any(target_os="macos", target_os="ios")), so it is not compiled
+          # into the Linux fleet or gateway artifacts. plist has no release
+          # accepting quick-xml >=0.40 (1.9.0 pins ^0.39.2), so that copy cannot
+          # be bumped. Drop both ignores (here and in deny.toml) when plist
+          # accepts quick-xml >=0.41. Re-check: `cargo tree -i quick-xml`.
+          cargo audit \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195 \
+            2>&1 || true
           # Gating invocation: exits non-zero (failing the job) if any
           # non-ignored vulnerability is reported.
-          cargo audit --json 2>/dev/null | jq -e '.vulnerabilities.count == 0'
+          cargo audit \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195 \
+            --json 2>/dev/null | jq -e '.vulnerabilities.count == 0'
 
   supply-chain:
     name: Supply Chain
