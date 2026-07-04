@@ -8240,10 +8240,16 @@ mod tests {
         }
 
         #[test]
-        fn bare_ipv6_appends_port_zero() {
-            assert_eq!(
-                normalize_bind_address("::1".to_string()),
-                Some("::1:0".to_string()),
+        fn bare_ipv6_bracket_wrapped_with_port_zero() {
+            let result = normalize_bind_address("::1".to_string());
+            assert_eq!(result, Some("[::1]:0".to_string()));
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap()
+                    .parse::<std::net::SocketAddr>()
+                    .is_ok(),
+                "bracket-wrapped IPv6 must round-trip through SocketAddr::from_str"
             );
         }
 
@@ -8566,8 +8572,11 @@ fn normalize_bind_address(raw: String) -> Option<String> {
     if trimmed.parse::<SocketAddr>().is_ok() {
         return Some(trimmed.to_string());
     }
-    if trimmed.parse::<std::net::IpAddr>().is_ok() {
-        return Some(format!("{trimmed}:0"));
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(_) => Some(format!("{trimmed}:0")),
+            std::net::IpAddr::V6(_) => Some(format!("[{trimmed}]:0")),
+        };
     }
     Some(trimmed.to_string())
 }
