@@ -124,6 +124,7 @@ fn jni_wrapper_integration() {
     scenario_endpoint_socket_addr_real_handle(raw, handle);
     let (bind_handle, _bind_tempdir) = scenario_create_node_with_bind_address(raw);
     let (config_handle, _config_tempdir) = scenario_create_node_with_config_bind_address(raw);
+    scenario_create_node_invalid_shared_key_returns_zero(raw);
     scenario_publish_get_roundtrip(raw, handle);
     scenario_get_document_err_throws_runtime_exception(raw, handle);
     scenario_native_method_table_audit();
@@ -371,6 +372,48 @@ fn scenario_create_node_with_config_bind_address(raw: *mut jni::sys::JNIEnv) -> 
     );
 
     (handle, tempdir)
+}
+
+// ---------------------------------------------------------------------
+// Scenario 1d: createNodeJni with a non-base64 shared_key returns 0.
+//
+// The legacy seed identity fallback (from_seed_with_discovery_at_addr)
+// fires when shared_key is non-empty but not valid base64 — iroh key
+// derivation falls back to the seed path. However, the sync backend's
+// initialize() still requires a valid base64 key for FormationKey
+// authentication (FormationKey::from_base64), so create_node returns
+// Err and the JNI wrapper correctly returns 0.
+//
+// This scenario pins the contract that an invalid shared_key fails
+// gracefully (returns 0) rather than panicking or returning a handle
+// to a half-initialized node.
+// ---------------------------------------------------------------------
+fn scenario_create_node_invalid_shared_key_returns_zero(raw: *mut jni::sys::JNIEnv) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let handle = {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, "raw-utf8-key-not-base64!");
+        let storage = new_jstring(&mut env, &storage_path);
+        let bind_address = new_jstring(&mut env, "127.0.0.1");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            storage,
+            bind_address,
+        )
+    };
+    assert_eq!(
+        handle, 0,
+        "createNodeJni with non-base64 shared_key must return 0 — \
+         FormationKey::from_base64 rejects the key during sync backend \
+         initialization, so create_node returns Err.",
+    );
+    drop(tempdir);
 }
 
 // ---------------------------------------------------------------------

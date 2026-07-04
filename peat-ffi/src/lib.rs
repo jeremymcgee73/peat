@@ -8555,7 +8555,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_testJni(
 /// (e.g. Android `WifiManager`), which yields a bare IP with no port. To
 /// keep the consumer wiring simple we accept either form:
 /// - empty / whitespace          → `None` (auto-assign; unchanged behavior)
-/// - a bare IP (`192.168.1.5`)   → `Some("192.168.1.5:0")` (OS picks port)
+/// - a bare IPv4 (`192.168.1.5`) → `Some("192.168.1.5:0")` (OS picks port)
+/// - a bare IPv6 (`::1`)         → `Some("[::1]:0")` (bracket-wrapped)
 /// - a full `host:port`          → passed through verbatim
 ///
 /// A non-empty value that is neither a bare IP nor a `SocketAddr` is passed
@@ -8563,6 +8564,12 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_testJni(
 /// silently falling back to the wildcard bind — a silent `0.0.0.0:0` is what
 /// breaks mDNS interface enumeration on Android, the very failure this
 /// parameter exists to let consumers avoid.
+///
+/// **IPv6 zone identifiers** (e.g. `fe80::abcd%wlan0`) do not parse as
+/// `IpAddr` and fall through to the pass-through path, where `create_node`'s
+/// `SocketAddr::from_str` will reject them. Android `WifiManager` currently
+/// yields IPv4; if scoped IPv6 support is needed later, strip or handle
+/// the zone ID here before parsing.
 #[cfg(feature = "sync")]
 fn normalize_bind_address(raw: String) -> Option<String> {
     let trimmed = raw.trim();
@@ -8591,6 +8598,13 @@ fn normalize_bind_address(raw: String) -> Option<String> {
 /// discovery can enumerate a concrete interface instead of the wildcard
 /// `0.0.0.0`, which breaks interface enumeration on Android. Pass `null` or
 /// an empty string for the legacy auto-assign (`0.0.0.0:0`) behavior.
+///
+/// **Identity derivation:** when `sharedKey` is valid base64, the node's iroh
+/// EndpointId is derived from HKDF over `(formation_secret, storage_path
+/// basename)`. The **basename of `storagePath`** is the identity seed —
+/// renaming the storage directory rotates the EndpointId silently. When
+/// `sharedKey` is non-empty but not valid base64, the legacy seed identity
+/// (`app_id/storage_path`) is used instead.
 ///
 /// For relay / DNS discovery (cross-subnet), the consumer must also call
 /// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
@@ -8693,6 +8707,10 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
 /// relay / DNS discovery (cross-subnet), also call
 /// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
 /// `Application.onCreate()` BEFORE the first `createNode` call.
+///
+/// **Identity derivation:** same as [`createNodeJni`] — the node's iroh
+/// EndpointId is derived from the `storagePath` basename. Renaming the
+/// storage directory rotates the EndpointId.
 ///
 /// Kotlin signature:
 /// ```kotlin
