@@ -1741,6 +1741,41 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     // in large-scale deployments (see 384-node hierarchical simulations).
     let seed = format!("{}/{}", config.app_id, config.storage_path);
     let storage_path_for_store = storage_path.clone();
+
+    // Stable per-device logical node_id for the canonical formation identity:
+    // the storage directory's **basename** is the identity seed. Formation
+    // peers reconstruct this endpoint's iroh EndpointId from
+    // (formation_secret, node_id), so it must be stable across restarts.
+    // Renaming the storage directory rotates the EndpointId silently.
+    // NOTE: upgrading from the legacy seed identity (pre-formation) to this
+    // path is a one-time EndpointId rotation — cached peer mappings and
+    // route hints from prior sessions go stale at upgrade time.
+    let iroh_node_id = std::path::Path::new(&config.storage_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| config.app_id.clone());
+    // Raw formation secret = base64-decoded shared key (matches peat-mesh /
+    // peat-node). Empty/invalid → fall back to the legacy seed identity.
+    let formation_secret: Option<Vec<u8>> = if config.shared_key.trim().is_empty() {
+        None
+    } else {
+        use base64::Engine as _;
+        match base64::engine::general_purpose::STANDARD.decode(config.shared_key.trim()) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!(
+                    "[identity] shared_key not valid base64 ({e}); using legacy seed identity"
+                ));
+                #[cfg(not(target_os = "android"))]
+                eprintln!(
+                    "[identity] shared_key not valid base64 ({e}); using legacy seed identity"
+                );
+                None
+            }
+        }
+    };
     // Runtime relay posture (peat-flutter relay toggle): opt into n0's hosted
     // public relay pool only when the caller asked for it. Defaults to the
     // local-only posture so unconfigured callers don't phone home.
@@ -1774,11 +1809,33 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
             (Err(last_err.unwrap()), store_start.elapsed().as_millis())
         });
 
-        // Create transport WITH mDNS discovery wired into the endpoint
+        // Create transport WITH mDNS discovery wired into the endpoint.
+        // With a formation secret present, derive the iroh identity the
+        // canonical way (HKDF(formation_secret, "iroh:" + node_id)) so the
+        // endpoint interops with peat-mesh-node / peat-node and is advertised
+        // on `_peat` with a concrete address (works on Android). Otherwise fall
+        // back to the legacy per-device seed identity.
         let transport_future = async {
-            let result =
-                IrohTransport::from_seed_with_discovery_at_addr(&seed, bind_addr, enable_n0_relay)
-                    .await;
+            let result = match formation_secret.as_deref() {
+                Some(secret) => {
+                    IrohTransport::from_formation_with_discovery_at_addr(
+                        secret,
+                        &iroh_node_id,
+                        &config.app_id,
+                        bind_addr,
+                        enable_n0_relay,
+                    )
+                    .await
+                }
+                None => {
+                    IrohTransport::from_seed_with_discovery_at_addr(
+                        &seed,
+                        bind_addr,
+                        enable_n0_relay,
+                    )
+                    .await
+                }
+            };
             (result, transport_start.elapsed().as_millis())
         };
 
@@ -8154,6 +8211,80 @@ mod tests {
             }
         }
     }
+
+    #[cfg(feature = "sync")]
+    mod normalize_bind_address_tests {
+        use super::super::normalize_bind_address;
+
+        #[test]
+        fn empty_string_returns_none() {
+            assert_eq!(normalize_bind_address("".to_string()), None);
+        }
+
+        #[test]
+        fn whitespace_only_returns_none() {
+            assert_eq!(normalize_bind_address("   ".to_string()), None);
+            assert_eq!(normalize_bind_address("\t\n".to_string()), None);
+        }
+
+        #[test]
+        fn bare_ip_appends_port_zero() {
+            assert_eq!(
+                normalize_bind_address("192.168.1.5".to_string()),
+                Some("192.168.1.5:0".to_string()),
+            );
+            assert_eq!(
+                normalize_bind_address("127.0.0.1".to_string()),
+                Some("127.0.0.1:0".to_string()),
+            );
+        }
+
+        #[test]
+        fn bare_ipv6_bracket_wrapped_with_port_zero() {
+            let result = normalize_bind_address("::1".to_string());
+            assert_eq!(result, Some("[::1]:0".to_string()));
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap()
+                    .parse::<std::net::SocketAddr>()
+                    .is_ok(),
+                "bracket-wrapped IPv6 must round-trip through SocketAddr::from_str"
+            );
+        }
+
+        #[test]
+        fn full_socket_addr_passed_through() {
+            assert_eq!(
+                normalize_bind_address("192.168.1.5:8080".to_string()),
+                Some("192.168.1.5:8080".to_string()),
+            );
+            assert_eq!(
+                normalize_bind_address("0.0.0.0:0".to_string()),
+                Some("0.0.0.0:0".to_string()),
+            );
+        }
+
+        #[test]
+        fn invalid_string_passed_through() {
+            assert_eq!(
+                normalize_bind_address("not-an-ip".to_string()),
+                Some("not-an-ip".to_string()),
+            );
+        }
+
+        #[test]
+        fn leading_trailing_whitespace_trimmed() {
+            assert_eq!(
+                normalize_bind_address("  192.168.1.5  ".to_string()),
+                Some("192.168.1.5:0".to_string()),
+            );
+            assert_eq!(
+                normalize_bind_address("  10.0.0.1:9999  ".to_string()),
+                Some("10.0.0.1:9999".to_string()),
+            );
+        }
+    }
 }
 
 // =============================================================================
@@ -8416,10 +8547,68 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_testJni(
         .into_raw()
 }
 
+/// Normalize a JNI-provided bind-address string into the `Option<String>`
+/// that [`NodeConfig::bind_address`] expects (a full `host:port`
+/// `SocketAddr`, or `None` for the `0.0.0.0:0` auto-assign default).
+///
+/// Consumers typically source this from the platform Wi-Fi interface
+/// (e.g. Android `WifiManager`), which yields a bare IP with no port. To
+/// keep the consumer wiring simple we accept either form:
+/// - empty / whitespace          → `None` (auto-assign; unchanged behavior)
+/// - a bare IPv4 (`192.168.1.5`) → `Some("192.168.1.5:0")` (OS picks port)
+/// - a bare IPv6 (`::1`)         → `Some("[::1]:0")` (bracket-wrapped)
+/// - a full `host:port`          → passed through verbatim
+///
+/// A non-empty value that is neither a bare IP nor a `SocketAddr` is passed
+/// through unchanged so `create_node`'s parse surfaces the error rather than
+/// silently falling back to the wildcard bind — a silent `0.0.0.0:0` is what
+/// breaks mDNS interface enumeration on Android, the very failure this
+/// parameter exists to let consumers avoid.
+///
+/// **IPv6 zone identifiers** (e.g. `fe80::abcd%wlan0`) do not parse as
+/// `IpAddr` and fall through to the pass-through path, where `create_node`'s
+/// `SocketAddr::from_str` will reject them. Android `WifiManager` currently
+/// yields IPv4; if scoped IPv6 support is needed later, strip or handle
+/// the zone ID here before parsing.
+#[cfg(feature = "sync")]
+fn normalize_bind_address(raw: String) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.parse::<SocketAddr>().is_ok() {
+        return Some(trimmed.to_string());
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(_) => Some(format!("{trimmed}:0")),
+            std::net::IpAddr::V6(_) => Some(format!("[{trimmed}]:0")),
+        };
+    }
+    Some(trimmed.to_string())
+}
+
 /// JNI: Create a Peat node (simplified for testing)
 ///
 /// Kotlin signature: external fun createNodeJni(appId: String, sharedKey:
-/// String, storagePath: String): Long
+/// String, storagePath: String, bindAddress: String?): Long
+///
+/// `bindAddress` is the local interface to bind the iroh endpoint to — pass
+/// the device's Wi-Fi IP (bare `192.168.x.y`, or a full `host:port`) so mDNS
+/// discovery can enumerate a concrete interface instead of the wildcard
+/// `0.0.0.0`, which breaks interface enumeration on Android. Pass `null` or
+/// an empty string for the legacy auto-assign (`0.0.0.0:0`) behavior.
+///
+/// **Identity derivation:** when `sharedKey` is valid base64, the node's iroh
+/// EndpointId is derived from HKDF over `(formation_secret, storage_path
+/// basename)`. The **basename of `storagePath`** is the identity seed —
+/// renaming the storage directory rotates the EndpointId silently. When
+/// `sharedKey` is non-empty but not valid base64, the legacy seed identity
+/// (`app_id/storage_path`) is used instead.
+///
+/// For relay / DNS discovery (cross-subnet), the consumer must also call
+/// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
+/// `Application.onCreate()` BEFORE the first `createNode` call.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
@@ -8428,6 +8617,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
     app_id: JString,
     shared_key: JString,
     storage_path: JString,
+    bind_address: JString,
 ) -> i64 {
     let app_id: String = match env.get_string(&app_id) {
         Ok(s) => s.into(),
@@ -8441,17 +8631,23 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
         Ok(s) => s.into(),
         Err(_) => return 0,
     };
+    // Nullable: a null/empty `bindAddress` keeps the auto-assign default.
+    let bind_address: Option<String> = env
+        .get_string(&bind_address)
+        .ok()
+        .map(Into::into)
+        .and_then(normalize_bind_address);
 
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "createNodeJni: app_id={}, storage_path={}",
-        app_id, storage_path
+        "createNodeJni: app_id={}, storage_path={}, bind_address={:?}",
+        app_id, storage_path, bind_address
     ));
 
     let config = NodeConfig {
         app_id,
         shared_key,
-        bind_address: None,
+        bind_address,
         storage_path,
         transport: None,
     };
@@ -8503,6 +8699,19 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
 /// initialized via JNI callbacks. Full BLE support is pending Android adapter
 /// integration in peat-btle.
 ///
+/// `bindAddress` is the local interface to bind the iroh endpoint to — pass
+/// the device's Wi-Fi IP (bare `192.168.x.y`, or a full `host:port`) so mDNS
+/// discovery can enumerate a concrete interface instead of the wildcard
+/// `0.0.0.0`, which breaks interface enumeration on Android. Pass `null` or
+/// an empty string for the legacy auto-assign (`0.0.0.0:0`) behavior. For
+/// relay / DNS discovery (cross-subnet), also call
+/// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
+/// `Application.onCreate()` BEFORE the first `createNode` call.
+///
+/// **Identity derivation:** same as [`createNodeJni`] — the node's iroh
+/// EndpointId is derived from the `storagePath` basename. Renaming the
+/// storage directory rotates the EndpointId.
+///
 /// Kotlin signature:
 /// ```kotlin
 /// external fun createNodeWithConfigJni(
@@ -8510,7 +8719,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
 ///     sharedKey: String,
 ///     storagePath: String,
 ///     enableBle: Boolean,
-///     blePowerProfile: String?  // "aggressive", "balanced", or "low_power"
+///     blePowerProfile: String?, // "aggressive", "balanced", or "low_power"
+///     bindAddress: String?      // Wi-Fi IP, e.g. "192.168.1.5"; null = auto
 /// ): Long
 /// ```
 #[cfg(feature = "sync")]
@@ -8523,6 +8733,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     storage_path: JString,
     enable_ble: jboolean,
     ble_power_profile: JString,
+    bind_address: JString,
 ) -> i64 {
     let app_id: String = match env.get_string(&app_id) {
         Ok(s) => s.into(),
@@ -8547,13 +8758,21 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
         }
     });
 
+    // Nullable: a null/empty `bindAddress` keeps the auto-assign default.
+    let bind_address: Option<String> = env
+        .get_string(&bind_address)
+        .ok()
+        .map(Into::into)
+        .and_then(normalize_bind_address);
+
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "createNodeWithConfigJni: app_id={}, storage_path={}, enable_ble={}, power_profile={:?}",
+        "createNodeWithConfigJni: app_id={}, storage_path={}, enable_ble={}, power_profile={:?}, bind_address={:?}",
         app_id,
         storage_path,
         enable_ble != 0,
-        power_profile
+        power_profile,
+        bind_address
     ));
 
     // Build transport configuration
@@ -8576,7 +8795,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     let config = NodeConfig {
         app_id,
         shared_key,
-        bind_address: None,
+        bind_address,
         storage_path,
         transport: transport_config,
     };

@@ -47,7 +47,7 @@
 //! peat#881 / peat#880 carryover.
 
 use jni::objects::{JClass, JObject, JString};
-use jni::sys::jstring;
+use jni::sys::{jboolean, jstring};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM};
 use std::sync::OnceLock;
 use tempfile::TempDir;
@@ -122,6 +122,9 @@ fn jni_wrapper_integration() {
     scenario_endpoint_socket_addr_null_handle(raw);
     let (handle, _tempdir) = scenario_create_node_returns_handle(raw);
     scenario_endpoint_socket_addr_real_handle(raw, handle);
+    let (bind_handle, _bind_tempdir) = scenario_create_node_with_bind_address(raw);
+    let (config_handle, _config_tempdir) = scenario_create_node_with_config_bind_address(raw);
+    scenario_create_node_invalid_shared_key_returns_zero(raw);
     scenario_publish_get_roundtrip(raw, handle);
     scenario_get_document_err_throws_runtime_exception(raw, handle);
     scenario_native_method_table_audit();
@@ -131,6 +134,10 @@ fn jni_wrapper_integration() {
     // aborted the JVM already.
     let env = unsafe { fresh_env(raw) };
     peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), handle);
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), bind_handle);
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), config_handle);
 }
 
 // ---------------------------------------------------------------------
@@ -170,12 +177,16 @@ fn scenario_create_node_returns_handle(raw: *mut jni::sys::JNIEnv) -> (i64, Temp
         let app_id = new_jstring(&mut env, APP_ID);
         let shared_key = new_jstring(&mut env, SHARED_KEY);
         let storage = new_jstring(&mut env, &storage_path);
+        // Empty bindAddress → None → legacy 0.0.0.0:0 auto-assign, preserving
+        // the prior behavior this scenario asserts against.
+        let bind_address = new_jstring(&mut env, "");
         peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
             env,
             null_class(),
             app_id,
             shared_key,
             storage,
+            bind_address,
         )
     };
     assert!(
@@ -227,6 +238,182 @@ fn scenario_endpoint_socket_addr_real_handle(raw: *mut jni::sys::JNIEnv, handle:
             s, port, e
         )
     });
+}
+
+// ---------------------------------------------------------------------
+// Scenario 1b: createNodeJni with a concrete bindAddress ("127.0.0.1")
+// exercises the bare-IP normalization path (→ "127.0.0.1:0") and proves
+// endpointSocketAddrJni returns an address on the requested interface.
+// This is the round-trip the bindAddress parameter exists to enable:
+// a concrete interface for mDNS enumeration instead of the wildcard
+// 0.0.0.0 that breaks Android discovery.
+// ---------------------------------------------------------------------
+fn scenario_create_node_with_bind_address(raw: *mut jni::sys::JNIEnv) -> (i64, TempDir) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let handle = {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, SHARED_KEY);
+        let storage = new_jstring(&mut env, &storage_path);
+        let bind_address = new_jstring(&mut env, "127.0.0.1");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            storage,
+            bind_address,
+        )
+    };
+    assert!(
+        handle != 0,
+        "createNodeJni with bindAddress=\"127.0.0.1\" returned 0 — \
+         normalize_bind_address should have produced \"127.0.0.1:0\" \
+         and create_node should have bound the loopback interface.",
+    );
+
+    // Verify the endpoint is actually on the loopback interface.
+    let mut env = unsafe { fresh_env(raw) };
+    let result = peat_ffi::Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni(
+        unsafe { fresh_env(raw) },
+        null_class(),
+        handle,
+    );
+    let addr_str = jstring_to_rust(&mut env, result).unwrap_or_else(|| {
+        panic!(
+            "endpointSocketAddrJni returned null for a node created \
+             with bindAddress=\"127.0.0.1\""
+        )
+    });
+    let addr: std::net::SocketAddr = addr_str.parse().unwrap_or_else(|e| {
+        panic!(
+            "endpointSocketAddrJni returned {:?} which does not parse \
+             as SocketAddr: {}",
+            addr_str, e
+        )
+    });
+    assert!(
+        addr.ip().is_loopback(),
+        "endpointSocketAddrJni returned {} — expected a loopback \
+         address (127.0.0.1:*) for a node created with \
+         bindAddress=\"127.0.0.1\"",
+        addr,
+    );
+
+    (handle, tempdir)
+}
+
+// ---------------------------------------------------------------------
+// Scenario 1c: createNodeWithConfigJni with a concrete bindAddress
+// exercises the same normalize_bind_address path through the config
+// entrypoint. Proves the new trailing bindAddress parameter wires
+// through to NodeConfig.bind_address and produces a working node
+// whose endpoint is on the requested interface.
+// ---------------------------------------------------------------------
+fn scenario_create_node_with_config_bind_address(raw: *mut jni::sys::JNIEnv) -> (i64, TempDir) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let handle = {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, SHARED_KEY);
+        let storage = new_jstring(&mut env, &storage_path);
+        let enable_ble: jboolean = 0;
+        let ble_power_profile = new_jstring(&mut env, "");
+        let bind_address = new_jstring(&mut env, "127.0.0.1:0");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            storage,
+            enable_ble,
+            ble_power_profile,
+            bind_address,
+        )
+    };
+    assert!(
+        handle != 0,
+        "createNodeWithConfigJni with bindAddress=\"127.0.0.1:0\" \
+         returned 0 — the full host:port form should pass through \
+         normalize_bind_address verbatim and create_node should bind \
+         the loopback interface.",
+    );
+
+    // Verify the endpoint is on the loopback interface.
+    let mut env = unsafe { fresh_env(raw) };
+    let result = peat_ffi::Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni(
+        unsafe { fresh_env(raw) },
+        null_class(),
+        handle,
+    );
+    let addr_str = jstring_to_rust(&mut env, result).unwrap_or_else(|| {
+        panic!(
+            "endpointSocketAddrJni returned null for a node created \
+             via createNodeWithConfigJni with bindAddress=\"127.0.0.1:0\""
+        )
+    });
+    let addr: std::net::SocketAddr = addr_str.parse().unwrap_or_else(|e| {
+        panic!(
+            "endpointSocketAddrJni returned {:?} which does not parse \
+             as SocketAddr: {}",
+            addr_str, e
+        )
+    });
+    assert!(
+        addr.ip().is_loopback(),
+        "endpointSocketAddrJni returned {} — expected a loopback \
+         address for a node created via createNodeWithConfigJni with \
+         bindAddress=\"127.0.0.1:0\"",
+        addr,
+    );
+
+    (handle, tempdir)
+}
+
+// ---------------------------------------------------------------------
+// Scenario 1d: createNodeJni with a non-base64 shared_key returns 0.
+//
+// The legacy seed identity fallback (from_seed_with_discovery_at_addr)
+// fires when shared_key is non-empty but not valid base64 — iroh key
+// derivation falls back to the seed path. However, the sync backend's
+// initialize() still requires a valid base64 key for FormationKey
+// authentication (FormationKey::from_base64), so create_node returns
+// Err and the JNI wrapper correctly returns 0.
+//
+// This scenario pins the contract that an invalid shared_key fails
+// gracefully (returns 0) rather than panicking or returning a handle
+// to a half-initialized node.
+// ---------------------------------------------------------------------
+fn scenario_create_node_invalid_shared_key_returns_zero(raw: *mut jni::sys::JNIEnv) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let handle = {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, "raw-utf8-key-not-base64!");
+        let storage = new_jstring(&mut env, &storage_path);
+        let bind_address = new_jstring(&mut env, "127.0.0.1");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            storage,
+            bind_address,
+        )
+    };
+    assert_eq!(
+        handle, 0,
+        "createNodeJni with non-base64 shared_key must return 0 — \
+         FormationKey::from_base64 rejects the key during sync backend \
+         initialization, so create_node returns Err.",
+    );
+    drop(tempdir);
 }
 
 // ---------------------------------------------------------------------

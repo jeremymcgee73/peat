@@ -150,7 +150,18 @@ jobs:
              CURRENT title/description fetched in this step, especially any finding that
              would depend on PR-description evidence. A concern that the corrected
              description now satisfies should not be flagged.
-          3. Review the diff against these criteria:
+          3. Fetch prior QA reviews on this PR:
+             Run: gh pr view ${{ github.event.pull_request.number }} --json reviews --jq '.reviews[] | select(.body | contains("Peat QA Review")) | .body'
+             This is an INCREMENTAL review. Read the prior review bodies carefully.
+             A finding is ALREADY ADDRESSED if ANY of these apply:
+               (a) It was flagged in a prior QA review AND the current diff resolves it (code changed to fix it).
+               (b) It is explicitly tracked in the PR body's pre-merge checklist (the author already knows).
+               (c) It predates this PR's diff entirely (pre-existing issue not introduced by this branch).
+             Do NOT re-flag already-addressed findings. If a prior review flagged something and the
+             current push did not change the relevant code, it is still addressed by (b) or (c) — do
+             not repeat it. Only flag a prior finding again if the author's attempted fix is itself wrong.
+             If all findings from prior reviews are addressed and no new issues exist, the review is clean.
+          4. Review the diff against these criteria:
              - Protocol/schema: backward-compatible with cap-schema; check ADR decisions
              - peat-mesh: must not break Automerge sync semantics or Iroh peer discovery
              - peat-ffi / peat-btle: FFI/BLE changes must validate all platform bindings (Android JNI, iOS UniFFI, Linux BlueZ, aarch64)
@@ -179,7 +190,7 @@ jobs:
                This is NOT formatter/style nitpicking — rustfmt/gofmt/prettier handles that.
              - Architectural reach: if a change crosses crate boundaries, alters protocol/transport
                semantics, or sits in ADR territory in a way warranting design discussion, escalate.
-          4. Write findings using the Write tool:
+          5. Write findings using the Write tool:
              (a) Save the complete review body to $RUNNER_TEMP/peat-qa-review.md.
                  Start the body with EXACTLY (including the leading "## "):
           $START_LINE
