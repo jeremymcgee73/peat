@@ -15,9 +15,9 @@ ignore = [
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; tracked for migration to rustls-pki-types" },
     # Transitive via iroh — cannot fix locally, tracked upstream
     { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill unmaintained; transitive via iroh" },
-    # Transitive via iroh -> aws-lc-sys
-    { id = "RUSTSEC-2026-0044", reason = "aws-lc X.509 bypass; transitive via iroh, awaiting upstream update" },
-    { id = "RUSTSEC-2026-0048", reason = "aws-lc CRL logic error; transitive via iroh, awaiting upstream update" },
+    # RUSTSEC-2026-0044 / -0048 (aws-lc X.509 bypass + CRL logic error) —
+    # cleared by aws-lc-sys 0.41.0 / aws-lc-rs 1.17.0 via the peat-mesh
+    # git-pin update; ignores removed so a future regression is caught.
     # RUSTSEC-2026-0118 / -0119 / -0120 — hickory-proto + hickory-net DNSSEC
     # NSEC3 unbounded loops and O(n²) name compression — were ignored prior
     # to peat#924 because iroh 0.98.x exact-pinned `hickory-resolver
@@ -30,7 +30,8 @@ ignore = [
     # silently suppressed. peat#924 QA WARNING follow-up.
 
     # Workspace crates
-    { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; used in peat-ffi, evaluate migration to postcard" },
+    # RUSTSEC-2025-0141 (bincode unmaintained) — bincode removed from the
+    # dependency tree; ignore dropped so a re-introduction is caught.
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; macro-only, low risk" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; compile-time only, low risk" },
     # quick-xml DoS (fixed in 0.41.0). peat-protocol's direct CoT-XML parser

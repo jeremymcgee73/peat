@@ -4078,6 +4078,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "automerge",
+ "base64",
  "chrono",
  "env_logger",
  "hex",
@@ -4108,8 +4109,7 @@ dependencies = [
 [[package]]
 name = "peat-mesh"
 version = "0.9.0-rc.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f89c487db281e3c3e6c67bb1d5f5a479f098eb4ee7a1cc036c2043e670172fa"
+source = "git+https://github.com/defenseunicorns/peat-mesh?rev=c863d16b358b146067d759e691021bc49d182446#c863d16b358b146067d759e691021bc49d182446"
 dependencies = [
  "aes-gcm",
  "anyhow",
