@@ -1742,10 +1742,14 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     let seed = format!("{}/{}", config.app_id, config.storage_path);
     let storage_path_for_store = storage_path.clone();
 
-    // Stable per-device logical node_id for the canonical formation identity
-    // (the storage instance dir is unique + stable per install). Formation
+    // Stable per-device logical node_id for the canonical formation identity:
+    // the storage directory's **basename** is the identity seed. Formation
     // peers reconstruct this endpoint's iroh EndpointId from
     // (formation_secret, node_id), so it must be stable across restarts.
+    // Renaming the storage directory rotates the EndpointId silently.
+    // NOTE: upgrading from the legacy seed identity (pre-formation) to this
+    // path is a one-time EndpointId rotation — cached peer mappings and
+    // route hints from prior sessions go stale at upgrade time.
     let iroh_node_id = std::path::Path::new(&config.storage_path)
         .file_name()
         .and_then(|s| s.to_str())
@@ -8205,6 +8209,74 @@ mod tests {
                     assert!(!parsed.deleted, "live preserved in scan output");
                 }
             }
+        }
+    }
+
+    #[cfg(feature = "sync")]
+    mod normalize_bind_address_tests {
+        use super::super::normalize_bind_address;
+
+        #[test]
+        fn empty_string_returns_none() {
+            assert_eq!(normalize_bind_address("".to_string()), None);
+        }
+
+        #[test]
+        fn whitespace_only_returns_none() {
+            assert_eq!(normalize_bind_address("   ".to_string()), None);
+            assert_eq!(normalize_bind_address("\t\n".to_string()), None);
+        }
+
+        #[test]
+        fn bare_ip_appends_port_zero() {
+            assert_eq!(
+                normalize_bind_address("192.168.1.5".to_string()),
+                Some("192.168.1.5:0".to_string()),
+            );
+            assert_eq!(
+                normalize_bind_address("127.0.0.1".to_string()),
+                Some("127.0.0.1:0".to_string()),
+            );
+        }
+
+        #[test]
+        fn bare_ipv6_appends_port_zero() {
+            assert_eq!(
+                normalize_bind_address("::1".to_string()),
+                Some("::1:0".to_string()),
+            );
+        }
+
+        #[test]
+        fn full_socket_addr_passed_through() {
+            assert_eq!(
+                normalize_bind_address("192.168.1.5:8080".to_string()),
+                Some("192.168.1.5:8080".to_string()),
+            );
+            assert_eq!(
+                normalize_bind_address("0.0.0.0:0".to_string()),
+                Some("0.0.0.0:0".to_string()),
+            );
+        }
+
+        #[test]
+        fn invalid_string_passed_through() {
+            assert_eq!(
+                normalize_bind_address("not-an-ip".to_string()),
+                Some("not-an-ip".to_string()),
+            );
+        }
+
+        #[test]
+        fn leading_trailing_whitespace_trimmed() {
+            assert_eq!(
+                normalize_bind_address("  192.168.1.5  ".to_string()),
+                Some("192.168.1.5:0".to_string()),
+            );
+            assert_eq!(
+                normalize_bind_address("  10.0.0.1:9999  ".to_string()),
+                Some("10.0.0.1:9999".to_string()),
+            );
         }
     }
 }
