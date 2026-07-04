@@ -127,17 +127,24 @@ fn jni_wrapper_integration() {
     scenario_create_node_invalid_shared_key_returns_zero(raw);
     scenario_publish_get_roundtrip(raw, handle);
     scenario_get_document_err_throws_runtime_exception(raw, handle);
+
+    // createNodeWithConfigJni exercises the 7-arg arity including
+    // node_id, enable_ble, and bind_address — catches Kotlin↔Rust
+    // signature drift at test time.
+    let (new_config_handle, _new_config_tempdir) =
+        scenario_create_node_with_config_returns_handle(raw);
+
     scenario_native_method_table_audit();
 
-    // Best-effort cleanup. freeNodeJni's contract is fire-and-forget
-    // (returns void); if it would have thrown, -Xcheck:jni would have
-    // aborted the JVM already.
+    // Best-effort cleanup for both handles.
     let env = unsafe { fresh_env(raw) };
     peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), handle);
     let env = unsafe { fresh_env(raw) };
     peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), bind_handle);
     let env = unsafe { fresh_env(raw) };
     peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), config_handle);
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), new_config_handle);
 }
 
 // ---------------------------------------------------------------------
@@ -195,6 +202,65 @@ fn scenario_create_node_returns_handle(raw: *mut jni::sys::JNIEnv) -> (i64, Temp
          NodeConfig setup failed silently. Check whether \
          env.get_string succeeded for all three args.",
     );
+    (handle, tempdir)
+}
+
+// ---------------------------------------------------------------------
+// Scenario: createNodeWithConfigJni — exercises the 7-arg entrypoint
+// with all parameters populated: app_id, shared_key, node_id,
+// storage_path, enable_ble (false), ble_power_profile, bind_address.
+// Catches Kotlin ↔ Rust signature drift at test time rather than
+// consumer link time. The node_id param exercises the deterministic
+// identity path; bind_address "127.0.0.1" exercises normalize_bind_address.
+// ---------------------------------------------------------------------
+fn scenario_create_node_with_config_returns_handle(raw: *mut jni::sys::JNIEnv) -> (i64, TempDir) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let handle = {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, SHARED_KEY);
+        let node_id = new_jstring(&mut env, "test-node-config");
+        let storage = new_jstring(&mut env, &storage_path);
+        let enable_ble: jboolean = 0;
+        let ble_power_profile = new_jstring(&mut env, "");
+        let bind_address = new_jstring(&mut env, "127.0.0.1");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            node_id,
+            storage,
+            enable_ble,
+            ble_power_profile,
+            bind_address,
+        )
+    };
+    assert!(
+        handle != 0,
+        "createNodeWithConfigJni returned 0 — 7-arg JNI entrypoint \
+         failed. Check arg ordering (app_id, shared_key, node_id, \
+         storage_path, enable_ble, ble_power_profile, bind_address).",
+    );
+
+    // Verify the loopback bind address took effect.
+    let mut env = unsafe { fresh_env(raw) };
+    let addr_js = peat_ffi::Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni(
+        unsafe { fresh_env(raw) },
+        null_class(),
+        handle,
+    );
+    let addr = jstring_to_rust(&mut env, addr_js)
+        .expect("endpointSocketAddrJni returned null for createNodeWithConfigJni handle");
+    assert!(
+        addr.starts_with("127.0.0.1:"),
+        "createNodeWithConfigJni with bindAddress='127.0.0.1' should \
+         bind to loopback, got {:?}",
+        addr,
+    );
+
     (handle, tempdir)
 }
 
@@ -320,6 +386,7 @@ fn scenario_create_node_with_config_bind_address(raw: *mut jni::sys::JNIEnv) -> 
         let mut env = unsafe { fresh_env(raw) };
         let app_id = new_jstring(&mut env, APP_ID);
         let shared_key = new_jstring(&mut env, SHARED_KEY);
+        let node_id = new_jstring(&mut env, "");
         let storage = new_jstring(&mut env, &storage_path);
         let enable_ble: jboolean = 0;
         let ble_power_profile = new_jstring(&mut env, "");
@@ -329,6 +396,7 @@ fn scenario_create_node_with_config_bind_address(raw: *mut jni::sys::JNIEnv) -> 
             null_class(),
             app_id,
             shared_key,
+            node_id,
             storage,
             enable_ble,
             ble_power_profile,

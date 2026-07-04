@@ -2728,6 +2728,15 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                 PeatMdnsEvent::PeerFound(p) | PeatMdnsEvent::PeerUpdated(p) => p,
                                 PeatMdnsEvent::PeerLost(node_id) => {
                                     tracing::debug!(%node_id, "peat mDNS peer lost (no longer advertising)");
+                                    if let Ok(bytes) = hex::decode(&node_id) {
+                                        if bytes.len() == 32 {
+                                            let mut arr = [0u8; 32];
+                                            arr.copy_from_slice(&bytes);
+                                            if let Ok(id) = peat_mesh::network::EndpointId::from_bytes(&arr) {
+                                                known.remove(&id);
+                                            }
+                                        }
+                                    }
                                     continue;
                                 }
                             };
