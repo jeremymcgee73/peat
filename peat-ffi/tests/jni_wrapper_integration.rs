@@ -144,7 +144,11 @@ fn jni_wrapper_integration() {
     let env = unsafe { fresh_env(raw) };
     peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), config_handle);
     let env = unsafe { fresh_env(raw) };
-    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), new_config_handle);
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(
+        env,
+        null_class(),
+        new_config_handle,
+    );
 }
 
 // ---------------------------------------------------------------------
