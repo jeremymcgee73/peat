@@ -284,7 +284,7 @@ repository = "https://github.com/defenseunicorns/peat"
 # conflict. rc.31 also carries the internal HierarchyLevel rename
 # (ADR-066 Phase 3) + the iroh rc.0→rc.1 train; both are internal to
 # peat-mesh and require no peat-protocol source change.
-peat-mesh = { version = ">=0.9.0-rc.43, <0.9.1", default-features = false }
+peat-mesh = { version = ">=0.9.0-rc.44, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
@@ -322,12 +322,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
-# peat-mesh carrying the Android/_peat formation-identity + _peat._udp browse
-# discovery fix, plus the mDNS-discovered-peer dial bridge
-# (impl From<discovery::PeerInfo> for network::PeerInfo) this branch consumes
-# (peat-mesh#268, merged to peat-mesh main but not yet released). Pinned to the
-# merge commit so CI (peat-mesh is public) builds against it.
-# DROP THIS once peat-mesh cuts a release containing #268 and bump the
-# `peat-mesh` dependency floor to that version (see PR #1006 pre-merge checklist).
-[patch.crates-io]
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "b5d62aa08737156be5c72b66c8d64f52f2b64e80" }
