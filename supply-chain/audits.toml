@@ -291,7 +291,7 @@ end = "2027-03-26"
 
 [[trusted.bincode]]
 criteria = "safe-to-deploy"
-user-id = 3672 # Zoey Riordan (ZoeyR)
+user-id = 3672
 start = "2020-06-23"
 end = "2027-03-26"
 
@@ -474,6 +474,18 @@ criteria = "safe-to-deploy"
 user-id = 55123 # rust-lang-owner
 start = "2022-10-29"
 end = "2027-03-26"
+
+[[trusted.cmov]]
+criteria = "safe-to-deploy"
+user-id = 267 # Tony Arcieri (tarcieri)
+start = "2022-02-27"
+end = "2027-07-05"
+
+[[trusted.cmov]]
+criteria = "safe-to-deploy"
+trusted-publisher = "github:RustCrypto/utils"
+start = "2026-04-02"
+end = "2027-07-05"
 
 [[trusted.color-backtrace]]
 criteria = "safe-to-deploy"
@@ -1695,7 +1707,7 @@ end = "2027-03-26"
 
 [[trusted.mime_guess]]
 criteria = "safe-to-deploy"
-user-id = 127 # Austin Bonander (abonander)
+user-id = 127
 start = "2019-04-28"
 end = "2027-03-26"
 
