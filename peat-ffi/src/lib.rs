@@ -174,7 +174,8 @@ use peat_mesh::storage::automerge_store::{
 };
 #[cfg(feature = "sync")]
 use peat_mesh::storage::{
-    BlobMetadata, BlobStore, BlobStoreExt, BlobToken, NetworkedIrohBlobStore,
+    BlobMetadata, BlobProgress as _PeatMeshBlobProgress, BlobStore, BlobStoreExt, BlobToken,
+    NetworkedIrohBlobStore,
 };
 #[cfg(feature = "sync")]
 use peat_mesh::IrohConfig as PeatMeshIrohConfig;
@@ -3344,20 +3345,35 @@ impl PeatNode {
 }
 
 // =============================================================================
-// Blob Transfer (ADR-060) — not UniFFI-exported; reached via direct JNI only
+// Blob Transfer (ADR-060 + peat#1013)
+//
+// `blob_get` (below, its own plain impl block) stays JNI-only: it's a
+// blocking, potentially multi-second network call, and exporting it via
+// UniFFI would block the calling Dart/Kotlin thread. Everything else here
+// is UniFFI-exported so non-JNI consumers (Flutter, iOS) can reach it —
+// `blob_fetch_start` is the non-blocking replacement for `blob_get` on
+// those platforms.
 // =============================================================================
 
 #[cfg(feature = "sync")]
+#[uniffi::export]
 impl PeatNode {
     /// Enable the parallel blob-transfer endpoint.
     ///
     /// Constructs a `NetworkedIrohBlobStore` on the tokio runtime owned by
-    /// this node and stores it for later use via `blob_put` / `blob_get`.
+    /// this node and stores it for later use via `blob_put` / `blob_fetch_start`.
     /// Bind address defaults to `0.0.0.0:0` (ephemeral) when None.
-    pub fn enable_blob_transfer(
-        &self,
-        bind_addr: Option<std::net::SocketAddr>,
-    ) -> Result<(), PeatError> {
+    ///
+    /// Takes `Option<String>` rather than `SocketAddr` — `SocketAddr` isn't
+    /// UniFFI-liftable, and this method is now UniFFI-exported.
+    pub fn enable_blob_transfer(&self, bind_addr: Option<String>) -> Result<(), PeatError> {
+        let bind_addr: Option<std::net::SocketAddr> = match bind_addr {
+            Some(s) => Some(s.parse().map_err(|e| PeatError::InvalidInput {
+                msg: format!("invalid bind_addr '{}': {}", s, e),
+            })?),
+            None => None,
+        };
+
         let blob_dir = self.storage_path.join("blobs");
         std::fs::create_dir_all(&blob_dir).map_err(|e| PeatError::StorageError {
             msg: format!("Failed to create blob dir {:?}: {}", blob_dir, e),
@@ -3418,6 +3434,36 @@ impl PeatNode {
         Ok(())
     }
 
+    /// Register a known blob peer by hex EndpointId only — no static address,
+    /// so relay/DNS discovery resolves the route. Companion to
+    /// [`blob_add_peer`](Self::blob_add_peer), which requires an explicit
+    /// address; prefer this one when the peer may be on a different
+    /// network/NAT. Uses peat-mesh's `add_peer_from_hex_id` (peat#1013).
+    pub fn blob_add_peer_id(&self, peer_id_hex: &str) -> Result<(), PeatError> {
+        let store_guard = self.blob_store.read().map_err(|_| PeatError::SyncError {
+            msg: "blob_store lock poisoned".to_string(),
+        })?;
+        let store = store_guard.as_ref().ok_or(PeatError::SyncError {
+            msg: "blob transfer not enabled".to_string(),
+        })?;
+
+        let store_clone = Arc::clone(store);
+        let hex = peer_id_hex.to_string();
+        self.runtime
+            .block_on(async move { store_clone.add_peer_from_hex_id(&hex).await })
+            .map_err(|e| PeatError::SyncError {
+                msg: format!("blob_add_peer_id: {}", e),
+            })?;
+
+        #[cfg(target_os = "android")]
+        android_log(&format!(
+            "Blob peer added (id-only): {}",
+            &peer_id_hex[..16.min(peer_id_hex.len())],
+        ));
+
+        Ok(())
+    }
+
     /// Store bytes in the local blob store. Returns the content hash as hex.
     pub fn blob_put(&self, data: &[u8], content_type: &str) -> Result<String, PeatError> {
         let store_guard = self.blob_store.read().map_err(|_| PeatError::SyncError {
@@ -3449,8 +3495,232 @@ impl PeatNode {
         Ok(token.hash.as_hex().to_string())
     }
 
+    /// Check if a blob exists locally without network fetch.
+    pub fn blob_exists_locally(&self, hash_hex: &str) -> bool {
+        let store_guard = match self.blob_store.read() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let store = match store_guard.as_ref() {
+            Some(s) => s,
+            None => return false,
+        };
+        let hash = peat_mesh::storage::BlobHash(hash_hex.to_string());
+        store.blob_exists_locally(&hash)
+    }
+
+    /// Get the blob endpoint ID as hex (returns None if blob transfer is
+    /// disabled).
+    pub fn blob_endpoint_id(&self) -> Option<String> {
+        let store_guard = self.blob_store.read().ok()?;
+        let store = store_guard.as_ref()?;
+        Some(hex::encode(store.endpoint_id().as_bytes()))
+    }
+
+    /// Get the blob endpoint's bound socket address as "ip:port".
+    /// Useful for configuring remote peers and for tests.
+    pub fn blob_bound_addr(&self) -> Option<String> {
+        let store_guard = self.blob_store.read().ok()?;
+        let store = store_guard.as_ref()?;
+        store.bound_addr_string()
+    }
+
+    /// Start a blob fetch, returning immediately with a pollable handle
+    /// (peat#1013). Two modes, selected by `peer_id_hex`:
+    ///
+    /// - `None` — mesh-sync mode: automatic candidate-peer selection via
+    ///   peat-mesh's `fetch_blob` (health-filtered). Same behavior as the
+    ///   JNI-only `blob_get`, just non-blocking.
+    /// - `Some(id)` — direct P2P mode: pulls from exactly that peer via
+    ///   `fetch_blob_from_peer`, no fallback. The peer must already be
+    ///   registered via [`blob_add_peer`](Self::blob_add_peer) or
+    ///   [`blob_add_peer_id`](Self::blob_add_peer_id).
+    ///
+    /// Poll progress via [`BlobFetchHandle::status`]; cancel early via
+    /// [`BlobFetchHandle::dispose`].
+    pub fn blob_fetch_start(
+        &self,
+        hash_hex: String,
+        size_bytes: u64,
+        peer_id_hex: Option<String>,
+    ) -> Result<Arc<BlobFetchHandle>, PeatError> {
+        let store_guard = self.blob_store.read().map_err(|_| PeatError::SyncError {
+            msg: "blob_store lock poisoned".to_string(),
+        })?;
+        let store = store_guard.as_ref().ok_or(PeatError::SyncError {
+            msg: "blob transfer not enabled".to_string(),
+        })?;
+        // Clone-then-drop-the-guard before spawning: tokio::spawn requires a
+        // 'static future, which cannot capture a RwLockReadGuard<'_, ..>
+        // borrowed from &self.
+        let store_clone = Arc::clone(store);
+        drop(store_guard);
+
+        let token = BlobToken {
+            hash: peat_mesh::storage::BlobHash(hash_hex.clone()),
+            size_bytes,
+            metadata: BlobMetadata {
+                content_type: None,
+                name: None,
+                custom: Default::default(),
+            },
+        };
+
+        let latest = Arc::new(std::sync::Mutex::new(BlobFetchStatus::Pending));
+        let latest_clone = Arc::clone(&latest);
+
+        let join_handle = self.runtime.spawn(async move {
+            let latest_for_progress = Arc::clone(&latest_clone);
+            let progress = move |p: _PeatMeshBlobProgress| {
+                if let Ok(mut slot) = latest_for_progress.lock() {
+                    *slot = BlobFetchStatus::from(p);
+                }
+            };
+
+            let result = match &peer_id_hex {
+                Some(peer_id) => {
+                    store_clone
+                        .fetch_blob_from_peer(&token, peer_id, progress)
+                        .await
+                }
+                None => store_clone.fetch_blob(&token, progress).await,
+            };
+
+            // Defensive: peat-mesh's fetch methods already push a `Failed`
+            // progress event on every known error path, but guard against a
+            // future path that returns `Err` without invoking the callback —
+            // `status()` must never get stuck on a stale `Downloading`.
+            if let Err(e) = result {
+                if let Ok(mut slot) = latest_clone.lock() {
+                    if !matches!(*slot, BlobFetchStatus::Failed { .. }) {
+                        *slot = BlobFetchStatus::Failed {
+                            error: e.to_string(),
+                        };
+                    }
+                }
+            }
+        });
+
+        Ok(Arc::new(BlobFetchHandle::new(latest, join_handle)))
+    }
+}
+
+/// Current state of an in-flight or completed blob fetch, polled via
+/// [`BlobFetchHandle::status`] (peat#1013). Mirrors `peat_mesh::storage::BlobProgress`
+/// with `PathBuf` → `String` for FFI, plus a `Pending` variant for the window
+/// between `blob_fetch_start` returning and the spawned task's first event.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum BlobFetchStatus {
+    Pending,
+    Started {
+        total_bytes: u64,
+    },
+    Downloading {
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    },
+    Completed {
+        local_path: String,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+#[cfg(feature = "sync")]
+impl From<_PeatMeshBlobProgress> for BlobFetchStatus {
+    fn from(p: _PeatMeshBlobProgress) -> Self {
+        match p {
+            _PeatMeshBlobProgress::Started { total_bytes } => {
+                BlobFetchStatus::Started { total_bytes }
+            }
+            _PeatMeshBlobProgress::Downloading {
+                downloaded_bytes,
+                total_bytes,
+            } => BlobFetchStatus::Downloading {
+                downloaded_bytes,
+                total_bytes,
+            },
+            _PeatMeshBlobProgress::Completed { local_path } => BlobFetchStatus::Completed {
+                local_path: local_path.to_string_lossy().to_string(),
+            },
+            _PeatMeshBlobProgress::Failed { error } => BlobFetchStatus::Failed { error },
+        }
+    }
+}
+
+/// Handle for an in-flight blob fetch started via
+/// [`PeatNode::blob_fetch_start`]. Poll [`Self::status`] for progress; call
+/// [`Self::dispose`] (or drop the handle) to cancel early.
+///
+/// Unlike [`SubscriptionHandle`], this holds a single "latest status" cell
+/// rather than a queue: intermediate `Downloading` events are disposable —
+/// only the current state matters for a progress UI — and an unbounded
+/// queue would risk unbounded growth if the app is backgrounded mid-download
+/// with nothing draining it. It also retains the spawned task's `JoinHandle`
+/// and aborts it on dispose/drop for real mid-transfer cancellation:
+/// `blob_fetch_start`'s task is a single bounded `.await` with no internal
+/// cooperative-cancellation checkpoint to plumb a flag into (unlike
+/// `subscribe_poll`'s loop, which re-checks its `active` flag every ~100ms).
+#[cfg(feature = "sync")]
+#[derive(uniffi::Object)]
+pub struct BlobFetchHandle {
+    latest: Arc<std::sync::Mutex<BlobFetchStatus>>,
+    join_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+#[cfg(feature = "sync")]
+impl BlobFetchHandle {
+    fn new(
+        latest: Arc<std::sync::Mutex<BlobFetchStatus>>,
+        join_handle: tokio::task::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            latest,
+            join_handle: std::sync::Mutex::new(Some(join_handle)),
+        }
+    }
+}
+
+#[cfg(feature = "sync")]
+#[uniffi::export]
+impl BlobFetchHandle {
+    /// Non-blocking snapshot of the fetch's current state.
+    pub fn status(&self) -> BlobFetchStatus {
+        self.latest
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(BlobFetchStatus::Failed {
+                error: "status lock poisoned".to_string(),
+            })
+    }
+
+    /// Cancel the fetch early. Idempotent.
+    pub fn dispose(&self) {
+        if let Ok(mut jh) = self.join_handle.lock() {
+            if let Some(h) = jh.take() {
+                h.abort();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "sync")]
+impl Drop for BlobFetchHandle {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
+#[cfg(feature = "sync")]
+impl PeatNode {
     /// Fetch blob bytes by content hash (hex). Tries local first, then
     /// known peers. Returns the bytes or an error.
+    ///
+    /// JNI-only (not UniFFI-exported): this blocks the calling thread for a
+    /// potentially multi-second network call. Non-JNI consumers (Flutter,
+    /// iOS) must use [`PeatNode::blob_fetch_start`] instead.
     pub fn blob_get(&self, hash_hex: &str) -> Result<Vec<u8>, PeatError> {
         let store_guard = self.blob_store.read().map_err(|_| PeatError::SyncError {
             msg: "blob_store lock poisoned".to_string(),
@@ -3480,36 +3750,6 @@ impl PeatNode {
         std::fs::read(&handle.path).map_err(|e| PeatError::StorageError {
             msg: format!("blob read failed: {}", e),
         })
-    }
-
-    /// Check if a blob exists locally without network fetch.
-    pub fn blob_exists_locally(&self, hash_hex: &str) -> bool {
-        let store_guard = match self.blob_store.read() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-        let store = match store_guard.as_ref() {
-            Some(s) => s,
-            None => return false,
-        };
-        let hash = peat_mesh::storage::BlobHash(hash_hex.to_string());
-        store.blob_exists_locally(&hash)
-    }
-
-    /// Get the blob endpoint ID as hex (returns None if blob transfer is
-    /// disabled).
-    pub fn blob_endpoint_id(&self) -> Option<String> {
-        let store_guard = self.blob_store.read().ok()?;
-        let store = store_guard.as_ref()?;
-        Some(hex::encode(store.endpoint_id().as_bytes()))
-    }
-
-    /// Get the blob endpoint's bound socket address as "ip:port".
-    /// Useful for configuring remote peers and for tests.
-    pub fn blob_bound_addr(&self) -> Option<String> {
-        let store_guard = self.blob_store.read().ok()?;
-        let store = store_guard.as_ref()?;
-        store.bound_addr_string()
     }
 }
 
@@ -6468,10 +6708,10 @@ mod tests {
 
             // Enable blob transfer on both with ephemeral ports
             node_a
-                .enable_blob_transfer(Some("127.0.0.1:0".parse().unwrap()))
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
                 .expect("enable blob A");
             node_b
-                .enable_blob_transfer(Some("127.0.0.1:0".parse().unwrap()))
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
                 .expect("enable blob B");
 
             let a_endpoint_id = node_a.blob_endpoint_id().expect("A blob endpoint");
@@ -6492,6 +6732,174 @@ mod tests {
                 retrieved, test_data,
                 "cross-node blob transfer: bytes must match"
             );
+        }
+
+        /// Poll a `BlobFetchHandle` until it reaches a terminal status
+        /// (Completed/Failed) or the deadline expires.
+        fn poll_until_terminal(
+            handle: &BlobFetchHandle,
+            timeout: std::time::Duration,
+        ) -> BlobFetchStatus {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                let status = handle.status();
+                if matches!(
+                    status,
+                    BlobFetchStatus::Completed { .. } | BlobFetchStatus::Failed { .. }
+                ) {
+                    return status;
+                }
+                if std::time::Instant::now() > deadline {
+                    return status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        #[test]
+        fn test_blob_fetch_start_before_enable_errors() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+
+            let result = node.blob_fetch_start("deadbeef".repeat(8), 4, None);
+            assert!(
+                result.is_err(),
+                "blob_fetch_start before enable_blob_transfer must error synchronously"
+            );
+        }
+
+        #[test]
+        fn test_blob_fetch_start_mesh_sync_mode_local() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+            node.enable_blob_transfer(None)
+                .expect("enable_blob_transfer failed");
+
+            let test_data = b"already-local, mesh-sync mode (peer_id: None)";
+            let hash = node.blob_put(test_data, "text/plain").expect("blob_put");
+
+            let handle = node
+                .blob_fetch_start(hash, test_data.len() as u64, None)
+                .expect("blob_fetch_start failed");
+
+            let status = poll_until_terminal(&handle, std::time::Duration::from_secs(5));
+            match status {
+                BlobFetchStatus::Completed { local_path } => {
+                    let bytes = std::fs::read(&local_path).expect("read fetched blob");
+                    assert_eq!(bytes, test_data);
+                }
+                other => panic!("expected Completed, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_blob_fetch_start_direct_mode_cross_node() {
+            let tmp_a = tempfile::tempdir().unwrap();
+            let tmp_b = tempfile::tempdir().unwrap();
+
+            let node_a = create_node(NodeConfig {
+                app_id: "blob-fetch-start-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: tmp_a.path().to_str().unwrap().to_string(),
+                transport: None,
+            })
+            .expect("create node A");
+            let node_b = create_node(NodeConfig {
+                app_id: "blob-fetch-start-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: tmp_b.path().to_str().unwrap().to_string(),
+                transport: None,
+            })
+            .expect("create node B");
+
+            node_a
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
+                .expect("enable blob A");
+            node_b
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
+                .expect("enable blob B");
+
+            let a_endpoint_id = node_a.blob_endpoint_id().expect("A blob endpoint");
+            let a_addr = node_a.blob_bound_addr().expect("A bound addr");
+            node_b
+                .blob_add_peer(&a_endpoint_id, &a_addr)
+                .expect("B registers A");
+
+            let test_data = b"direct P2P via blob_fetch_start, targeting A explicitly";
+            let hash = node_a.blob_put(test_data, "text/plain").expect("put on A");
+
+            // Direct mode: peer_id_hex = Some(a_endpoint_id).
+            let handle = node_b
+                .blob_fetch_start(hash, test_data.len() as u64, Some(a_endpoint_id))
+                .expect("blob_fetch_start (direct) failed");
+
+            let status = poll_until_terminal(&handle, std::time::Duration::from_secs(10));
+            match status {
+                BlobFetchStatus::Completed { local_path } => {
+                    let bytes = std::fs::read(&local_path).expect("read fetched blob");
+                    assert_eq!(bytes, test_data);
+                }
+                other => panic!("expected Completed, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_blob_fetch_start_direct_mode_unregistered_peer_fails() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+            node.enable_blob_transfer(None)
+                .expect("enable_blob_transfer failed");
+
+            let fake_hash = "ab".repeat(32);
+            let fake_peer = "cd".repeat(32);
+            let handle = node
+                .blob_fetch_start(fake_hash, 4, Some(fake_peer))
+                .expect("blob_fetch_start should return a handle synchronously");
+
+            let status = poll_until_terminal(&handle, std::time::Duration::from_secs(5));
+            match status {
+                BlobFetchStatus::Failed { error } => {
+                    assert!(error.contains("direct fetch"), "got: {}", error);
+                }
+                other => panic!("expected Failed, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_blob_fetch_handle_dispose_idempotent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+            node.enable_blob_transfer(None)
+                .expect("enable_blob_transfer failed");
+
+            let test_data = b"dispose idempotency check";
+            let hash = node.blob_put(test_data, "text/plain").expect("blob_put");
+            let handle = node
+                .blob_fetch_start(hash, test_data.len() as u64, None)
+                .expect("blob_fetch_start failed");
+
+            handle.dispose();
+            handle.dispose(); // must not panic
+            let _ = handle.status(); // must not panic or hang
+        }
+
+        #[test]
+        fn test_blob_add_peer_id_registers_without_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_node_config(tmp.path().to_str().unwrap()))
+                .expect("create_node failed");
+            node.enable_blob_transfer(None)
+                .expect("enable_blob_transfer failed");
+
+            let peer_id = "ef".repeat(32);
+            node.blob_add_peer_id(&peer_id)
+                .expect("blob_add_peer_id should register an id-only peer");
         }
 
         #[test]
@@ -6526,10 +6934,10 @@ mod tests {
             .expect("create tablet node");
 
             // Enable blob transfer on both
-            sim.enable_blob_transfer(Some("127.0.0.1:0".parse().unwrap()))
+            sim.enable_blob_transfer(Some("127.0.0.1:0".to_string()))
                 .expect("sim blob");
             tablet
-                .enable_blob_transfer(Some("127.0.0.1:0".parse().unwrap()))
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
                 .expect("tablet blob");
 
             // Wire blob peers
@@ -6673,10 +7081,10 @@ mod tests {
             .expect("create node B");
 
             node_a
-                .enable_blob_transfer(Some("127.0.0.1:0".parse().unwrap()))
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
                 .expect("enable A");
             node_b
-                .enable_blob_transfer(Some("127.0.0.1:0".parse().unwrap()))
+                .enable_blob_transfer(Some("127.0.0.1:0".to_string()))
                 .expect("enable B");
 
             let a_id = node_a.blob_endpoint_id().unwrap();
@@ -11576,8 +11984,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_enableBlobTransferJ
     } else {
         env.get_string(&bind_addr).ok().map(|s| s.into())
     };
-    let bind: Option<std::net::SocketAddr> =
-        addr_str.and_then(|s| if s.is_empty() { None } else { s.parse().ok() });
+    let bind = addr_str.filter(|s| !s.is_empty());
 
     let result = match node.enable_blob_transfer(bind) {
         Ok(()) => 1,

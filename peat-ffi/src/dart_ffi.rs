@@ -341,6 +341,58 @@ extern "C" {
         h: u64,
         s: *mut CallStatus,
     ) -> RustBuf;
+
+    // Blob transfer (ADR-060 + peat#1013)
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_enable_blob_transfer(
+        h: u64,
+        bind_addr: RustBuf,
+        s: *mut CallStatus,
+    );
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_add_peer(
+        h: u64,
+        peer_id_hex: RustBuf,
+        address: RustBuf,
+        s: *mut CallStatus,
+    );
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_add_peer_id(
+        h: u64,
+        peer_id_hex: RustBuf,
+        s: *mut CallStatus,
+    );
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_put(
+        h: u64,
+        data: RustBuf,
+        content_type: RustBuf,
+        s: *mut CallStatus,
+    ) -> RustBuf;
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_exists_locally(
+        h: u64,
+        hash_hex: RustBuf,
+        s: *mut CallStatus,
+    ) -> i8;
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_endpoint_id(h: u64, s: *mut CallStatus) -> RustBuf;
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_bound_addr(h: u64, s: *mut CallStatus) -> RustBuf;
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_peatnode_blob_fetch_start(
+        h: u64,
+        hash_hex: RustBuf,
+        size_bytes: u64,
+        peer_id_hex: RustBuf,
+        s: *mut CallStatus,
+    ) -> u64;
+
+    // BlobFetchHandle methods
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_blobfetchhandle_status(h: u64, s: *mut CallStatus) -> RustBuf;
+    #[cfg(feature = "sync")]
+    fn uniffi_peat_ffi_fn_method_blobfetchhandle_dispose(h: u64, s: *mut CallStatus);
 }
 
 // --- rustbuffer aliases the Dart bindings expect ----------------------------
@@ -1037,5 +1089,162 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_on_peer_ob
 ) {
     let mut s = CallStatus::new();
     uniffi_peat_ffi_fn_method_peatnode_on_peer_observed((*a.add(0)).u64, read_buf(a, 1), &mut s);
+    ret_void(r, &s);
+}
+
+// Blob transfer wrappers (ADR-060 + peat#1013) -------------------------------
+
+// enable_blob_transfer(handle, bind_addr: Option<String>) -> void.
+// Args: [0]=handle, [1..3]=bind_addr buf (presence-tagged).
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_enable_blob_transfer(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_enable_blob_transfer(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        &mut s,
+    );
+    ret_void(r, &s);
+}
+
+// blob_add_peer(handle, peer_id_hex: String, address: String) -> void.
+// Args: [0]=handle, [1..3]=peer_id_hex buf, [4..6]=address buf.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_add_peer(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_blob_add_peer(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        &mut s,
+    );
+    ret_void(r, &s);
+}
+
+// blob_add_peer_id(handle, peer_id_hex: String) -> void.
+// Args: [0]=handle, [1..3]=peer_id_hex buf.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_add_peer_id(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_blob_add_peer_id((*a.add(0)).u64, read_buf(a, 1), &mut s);
+    ret_void(r, &s);
+}
+
+// blob_put(handle, data: Vec<u8>, content_type: String) -> String (hash hex).
+// Args: [0]=handle, [1..3]=data buf, [4..6]=content_type buf.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_put(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_blob_put(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        read_buf(a, 4),
+        &mut s,
+    );
+    ret_rbuf(r, v, &s);
+}
+
+// blob_exists_locally(handle, hash_hex: String) -> bool.
+// Args: [0]=handle, [1..3]=hash_hex buf.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_exists_locally(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_blob_exists_locally(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        &mut s,
+    );
+    ret_i8(r, v, &s);
+}
+
+// blob_endpoint_id(handle) -> Option<String>.
+// Args: [0]=handle.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_endpoint_id(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_blob_endpoint_id((*a.add(0)).u64, &mut s);
+    ret_rbuf(r, v, &s);
+}
+
+// blob_bound_addr(handle) -> Option<String>.
+// Args: [0]=handle.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_bound_addr(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_blob_bound_addr((*a.add(0)).u64, &mut s);
+    ret_rbuf(r, v, &s);
+}
+
+// blob_fetch_start(handle, hash_hex: String, size_bytes: u64, peer_id_hex: Option<String>)
+// -> Arc<BlobFetchHandle> (u64 handle).
+// Args: [0]=handle, [1..3]=hash_hex buf, [4]=size_bytes, [5..7]=peer_id_hex buf (presence-tagged).
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_blob_fetch_start(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_peatnode_blob_fetch_start(
+        (*a.add(0)).u64,
+        read_buf(a, 1),
+        (*a.add(4)).u64,
+        read_buf(a, 5),
+        &mut s,
+    );
+    ret_u64(r, v, &s);
+}
+
+// BlobFetchHandle.status() -> BlobFetchStatus (RustBuf).
+// Args: [0]=handle.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_blobfetchhandle_status(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    let v = uniffi_peat_ffi_fn_method_blobfetchhandle_status((*a.add(0)).u64, &mut s);
+    ret_rbuf(r, v, &s);
+}
+
+// BlobFetchHandle.dispose() -> void.
+// Args: [0]=handle.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_blobfetchhandle_dispose(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_blobfetchhandle_dispose((*a.add(0)).u64, &mut s);
     ret_void(r, &s);
 }
