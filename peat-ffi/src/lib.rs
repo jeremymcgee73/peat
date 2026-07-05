@@ -978,8 +978,14 @@ async fn connect_peer_inner(
         return Ok(());
     };
 
-    use peat_protocol::network::perform_initiator_handshake;
-    if let Err(e) = perform_initiator_handshake(&conn, &formation_key).await {
+    // peat-mesh#267: dial-side formation auth must use peat-mesh's
+    // `respond_to_formation_auth` to match the peer's rc.43 acceptor
+    // (`run_formation_auth`). peat-protocol's legacy `perform_initiator_handshake`
+    // speaks an incompatible wire format → peers reject "formation auth failed".
+    if let Err(e) =
+        peat_mesh::storage::mesh_sync_transport::respond_to_formation_auth(&formation_key, &conn)
+            .await
+    {
         conn.close(1u32.into(), b"authentication failed");
         iroh_transport.disconnect(&peer_id).ok();
         return Err(PeatError::ConnectionError {
@@ -1658,6 +1664,27 @@ impl PeatNode {
 #[cfg(feature = "sync")]
 #[uniffi::export]
 pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
+    // peat-node NODE_ID model: callers that can supply a stable, peer-derivable
+    // node_id (the JNI layer passes the ATAK callsign) go through
+    // `create_node_with_identity`. The uniffi entry point keeps the legacy
+    // storage-instance-dir identity by passing `None`, so Dart/Flutter consumers
+    // are unaffected (no `NodeConfig` field change).
+    create_node_with_identity(config, None)
+}
+
+/// Like [`create_node`] but with an optional explicit `node_id` override for the
+/// deterministic iroh identity (`HKDF(formation_secret, "iroh:" + node_id)`).
+///
+/// peat-node derives its EndpointId from `(PEAT_NODE_SHARED_KEY, PEAT_NODE_NODE_ID)`
+/// so any shared-key holder can compute a peer's id offline (`peat-node derive-id`).
+/// The ATAK plugin mirrors that by passing the device callsign here, instead of the
+/// per-install storage-dir name (which no peer can pre-compute). `None` or an
+/// empty/whitespace value falls back to the legacy storage-instance-dir identity.
+#[cfg(feature = "sync")]
+pub(crate) fn create_node_with_identity(
+    config: NodeConfig,
+    node_id_override: Option<String>,
+) -> Result<Arc<PeatNode>, PeatError> {
     use std::time::Instant;
     let total_start = Instant::now();
 
@@ -1742,19 +1769,29 @@ pub fn create_node(config: NodeConfig) -> Result<Arc<PeatNode>, PeatError> {
     let seed = format!("{}/{}", config.app_id, config.storage_path);
     let storage_path_for_store = storage_path.clone();
 
-    // Stable per-device logical node_id for the canonical formation identity:
-    // the storage directory's **basename** is the identity seed. Formation
-    // peers reconstruct this endpoint's iroh EndpointId from
-    // (formation_secret, node_id), so it must be stable across restarts.
-    // Renaming the storage directory rotates the EndpointId silently.
+    // Logical node_id for the canonical formation identity. Formation peers
+    // reconstruct this endpoint's iroh EndpointId from (formation_secret,
+    // node_id), so it must be stable across restarts. Renaming the storage
+    // directory (the fallback seed) rotates the EndpointId silently.
     // NOTE: upgrading from the legacy seed identity (pre-formation) to this
     // path is a one-time EndpointId rotation — cached peer mappings and
     // route hints from prior sessions go stale at upgrade time.
-    let iroh_node_id = std::path::Path::new(&config.storage_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| config.app_id.clone());
+    //
+    // When the caller supplies an explicit node_id via the JNI layer, use
+    // it — matching peat-node's NODE_ID model so a peer can derive this
+    // endpoint's id from (shared_key, node_id) offline (`peat-node
+    // derive-id`). Otherwise fall back to the storage-instance-dir
+    // basename: stable + unique per install, but NOT peer-derivable.
+    let iroh_node_id = node_id_override
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::path::Path::new(&config.storage_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| config.app_id.clone())
+        });
     // Raw formation secret = base64-decoded shared key (matches peat-mesh /
     // peat-node). Empty/invalid → fall back to the legacy seed identity.
     let formation_secret: Option<Vec<u8>> = if config.shared_key.trim().is_empty() {
@@ -2377,8 +2414,10 @@ async fn dial_peer_and_sync(
         return true;
     };
 
-    use peat_protocol::network::perform_initiator_handshake;
-    match perform_initiator_handshake(&conn, &formation_key).await {
+    // peat-mesh#267: use peat-mesh's dial-side handshake (see connect_peer_inner).
+    match peat_mesh::storage::mesh_sync_transport::respond_to_formation_auth(&formation_key, &conn)
+        .await
+    {
         Ok(()) => {
             iroh_transport.emit_peer_connected(peer_id);
             if let Some(coordinator) = storage_backend.sync_coordinator() {
@@ -8730,6 +8769,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     _class: JClass,
     app_id: JString,
     shared_key: JString,
+    node_id: JString,
     storage_path: JString,
     enable_ble: jboolean,
     ble_power_profile: JString,
@@ -8747,6 +8787,20 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
         Ok(s) => s.into(),
         Err(_) => return 0,
     };
+
+    // Nullable: a null/empty `nodeId` falls back to the storage-instance-dir
+    // identity inside `create_node_with_identity`. When set (the ATAK callsign),
+    // the iroh EndpointId becomes HKDF(shared_key, "iroh:"+callsign) — matching
+    // peat-node's NODE_ID and derivable by peers via `peat-node derive-id`.
+    let node_id: Option<String> = env.get_string(&node_id).ok().and_then(|s| {
+        let s: String = s.into();
+        let s = s.trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    });
 
     // Parse BLE power profile (null/empty string means use default)
     let power_profile: Option<String> = env.get_string(&ble_power_profile).ok().and_then(|s| {
@@ -8767,8 +8821,9 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
 
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "createNodeWithConfigJni: app_id={}, storage_path={}, enable_ble={}, power_profile={:?}, bind_address={:?}",
+        "createNodeWithConfigJni: app_id={}, node_id={:?}, storage_path={}, enable_ble={}, power_profile={:?}, bind_address={:?}",
         app_id,
+        node_id,
         storage_path,
         enable_ble != 0,
         power_profile,
@@ -8800,7 +8855,7 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
         transport: transport_config,
     };
 
-    match create_node(config) {
+    match create_node_with_identity(config, node_id) {
         Ok(node) => {
             #[cfg(target_os = "android")]
             android_log("createNodeWithConfigJni: Node created successfully");
@@ -11938,7 +11993,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "createNodeWithConfigJni".into(),
-            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)J"
+            // (appId, sharedKey, nodeId, storagePath, enableBle, blePowerProfile, bindAddress) -> handle
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
                 .into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *mut c_void,
         },
@@ -12610,7 +12666,8 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "createNodeWithConfigJni".into(),
-                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)J"
+                    // (appId, sharedKey, nodeId, storagePath, enableBle, blePowerProfile, bindAddress) -> handle
+                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
                         .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni
                         as *mut c_void,

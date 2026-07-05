@@ -22,7 +22,7 @@ audit-as-crates-io = true
 [policy.peat-ffi]
 audit-as-crates-io = true
 
-# Temporary: peat-mesh is pinned to a git commit (peat-mesh#266, unreleased)
+# Temporary: peat-mesh is pinned to a git commit (peat-mesh#268, unreleased)
 # via [patch.crates-io] in Cargo.toml. That git version (rc.43) matches a
 # published crates.io version, so cargo-vet needs to be told to audit it as
 # the crates.io crate. Remove when the override is dropped for a released
@@ -36,13 +36,13 @@ audit-as-crates-io = true
 [policy.peat-schema]
 audit-as-crates-io = true
 
-# Temporary: the git-pinned peat-mesh (peat-mesh#266, unreleased) carries
+# Temporary: the git-pinned peat-mesh (peat-mesh#268, unreleased) carries
 # commits not in the published rc.43, so the [[trusted.peat-mesh]] coverage
 # doesn't apply. peat-mesh is a first-party defenseunicorns crate; exempt the
 # pinned commit until it's released and the [patch.crates-io] override is
 # dropped (see PR #1006 pre-merge checklist).
 [[exemptions.peat-mesh]]
-version = "0.9.0-rc.43@git:c863d16b358b146067d759e691021bc49d182446"
+version = "0.9.0-rc.43@git:b5d62aa08737156be5c72b66c8d64f52f2b64e80"
 criteria = "safe-to-deploy"
 
 [[exemptions.arc-swap]]
