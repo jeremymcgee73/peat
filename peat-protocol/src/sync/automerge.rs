@@ -2679,6 +2679,147 @@ impl PeerDiscovery for IrohPeerDiscovery {
             });
         }
 
+        // Android / peat-controlled `_peat._udp` browse path. iroh's own
+        // swarm-discovery cannot enumerate the wildcard-bound interface on
+        // Android, so the `mdns_discovery()` stream above yields nothing there
+        // (the node advertises but never discovers). The peat-controlled browse
+        // DOES discover peers; consume its event stream and dial each by its
+        // advertised concrete addresses via `connect_peer` — `connect_by_id`
+        // alone can't resolve them because the iroh address book is empty on
+        // Android. On desktop this runs harmlessly alongside the iroh path: the
+        // `get_connection` dedup below stops it from double-dialing a peer the
+        // iroh path already connected.
+        if let Some(mut peat_events) = self.transport.peat_mdns_events() {
+            let transport = Arc::clone(&self.transport);
+            let formation_key_peat = formation_key.clone();
+            let availability_check = self.peer_availability_check.clone();
+
+            tokio::spawn(async move {
+                use crate::network::PeerInfo as NetworkPeerInfo;
+                use peat_mesh::discovery::DiscoveryEvent as PeatMdnsEvent;
+                use std::collections::{HashMap, HashSet};
+
+                tracing::info!("Starting peat-controlled mDNS browse connection handler");
+
+                // Remember every dialable peer we've discovered, keyed by
+                // EndpointId. peat-mesh recycles live connections every ~60s
+                // (CONNECTION_RECYCLE_INTERVAL_SECS, an iroh-leak workaround); a
+                // pure event-driven dialer would then sit idle until the next
+                // mDNS re-announce, so the peer count sawtooths down to 0. The
+                // periodic re-dial tick below acts as the reconnect watchdog
+                // (mirroring peat-node) — it re-dials any known peer that has
+                // dropped out of `connected_peers()`, closing the recycle gap.
+                let mut known: HashMap<peat_mesh::network::EndpointId, NetworkPeerInfo> =
+                    HashMap::new();
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    // Each iteration produces a set of (peer_id, peer) to attempt
+                    // — either the just-discovered peer, or, on a tick, every
+                    // known peer not currently connected.
+                    let to_dial: Vec<(peat_mesh::network::EndpointId, NetworkPeerInfo)> = tokio::select! {
+                        event = peat_events.recv() => {
+                            let Some(event) = event else {
+                                tracing::debug!("peat-controlled mDNS browse stream closed");
+                                break;
+                            };
+                            let discovered = match event {
+                                PeatMdnsEvent::PeerFound(p) | PeatMdnsEvent::PeerUpdated(p) => p,
+                                PeatMdnsEvent::PeerLost(node_id) => {
+                                    tracing::debug!(%node_id, "peat mDNS peer lost (no longer advertising)");
+                                    if let Ok(bytes) = hex::decode(&node_id) {
+                                        if bytes.len() == 32 {
+                                            let mut arr = [0u8; 32];
+                                            arr.copy_from_slice(&bytes);
+                                            if let Ok(id) = peat_mesh::network::EndpointId::from_bytes(&arr) {
+                                                known.remove(&id);
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                            };
+                            // Bridge browse descriptor → dialable PeerInfo (drops
+                            // loopback/link-local addrs).
+                            let peer: NetworkPeerInfo = discovered.into();
+                            match peer.endpoint_id() {
+                                Ok(id) => {
+                                    known.insert(id, peer.clone());
+                                    vec![(id, peer)]
+                                }
+                                Err(e) => {
+                                    tracing::debug!(node_id = %peer.node_id, error = %e,
+                                        "peat mDNS peer has non-hex node_id — skipping");
+                                    continue;
+                                }
+                            }
+                        }
+                        _ = tick.tick() => {
+                            // Reconnect watchdog: re-dial known peers that aren't
+                            // in the live connected set (e.g. after a 60s recycle).
+                            let connected: HashSet<peat_mesh::network::EndpointId> =
+                                transport.connected_peers().into_iter().collect();
+                            known
+                                .iter()
+                                .filter(|(id, _)| !connected.contains(*id))
+                                .map(|(id, peer)| (*id, peer.clone()))
+                                .collect()
+                        }
+                    };
+
+                    for (peer_id, peer) in to_dial {
+                        if transport.get_connection(&peer_id).is_some() {
+                            continue; // already connected
+                        }
+                        // Circuit-breaker gate (peat#873): skip peers the breaker
+                        // has marked unreachable.
+                        if let Some(check) = availability_check.as_ref() {
+                            if !check(&peer_id) {
+                                continue;
+                            }
+                        }
+                        match transport.connect_peer(&peer).await {
+                            Ok(Some(conn)) => {
+                                // Dial-side formation auth MUST use peat-mesh's
+                                // `respond_to_formation_auth` (peat-mesh#267): the
+                                // rc.43 acceptor runs `run_formation_auth`, and
+                                // peat-protocol's legacy `perform_initiator_handshake`
+                                // speaks a different wire format that peers reject.
+                                match peat_mesh::storage::mesh_sync_transport::respond_to_formation_auth(
+                                    &formation_key_peat,
+                                    &conn,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        tracing::info!(peer_id = %peer_id,
+                                            "peat mDNS peer connected and authenticated");
+                                        transport.emit_peer_connected(peer_id);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(peer_id = %peer_id, error = %e,
+                                            "peat mDNS peer failed authentication");
+                                        conn.close(1u32.into(), b"authentication failed");
+                                        transport.disconnect(&peer_id).ok();
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::debug!(peer_id = %peer_id,
+                                    "peat mDNS peer connection handled by accept path");
+                            }
+                            Err(e) => {
+                                tracing::debug!(peer_id = %peer_id, error = %e,
+                                    "Failed to dial peat-mDNS-discovered peer");
+                            }
+                        }
+                    }
+                }
+                tracing::debug!("peat-controlled mDNS browse connection handler stopped");
+            });
+        }
+
         // Check if topology-driven connection management is configured
         #[cfg(feature = "automerge-backend")]
         let has_topology_events = {

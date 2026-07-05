@@ -116,9 +116,25 @@ jobs:
             # tag") do NOT false-trigger; [IDIOM] is intentionally not a trigger.
             # This only ever downgrades approve->request-changes, never upgrades,
             # so it closes the body/verdict divergence window fail-closed.
-            if [ "$verb" = "--approve" ] && \
-               grep -qE '^[[:space:]]*(#{1,6}[[:space:]]+|[-*][[:space:]]+)?\[(BLOCKER|WARNING|ARCH)\]' \
-                 "$RUNNER_TEMP/peat-qa-review.md" 2>/dev/null; then
+            #
+            # Scan only the findings section (after the <!-- peat-qa-findings -->
+            # sentinel) so scope-preamble prose that references prior finding
+            # tags doesn't self-trigger. Falls back to full-body scan if the
+            # sentinel is absent (defense-in-depth on older/malformed reviews).
+            # Within the findings section, strip "addressed"/"not re-flagged"
+            # status-update lines, then look for real finding markers.
+            # Require a space after the closing ] so slash-separated tag lists
+            # ("[BLOCKER]/[WARNING]/[ARCH]") don't match.
+            _qa_body="$RUNNER_TEMP/peat-qa-review.md"
+            if [ "$verb" = "--approve" ] && [ -f "$_qa_body" ] && {
+               if grep -q '<!-- peat-qa-findings -->' "$_qa_body"; then
+                 sed -n '/<!-- peat-qa-findings -->/,$p' "$_qa_body"
+               else
+                 cat "$_qa_body"
+               fi \
+                 | grep -vEi 'addressed|not re-flagged' \
+                 | grep -qE '^[[:space:]]*(#{1,6}[[:space:]]+|[-*][[:space:]]+)?\[(BLOCKER|WARNING|ARCH)\][[:space:]]'
+            }; then
               echo "::warning::verdict file said 'approve' but the review body contains a [BLOCKER]/[WARNING]/[ARCH] finding — downgrading to --request-changes (fail-closed)"
               verb="--request-changes"
             fi
@@ -204,6 +220,11 @@ jobs:
           $START_LINE
                  Every finding must carry a tag with a defined action. Do NOT post optional/nice-to-have
                  observations — if a finding has no clear action, omit it.
+                 Immediately before the findings section (or "No findings."), write the HTML comment:
+                 <!-- peat-qa-findings -->
+                 This separates the scope/assessment preamble from the findings so the
+                 fail-closed body-scan does not trigger on preamble prose that references
+                 prior finding tags.
                  Severity tags:
                    [BLOCKER]  — must fix before merge
                    [WARNING]  — should fix, may merge with justification

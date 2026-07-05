@@ -323,9 +323,11 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 # peat-mesh carrying the Android/_peat formation-identity + _peat._udp browse
-# discovery fix (peat-mesh#266, merged to peat-mesh main but not yet released).
-# Pinned to the merge commit so CI (peat-mesh is public) builds against it.
-# DROP THIS once peat-mesh cuts a release containing #266 and bump the
+# discovery fix, plus the mDNS-discovered-peer dial bridge
+# (impl From<discovery::PeerInfo> for network::PeerInfo) this branch consumes
+# (peat-mesh#268, merged to peat-mesh main but not yet released). Pinned to the
+# merge commit so CI (peat-mesh is public) builds against it.
+# DROP THIS once peat-mesh cuts a release containing #268 and bump the
 # `peat-mesh` dependency floor to that version (see PR #1006 pre-merge checklist).
 [patch.crates-io]
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "c863d16b358b146067d759e691021bc49d182446" }
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "b5d62aa08737156be5c72b66c8d64f52f2b64e80" }

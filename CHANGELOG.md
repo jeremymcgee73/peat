@@ -14,6 +14,39 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+### Added
+
+- **mDNS-discovered peer dialing (Android)** — the Automerge connection manager
+  now consumes the peat-controlled `_peat._udp` browse
+  (`transport.peat_mdns_events()`) alongside iroh's `MdnsAddressLookup`,
+  converts each discovered peer to a dialable `PeerInfo` (via peat-mesh's new
+  `From<discovery::PeerInfo>` bridge, peat-mesh#268) and dials its advertised
+  concrete addresses with `connect_peer`. Fixes the Android
+  "discovered-but-no-dial" gap: iroh swarm-discovery emits nothing on the
+  wildcard-bound interface there, so nodes advertised but never connected and
+  the peer count stayed at 0. Runs alongside the iroh path on desktop
+  (`get_connection` dedup prevents a double-dial); a non-hex node_id is skipped.
+  (peat-protocol)
+
+### Added — `peat-ffi`
+
+- **Deterministic formation iroh identity for `createNode`** — a canonical
+  formation iroh identity is derived for `createNode`, with an explicit
+  `node_id` for a stable endpoint identity across restarts. Emits an identity
+  base64 fallback log on non-Android too.
+- **`bindAddress` threaded through `createNode`** — the `createNode` JNI
+  entrypoints accept a `bindAddress` so the iroh endpoint binds to the detected
+  LAN IP on Android instead of the wildcard interface.
+- **mDNS reconnect watchdog** — dial-side formation auth now routes through
+  peat-mesh's `respond_to_formation_auth`, with a watchdog that re-dials peers
+  on mDNS reconnect.
+
+### Changed
+
+- **`[patch.crates-io]` peat-mesh re-pinned to peat-mesh#268 merge commit** —
+  carries the mDNS-discovered-peer dial bridge this branch consumes. Drop the
+  override once peat-mesh cuts a release containing #268.
+
 ## [0.9.0-rc.28] - 2026-06-24
 
 ### Added — `peat-ffi`
