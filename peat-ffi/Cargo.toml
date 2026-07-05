@@ -59,7 +59,18 @@ name = "peat-ffi"
 # regen required**, paired with peat-flutter#13), and four Dart C-ABI shims
 # for the new reconnect surface. Concurrent reconnect dials bounded at 8 via
 # `tokio::sync::Semaphore`. Ships in the Maven AAR 0.1.4 cut. See peat#1000.
-version = "0.2.9"
+#
+# 0.2.10 (was 0.2.9): additive — UniFFI-exports the blob-transfer surface
+# previously reachable only via direct JNI (enable_blob_transfer,
+# blob_add_peer, blob_put, blob_exists_locally, blob_endpoint_id,
+# blob_bound_addr), plus new `blob_add_peer_id` and the async poll-based
+# `blob_fetch_start` -> `Arc<BlobFetchHandle>` (mesh-sync or direct-peer
+# fetch behind one entrypoint; peat-mesh#274 / peat-mesh 0.9.0-rc.45 floor).
+# `enable_blob_transfer`'s `bind_addr` param changes `Option<SocketAddr>` ->
+# `Option<String>` (SocketAddr isn't UniFFI-liftable) — JNI callers unaffected
+# except a malformed non-empty address now errors instead of silently
+# falling back to ephemeral. See peat#1013, peat#1017.
+version = "0.2.10"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
@@ -126,7 +137,7 @@ uniffi = { version = "0.31", features = ["cli", "tokio"] }
 jni = "0.21"
 
 # Peat crates - no ditto-backend for Android cross-compilation
-peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.28", default-features = false }
+peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.29", default-features = false }
 # peat-mesh direct for blob storage (ADR-060). Pulls NetworkedIrohBlobStore
 # which we use behind the peat_mesh::storage::BlobStore trait.
 peat-mesh = { workspace = true, optional = true }
