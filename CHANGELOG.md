@@ -14,9 +14,12 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.29] - 2026-07-05
+
 ### Added
 
-- **mDNS-discovered peer dialing (Android)** — the Automerge connection manager
+- **mDNS-discovered peer dialing (Android)** ([#1007](https://github.com/defenseunicorns/peat/pull/1007)) —
+  the Automerge connection manager
   now consumes the peat-controlled `_peat._udp` browse
   (`transport.peat_mdns_events()`) alongside iroh's `MdnsAddressLookup`,
   converts each discovered peer to a dialable `PeerInfo` (via peat-mesh's new
@@ -30,22 +33,42 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ### Added — `peat-ffi`
 
-- **Deterministic formation iroh identity for `createNode`** — a canonical
+- **Deterministic formation iroh identity for `createNode`** ([#1006](https://github.com/defenseunicorns/peat/pull/1006)) —
+  a canonical
   formation iroh identity is derived for `createNode`, with an explicit
   `node_id` for a stable endpoint identity across restarts. Emits an identity
   base64 fallback log on non-Android too.
-- **`bindAddress` threaded through `createNode`** — the `createNode` JNI
+- **`bindAddress` threaded through `createNode`** ([#1006](https://github.com/defenseunicorns/peat/pull/1006)) —
+  the `createNode` JNI
   entrypoints accept a `bindAddress` so the iroh endpoint binds to the detected
   LAN IP on Android instead of the wildcard interface.
-- **mDNS reconnect watchdog** — dial-side formation auth now routes through
+- **mDNS reconnect watchdog** ([#1007](https://github.com/defenseunicorns/peat/pull/1007)) —
+  dial-side formation auth now routes through
   peat-mesh's `respond_to_formation_auth`, with a watchdog that re-dials peers
   on mDNS reconnect.
+- **UniFFI-exported blob-transfer surface + `blob_fetch_start`** ([#1017](https://github.com/defenseunicorns/peat/pull/1017), peat#1013) —
+  `enable_blob_transfer`, `blob_add_peer`, `blob_put`, `blob_exists_locally`,
+  `blob_endpoint_id`, `blob_bound_addr` (previously JNI-only) now carry
+  `#[uniffi::export]`, plus new `blob_add_peer_id` (wraps peat-mesh's
+  `add_peer_from_hex_id`) and the async, poll-based
+  `blob_fetch_start(hash, size, peer_id: Option<String>)` ->
+  `Arc<BlobFetchHandle>`. `peer_id = None` runs the mesh-sync `fetch_blob`
+  path; `Some(id)` runs peat-mesh's new direct-peer `fetch_blob_from_peer`
+  path — one entrypoint, both delivery modes. `BlobFetchHandle::dispose()`
+  aborts the underlying task for real mid-transfer cancellation.
+  `enable_blob_transfer`'s `bind_addr` param changes from
+  `Option<SocketAddr>` to `Option<String>` (`SocketAddr` isn't
+  UniFFI-liftable); the JNI wrapper now passes the raw string through
+  instead of pre-parsing, so a malformed non-empty bind address surfaces as
+  an error instead of silently falling back to an ephemeral bind.
 
-### Changed
+### Pinned
 
-- **`[patch.crates-io]` peat-mesh re-pinned to peat-mesh#268 merge commit** —
-  carries the mDNS-discovered-peer dial bridge this branch consumes. Drop the
-  override once peat-mesh cuts a release containing #268.
+- `peat-mesh` floor raised to `0.9.0-rc.45` (peat-mesh#274 —
+  `NetworkedIrohBlobStore::fetch_blob_from_peer`, the direct-peer blob-fetch
+  path `blob_fetch_start` consumes). Default features unchanged
+  (`peat-mesh` continues to build with `default-features = false`, per-crate
+  opt-in).
 
 ## [0.9.0-rc.28] - 2026-06-24
 
