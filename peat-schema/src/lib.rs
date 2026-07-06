@@ -308,8 +308,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_track_types_accessible() {
-        // Verify Track types are accessible from track.v1
         use track::v1::{
             SourceType, Track, TrackPosition, TrackSource, TrackState, TrackUpdate, UpdateType,
         };
@@ -337,6 +337,8 @@ mod tests {
             first_seen: None,
             last_seen: None,
             observation_count: 5,
+            kinematics: None,
+            position_error: None,
         };
 
         let _update = TrackUpdate {

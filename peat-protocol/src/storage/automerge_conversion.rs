@@ -481,6 +481,8 @@ mod tests {
                 seconds: 1234567890,
                 nanos: 0,
             }),
+            kinematics: None,
+            position_error: None,
         };
 
         let doc = node_state_to_automerge(&node).expect("Failed to convert to Automerge");

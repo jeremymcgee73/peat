@@ -211,6 +211,8 @@ impl NodeStateExt for NodeState {
                     .as_secs(),
                 nanos: 0,
             }),
+            kinematics: None,
+            position_error: None,
         }
     }
 

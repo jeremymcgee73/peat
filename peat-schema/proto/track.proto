@@ -33,8 +33,8 @@ message Track {
   // Current position estimate
   TrackPosition position = 4;
 
-  // Velocity estimate (optional)
-  Velocity velocity = 5;
+  // DEPRECATED: Use kinematics instead
+  Velocity velocity = 5 [deprecated = true];
 
   // Track state
   TrackState state = 6;
@@ -54,6 +54,12 @@ message Track {
 
   // Number of observations contributing to this track
   uint32 observation_count = 11;
+
+  // Kinematics (optional)
+  optional common.v1.Kinematics kinematics = 12;
+
+  // Position error estimates (optional)
+  optional common.v1.PositionError position_error = 13;
 }
 
 // Track position with uncertainty
@@ -67,11 +73,11 @@ message TrackPosition {
   // Altitude/elevation in meters (optional)
   float altitude = 3;
 
-  // Circular Error Probable in meters (horizontal accuracy)
-  float cep_m = 4;
+  // DEPRECATED: Use Track.position_error.circular_error instead
+  float cep_m = 4 [deprecated = true];
 
-  // Vertical error in meters (optional)
-  float vertical_error_m = 5;
+  // DEPRECATED: Use Track.position_error.vertical_error instead
+  float vertical_error_m = 5 [deprecated = true];
 }
 
 // Velocity vector
