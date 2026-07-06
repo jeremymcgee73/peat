@@ -14,7 +14,7 @@ members = [
     # strategies is `peat_mesh::discovery` per `peat/SKILL.md`'s
     # transport-agnosticism rule.
     "peat-ffi",
-    "examples/peat-tak-bridge",
+    # `examples/peat-tak-bridge` moved to the standalone `peat-tak` repo.
     "examples/quickstart",
     # NOTE: temporarily commented out to diagnose a cargo cycle-
     # detection issue exposed by the relaxation of the `=`-exact

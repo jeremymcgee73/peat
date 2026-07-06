@@ -168,7 +168,7 @@ Subcrates inherit the workspace `Cargo.toml`'s pinned deps (Tokio, serde, thiser
 - `peat-transport` — transport abstractions used by the workspace.
 - `peat-persistence` — persistence layer.
 - `peat-ffi` — FFI bindings (see "FFI conventions" below).
-- `examples/peat-tak-bridge`, `examples/peat-ble-test` — workspace examples.
+- `examples/peat-ble-test` — workspace example. (`examples/peat-tak-bridge` moved to the standalone `peat-tak` repo.)
 - `examples/m5stack-core2-peat` is **excluded** from the workspace (separate toolchain — embedded ESP32 / xtensa-esp-none-elf).
 
 ## `peat` top-level crate (placeholder)
