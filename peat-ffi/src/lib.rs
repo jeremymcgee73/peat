@@ -2793,11 +2793,7 @@ impl From<peat_schema::node::v1::Node> for NodeInfo {
             lat: pos.latitude,
             lon: pos.longitude,
             altitude: pos.altitude,
-            capabilities: config
-                .capabilities
-                .into_iter()
-                .map(|c| c.name)
-                .collect(),
+            capabilities: config.capabilities.into_iter().map(|c| c.name).collect(),
             cell_id: state.cell_id,
         }
     }
@@ -2808,8 +2804,8 @@ impl From<peat_schema::track::v1::Track> for TrackInfo {
         let pos = t.position.unwrap_or_default();
         let vel = t.velocity;
         let src = t.source.unwrap_or_default();
-        let attrs: HashMap<String, String> = serde_json::from_str(&t.attributes_json)
-            .unwrap_or_default();
+        let attrs: HashMap<String, String> =
+            serde_json::from_str(&t.attributes_json).unwrap_or_default();
         let first_seen_ms = t
             .first_seen
             .map(|ts| (ts.seconds as i64) * 1000 + (ts.nanos / 1_000_000) as i64)
@@ -3033,7 +3029,6 @@ impl PeatNode {
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })
         })
     }
-
 }
 
 // =============================================================================
@@ -5848,7 +5843,6 @@ mod tests {
             assert_eq!(b.capabilities, a.capabilities);
             assert_eq!(b.cohort_id.as_deref(), Some("formation-1"));
         }
-
     }
 
     #[cfg(feature = "sync")]
@@ -6772,7 +6766,10 @@ mod tests {
             assert_eq!(HealthStatus::from_str("DEGRADED"), HealthStatus::Degraded);
             assert_eq!(HealthStatus::from_str("CRITICAL"), HealthStatus::Critical);
             assert_eq!(HealthStatus::from_str("FAILED"), HealthStatus::Failed);
-            assert_eq!(HealthStatus::from_str("UNSPECIFIED"), HealthStatus::Unspecified);
+            assert_eq!(
+                HealthStatus::from_str("UNSPECIFIED"),
+                HealthStatus::Unspecified
+            );
             assert_eq!(HealthStatus::from_str("nominal"), HealthStatus::Nominal);
             assert_eq!(HealthStatus::from_str("garbage"), HealthStatus::Unspecified);
         }
@@ -8513,8 +8510,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_publishNodeJni(
 
     #[cfg(target_os = "android")]
     android_log(&format!(
-        "publishNodeJni: Publishing node id={}, name={}, lat={}, lon={}",
-        node.id, node.name, node.lat, node.lon
+        "publishNodeJni: Publishing node id={}, type={}, lat={}, lon={}",
+        node.id, node.node_type, node.lat, node.lon
     ));
 
     // Get node from handle and store node

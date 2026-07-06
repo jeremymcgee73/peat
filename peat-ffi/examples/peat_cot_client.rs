@@ -198,11 +198,7 @@ fn main() {
                 }
                 println!(
                     "  [PLI] {} ({}) @ {:.4}, {:.4} - {:?}",
-                    p.id,
-                    p.node_type,
-                    p.lat,
-                    p.lon,
-                    p.health
+                    p.id, p.node_type, p.lat, p.lon, p.health
                 );
             }
             println!();

@@ -128,8 +128,8 @@ fn main() {
         );
 
         for p in &nodes {
-            if p.name == "ANDROID-DUAL" || p.id == "android-dual-test" {
-                println!("\n\nReceived node: {} (id={})", p.name, p.id);
+            if p.id == "ANDROID-DUAL" || p.id == "android-dual-test" {
+                println!("\n\nReceived node: {} (type={})", p.id, p.node_type);
                 found = true;
                 break;
             }

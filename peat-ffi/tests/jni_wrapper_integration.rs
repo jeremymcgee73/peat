@@ -887,11 +887,11 @@ fn scenario_native_method_table_audit() {
     }
 
     // Count check: under `--features sync` on Linux we expect
-    // 2 (always-on) + 30 (sync-only) = 32 entries. If the bluetooth
+    // 2 (always-on) + 27 (sync-only) = 29 entries. If the bluetooth
     // feature flips on, +3. If both bluetooth and Android target,
     // +5. The expected total tracks the active cfg.
     let expected = 2
-        + if cfg!(feature = "sync") { 30 } else { 0 }
+        + if cfg!(feature = "sync") { 27 } else { 0 }
         + if cfg!(all(feature = "sync", feature = "bluetooth")) {
             3
         } else {
