@@ -29,7 +29,6 @@ peat/
 ├── peat-ffi/                  # Mobile bindings (UniFFI)
 │
 ├── examples/                  # Example applications & demos
-│   ├── peat-tak-bridge/       # TAK/CoT bridge service
 │   ├── peat-ble-test/         # BLE integration test harness
 │   ├── android-ble-test/      # Android BLE demo
 │   ├── kotlin-test/           # Kotlin bindings demo

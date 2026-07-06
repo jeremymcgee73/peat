@@ -4257,27 +4257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peat-tak-bridge"
-version = "0.9.0-rc.29"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "futures",
- "hex",
- "peat-protocol",
- "peat-transport",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "peat-transport"
 version = "0.9.0-rc.29"
 dependencies = [

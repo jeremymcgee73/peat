@@ -10,7 +10,6 @@ Peat integrations.
 | Path | Description |
 |------|-------------|
 | `quickstart/` | Smallest runnable Peat node — read first. Companion to [`docs/guides/QUICKSTART.md`](../docs/guides/QUICKSTART.md). |
-| `peat-tak-bridge/` | Reference TAK Server ↔ Peat bridge service (Rust workspace crate) |
 | `android-peat-demo/` | Android demo app built on the Peat FFI |
 | `ios-demo/` | iOS (`PeatInventory`) SwiftUI demo using the UniFFI bindings |
 | `kotlin-test/` | Minimal Kotlin JVM program exercising the UniFFI-generated Kotlin bindings |
@@ -28,7 +27,7 @@ FFI behavior on real hardware. See `docs/FUNCTIONAL-TESTING.md`.
 
 ## Workspace membership
 
-The Rust crates here (`peat-tak-bridge`, `peat-ble-test`) are regular members
+The Rust crates here (`peat-ble-test`) are regular members
 of the top-level Cargo workspace. New `examples/*` crates should be added to
 `members` in the root `Cargo.toml` unless they need a separate toolchain, in
 which case add them to `exclude` (like `m5stack-core2-peat`).

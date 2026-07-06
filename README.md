@@ -184,7 +184,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full five-layer breakdo
 | `peat-transport` | HTTP/REST API layer (Axum) |
 | `peat-persistence` | Storage backends (Redb, SQLite) |
 | `peat-ffi` | Mobile bindings (Kotlin/Swift via UniFFI + JNI) |
-| `examples/peat-tak-bridge` | TAK/CoT interoperability bridge |
 | `examples/peat-ble-test` | BLE integration test harness (Pi-to-Android) |
 
 ## Feature Flags
