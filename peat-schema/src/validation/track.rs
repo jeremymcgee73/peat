@@ -81,7 +81,7 @@ pub fn validate_track(track: &Track) -> ValidationResult<()> {
     Ok(())
 }
 
-/// Validate a TrackPosition
+#[allow(deprecated)]
 fn validate_track_position(pos: &TrackPosition) -> ValidationResult<()> {
     // Latitude must be -90 to 90
     if pos.latitude < -90.0 || pos.latitude > 90.0 {
@@ -111,6 +111,7 @@ fn validate_track_position(pos: &TrackPosition) -> ValidationResult<()> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::common::v1::Timestamp;
@@ -140,6 +141,8 @@ mod tests {
             first_seen: None,
             last_seen: None,
             observation_count: 5,
+            kinematics: None,
+            position_error: None,
         }
     }
 

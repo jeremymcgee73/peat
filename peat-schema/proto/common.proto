@@ -32,3 +32,18 @@ message Confidence {
 message Metadata {
   map<string, string> fields = 1;
 }
+
+// Kinematics (velocity, heading, acceleration)
+message Kinematics {
+  float velocity = 1;        // Speed in meters per second
+  float heading = 2;         // Heading in degrees (0-360, 0 = North)
+  float acceleration = 3;    // Acceleration in meters per second squared
+  float vertical_speed = 4;  // Vertical speed in m/s (positive = ascending)
+}
+
+// Position error estimates
+message PositionError {
+  float circular_error = 1;  // Circular error probable (CEP) in meters
+  float linear_error = 2;    // Linear error probable (LEP) in meters
+  float vertical_error = 3;  // Vertical error in meters
+}

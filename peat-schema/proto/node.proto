@@ -157,6 +157,12 @@ message NodeState {
 
   // Last update timestamp (for LWW conflict resolution)
   common.v1.Timestamp timestamp = 7;
+
+  // Kinematics (optional, LWW-Register)
+  optional common.v1.Kinematics kinematics = 8;
+
+  // Position error estimates (optional, LWW-Register)
+  optional common.v1.PositionError position_error = 9;
 }
 
 // Complete node representation
