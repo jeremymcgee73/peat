@@ -1,5 +1,5 @@
 // Hierarchical aggregation summaries for Peat Protocol
-// Version: 2.0.0 — abstract hierarchy vocabulary per ADR-066
+// Version: 2.1.0 — abstract hierarchy vocabulary per ADR-066
 //
 // Defines aggregated state summaries for hierarchical formations.
 // Four-tier model: Node → Cell → Cohort → Federation → Coalition.

@@ -1,5 +1,5 @@
 // AI/ML Product definitions for CAP Protocol
-// Version: 1.0.0
+// Version: 1.1.0
 //
 // Products represent outputs from AI/ML models and sensor processing.
 // This is the generic primitive for any AI-generated content flowing
