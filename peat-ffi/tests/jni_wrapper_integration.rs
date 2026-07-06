@@ -776,20 +776,8 @@ fn scenario_native_method_table_audit() {
             peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getNodesJni as *const (),
         ),
         (
-            "getCommandsJni",
-            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getCommandsJni as *const (),
-        ),
-        (
-            "getMarkersJni",
-            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_getMarkersJni as *const (),
-        ),
-        (
             "publishNodeJni",
             peat_ffi::Java_com_defenseunicorns_peat_PeatJni_publishNodeJni as *const (),
-        ),
-        (
-            "publishMarkerJni",
-            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_publishMarkerJni as *const (),
         ),
         (
             "publishDocumentJni",

@@ -46,7 +46,6 @@ struct FlightPattern {
     altitude_m: f64,   // Altitude in meters
     speed_factor: f64, // How fast the pattern progresses
     classification: &'static str,
-    category: &'static str,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,7 +108,6 @@ fn main() {
             altitude_m: 300.0,
             speed_factor: 1.0,
             classification: "a-f-A-M-F-Q", // Friendly UAV
-            category: "aircraft",
         },
         FlightPattern {
             name: "HAWK-2",
@@ -120,7 +118,6 @@ fn main() {
             altitude_m: 250.0,
             speed_factor: 0.8,
             classification: "a-f-A-M-F-Q",
-            category: "aircraft",
         },
         FlightPattern {
             name: "SCOUT-1",
@@ -131,7 +128,6 @@ fn main() {
             altitude_m: 400.0,
             speed_factor: 0.6,
             classification: "a-f-A-M-F-Q",
-            category: "aircraft",
         },
         FlightPattern {
             name: "SEARCH-1",
@@ -142,7 +138,6 @@ fn main() {
             altitude_m: 200.0,
             speed_factor: 0.5,
             classification: "a-f-A-M-F-Q",
-            category: "aircraft",
         },
     ];
 
@@ -202,12 +197,12 @@ fn main() {
                     continue;
                 }
                 println!(
-                    "  [PLI] {} ({}) @ {:.4}, {:.4} - {}",
-                    p.name,
+                    "  [PLI] {} ({}) @ {:.4}, {:.4} - {:?}",
                     p.id,
+                    p.node_type,
                     p.lat,
                     p.lon,
-                    p.status.as_str()
+                    p.health
                 );
             }
             println!();
@@ -342,16 +337,14 @@ fn publish_flight_patterns(node: &peat_ffi::PeatNode, patterns: &[FlightPattern]
         let track = serde_json::json!({
             "id": track_id,
             "source_node": format!("node-{}", pattern.name.to_lowercase()),
-            "cell_id": "cell-atlanta-001",
-            "formation_id": "atlanta-isr",
             "lat": lat,
             "lon": lon,
-            "hae": alt,
+            "altitude": alt,
+            "cep": 5.0,
             "heading": heading,
-            "speed": 25.0 + (i as f64 * 5.0),  // Varying speeds
+            "speed": 25.0 + (i as f64 * 5.0),
             "classification": pattern.classification,
             "confidence": 0.95,
-            "category": pattern.category,
             "attributes": {
                 "callsign": pattern.name,
                 "pattern": format!("{:?}", pattern.pattern_type),
@@ -383,13 +376,9 @@ fn publish_cells_and_nodes(node: &peat_ffi::PeatNode) {
     // Publish Atlanta cell
     let cell = serde_json::json!({
         "id": "cell-atlanta-001",
-        "name": "Atlanta ISR Cell",
-        "status": "active",
         "node_count": 4,
-        "center_lat": ATLANTA_LAT,
-        "center_lon": ATLANTA_LON,
         "capabilities": ["ISR", "SURVEILLANCE", "RECON"],
-        "formation_id": "atlanta-isr",
+        "cohort_id": "atlanta-isr",
         "leader_id": "node-hawk_1",
         "last_update": current_timestamp()
     });
@@ -430,16 +419,13 @@ fn publish_cells_and_nodes(node: &peat_ffi::PeatNode) {
         let node_id = format!("node-{}", name.to_lowercase().replace('-', "_"));
         let node_doc = serde_json::json!({
             "id": node_id,
-            "name": name,
             "node_type": ptype,
+            "health": "NOMINAL",
             "lat": lat,
             "lon": lon,
-            "hae": alt,
-            "readiness": 0.95,
+            "altitude": alt,
             "cell_id": "cell-atlanta-001",
             "capabilities": ["ISR", "EO/IR"],
-            "status": "active",
-            "last_heartbeat": current_timestamp()
         });
 
         let json = node_doc.to_string();
@@ -450,30 +436,22 @@ fn publish_cells_and_nodes(node: &peat_ffi::PeatNode) {
     }
 }
 
-/// Update node positions and heartbeats (called every refresh cycle)
+/// Update node positions (called every refresh cycle)
 fn update_node_positions(node: &peat_ffi::PeatNode, patterns: &[FlightPattern], time_secs: u64) {
-    let now = current_timestamp();
-
     for pattern in patterns {
         let (lat, lon, alt) = calculate_position(pattern, time_secs);
-        let heading = calculate_heading(pattern, time_secs);
 
         let node_id = format!("node-{}", pattern.name.to_lowercase().replace('-', "_"));
 
         let node_doc = serde_json::json!({
             "id": node_id,
-            "name": pattern.name,
             "node_type": "UAV",
+            "health": "NOMINAL",
             "lat": lat,
             "lon": lon,
-            "hae": alt,
-            "heading": heading,
-            "speed": 25.0,
-            "readiness": 0.95,
+            "altitude": alt,
             "cell_id": "cell-atlanta-001",
             "capabilities": ["ISR", "EO/IR"],
-            "status": "active",
-            "last_heartbeat": now
         });
 
         let json = node_doc.to_string();
