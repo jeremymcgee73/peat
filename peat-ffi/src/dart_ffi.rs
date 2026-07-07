@@ -193,14 +193,12 @@ extern "C" {
         s: *mut CallStatus,
     ) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_get_cells(h: u64, s: *mut CallStatus) -> RustBuf;
-    fn uniffi_peat_ffi_fn_method_peatnode_get_commands(h: u64, s: *mut CallStatus) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_get_document(
         h: u64,
         col: RustBuf,
         id: RustBuf,
         s: *mut CallStatus,
     ) -> RustBuf;
-    fn uniffi_peat_ffi_fn_method_peatnode_get_markers(h: u64, s: *mut CallStatus) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_get_nodes(h: u64, s: *mut CallStatus) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_get_track(
         h: u64,
@@ -252,7 +250,6 @@ extern "C" {
         s: *mut CallStatus,
     ) -> RustBuf;
     fn uniffi_peat_ffi_fn_method_peatnode_put_cell(h: u64, cell: RustBuf, s: *mut CallStatus);
-    fn uniffi_peat_ffi_fn_method_peatnode_put_command(h: u64, cmd: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_put_document(
         h: u64,
         col: RustBuf,
@@ -260,7 +257,6 @@ extern "C" {
         data: RustBuf,
         s: *mut CallStatus,
     );
-    fn uniffi_peat_ffi_fn_method_peatnode_put_marker(h: u64, m: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_put_node(h: u64, node: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_put_track(h: u64, t: RustBuf, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_request_sync(h: u64, s: *mut CallStatus);
@@ -676,16 +672,6 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_get_cells(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_get_commands(
-    a: *const Elem,
-    r: *mut Elem,
-) {
-    let mut s = CallStatus::new();
-    let v = uniffi_peat_ffi_fn_method_peatnode_get_commands((*a.add(0)).u64, &mut s);
-    ret_rbuf(r, v, &s);
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_get_document(
     a: *const Elem,
     r: *mut Elem,
@@ -697,16 +683,6 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_get_docume
         read_buf(a, 4),
         &mut s,
     );
-    ret_rbuf(r, v, &s);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_get_markers(
-    a: *const Elem,
-    r: *mut Elem,
-) {
-    let mut s = CallStatus::new();
-    let v = uniffi_peat_ffi_fn_method_peatnode_get_markers((*a.add(0)).u64, &mut s);
     ret_rbuf(r, v, &s);
 }
 
@@ -855,16 +831,6 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_put_cell(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_put_command(
-    a: *const Elem,
-    r: *mut Elem,
-) {
-    let mut s = CallStatus::new();
-    uniffi_peat_ffi_fn_method_peatnode_put_command((*a.add(0)).u64, read_buf(a, 1), &mut s);
-    ret_void(r, &s);
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_put_document(
     a: *const Elem,
     r: *mut Elem,
@@ -877,16 +843,6 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_put_docume
         read_buf(a, 7),
         &mut s,
     );
-    ret_void(r, &s);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_put_marker(
-    a: *const Elem,
-    r: *mut Elem,
-) {
-    let mut s = CallStatus::new();
-    uniffi_peat_ffi_fn_method_peatnode_put_marker((*a.add(0)).u64, read_buf(a, 1), &mut s);
     ret_void(r, &s);
 }
 

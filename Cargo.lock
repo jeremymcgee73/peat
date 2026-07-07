@@ -4087,6 +4087,7 @@ dependencies = [
  "peat-btle",
  "peat-mesh",
  "peat-protocol",
+ "peat-schema",
  "serde",
  "serde_json",
  "tempfile",
