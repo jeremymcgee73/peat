@@ -1499,6 +1499,8 @@ mod tests {
             cell_id: Some("cell-1".to_string()),
             zone_id: None,
             timestamp: None,
+            kinematics: None,
+            position_error: None,
         };
 
         nodes.upsert("node-1", &node).unwrap();

@@ -1,5 +1,5 @@
-// Composition rule definitions for CAP Protocol
-// Version: 1.0.0
+// Composition rule definitions for Peat Protocol
+// Version: 0.5.0
 
 syntax = "proto3";
 
