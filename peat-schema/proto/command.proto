@@ -1,5 +1,4 @@
 // Command schema for hierarchical command dissemination
-// Version: 0.9.0-rc.29
 //
 // Enables downward command flow from higher echelons to subordinate units
 // with policy-based flexibility for different mission requirements.
