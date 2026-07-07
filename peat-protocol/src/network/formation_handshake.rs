@@ -293,9 +293,15 @@ mod tests {
     use crate::network::iroh_transport::IrohTransport;
     use serial_test::serial;
     use std::sync::Arc;
-    use tokio::sync::oneshot;
 
-    /// Helper to run handshake with proper synchronization
+    /// Helper to run handshake with proper synchronization.
+    ///
+    /// The iroh endpoint's QUIC listener is active from the moment
+    /// `IrohTransport::new()` returns — incoming connections queue at
+    /// the transport level regardless of whether `accept()` has been
+    /// called.  We spawn both sides concurrently with no artificial
+    /// sleep; `accept()` will dequeue the connection whenever the
+    /// responder task is scheduled.
     async fn run_handshake_test(
         key1: FormationKey,
         key2: FormationKey,
@@ -303,8 +309,6 @@ mod tests {
         let transport1 = Arc::new(IrohTransport::new().await.unwrap());
         let transport2 = Arc::new(IrohTransport::new().await.unwrap());
 
-        // With deterministic tie-breaking, only the lower ID initiates connections.
-        // Determine which transport should be initiator vs responder.
         let t1_is_lower = transport1.endpoint_id().as_bytes() < transport2.endpoint_id().as_bytes();
 
         let (initiator, responder, initiator_key, responder_key) = if t1_is_lower {
@@ -315,15 +319,8 @@ mod tests {
 
         let responder_addr = responder.endpoint_addr();
 
-        // Use oneshot channel to synchronize
-        let (ready_tx, ready_rx) = oneshot::channel::<()>();
-
-        // Spawn responder task
         let responder_clone = Arc::clone(&responder);
         let responder_task = tokio::spawn(async move {
-            // Signal we're ready to accept
-            let _ = ready_tx.send(());
-            // accept() returns Option<Connection> - unwrap expects Some since this is first connection
             let conn = responder_clone
                 .accept()
                 .await
@@ -332,12 +329,6 @@ mod tests {
             perform_responder_handshake(&conn, &responder_key).await
         });
 
-        // Wait for responder to be ready
-        ready_rx.await.unwrap();
-        // Small additional delay to ensure accept() is called
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Initiator connects and handshakes (conflict resolution handled by transport layer)
         let conn = initiator
             .connect(responder_addr)
             .await
@@ -345,16 +336,11 @@ mod tests {
             .expect("Should get new connection (not handled by accept)");
         let initiator_result = perform_initiator_handshake(&conn, &initiator_key).await;
 
-        // Wait for responder
         let responder_result = responder_task.await.unwrap();
 
-        // Close both transports so the next test starts with a clean iroh
-        // state (macOS loopback is sensitive to endpoint churn across tests).
         let _ = initiator.close().await;
         let _ = responder.close().await;
 
-        // Always return (initiator_result, responder_result) regardless of which transport
-        // was the initiator. Tests expect the first element to be from the initiator.
         (initiator_result, responder_result)
     }
 
