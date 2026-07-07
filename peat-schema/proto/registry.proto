@@ -1,5 +1,5 @@
 // OCI Registry Synchronization types for DDIL environments (ADR-054)
-// Version: 1.1.0
+// Version: 0.5.0
 
 syntax = "proto3";
 

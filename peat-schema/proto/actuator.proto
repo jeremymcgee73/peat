@@ -1,5 +1,5 @@
 // Actuator definitions for Peat Protocol
-// Version: 1.1.0
+// Version: 0.5.0
 //
 // This module defines actuator specifications for node control systems.
 // Actuators include linear/rotary motors, grippers, valves, and other
