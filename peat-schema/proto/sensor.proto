@@ -1,5 +1,5 @@
 // Sensor definitions for Peat Protocol
-// Version: 1.1.0
+// Version: 0.5.0
 //
 // This module defines sensor specifications including mount types, orientation,
 // field of view, and gimbal capabilities. Sensors can be fixed (static FOV) or

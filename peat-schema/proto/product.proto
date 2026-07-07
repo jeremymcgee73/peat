@@ -1,5 +1,5 @@
 // AI/ML Product definitions for Peat Protocol
-// Version: 1.1.0
+// Version: 0.5.0
 //
 // Products represent outputs from AI/ML models and sensor processing.
 // This is the generic primitive for any AI-generated content flowing
