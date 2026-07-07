@@ -55,14 +55,12 @@ fn main() {
     // Publish our node so Android can discover it via QUIC sync
     let node_json = serde_json::json!({
         "id": "pi-quic-test",
-        "name": "PI-QUIC",
         "node_type": "SENSOR",
+        "health": "NOMINAL",
         "lat": 33.749,
         "lon": -84.388,
-        "hae": 0.0,
-        "status": "active",
+        "altitude": 0.0,
         "capabilities": ["QUIC"],
-        "readiness": 1.0
     });
 
     match node.put_document("nodes", "pi-quic-test", &node_json.to_string()) {
@@ -100,8 +98,8 @@ fn main() {
         );
 
         for p in &nodes {
-            if p.name == "ANDROID-DUAL" || p.id == "android-dual-test" {
-                println!("\n\nReceived node: {} (id={})", p.name, p.id);
+            if p.id == "ANDROID-DUAL" || p.id == "android-dual-test" {
+                println!("\n\nReceived node: {} (type={})", p.id, p.node_type);
                 found = true;
                 break;
             }
