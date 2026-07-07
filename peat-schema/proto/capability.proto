@@ -1,4 +1,4 @@
-// Capability definitions for CAP Protocol
+// Capability definitions for Peat Protocol
 // Version: 1.1.0
 
 syntax = "proto3";

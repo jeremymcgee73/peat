@@ -1,4 +1,4 @@
-// Common message types used across CAP Protocol
+// Common message types used across Peat Protocol
 // Version: 1.1.0
 
 syntax = "proto3";
