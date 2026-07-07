@@ -1,5 +1,5 @@
 // AI Model Deployment definitions for Peat Protocol
-// Version: 1.1.0
+// Version: 0.9.0-rc.29
 //
 // Defines schema for distributing AI models from MLOps registries
 // to edge nodes via the PEAT mesh network.
