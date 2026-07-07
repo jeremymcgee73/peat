@@ -319,6 +319,8 @@ impl NodeStateExt for NodeState {
             self.zone_id = other.zone_id.clone();
             self.fuel_minutes = other.fuel_minutes;
             self.timestamp = other.timestamp;
+            self.kinematics = other.kinematics;
+            self.position_error = other.position_error;
         }
     }
 }
@@ -741,6 +743,66 @@ mod tests {
         let original_pos = state1.get_position();
         state1.merge(&state2);
         assert_eq!(state1.get_position(), original_pos);
+    }
+
+    #[test]
+    fn test_node_state_merge_kinematics_and_position_error() {
+        use peat_schema::common::v1::{Kinematics, PositionError};
+
+        let mut state1 = NodeState::new((37.7, -122.4, 100.0));
+        let mut state2 = state1.clone();
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        state2.update_position((37.8, -122.5, 150.0));
+        state2.kinematics = Some(Kinematics {
+            velocity: 15.0,
+            heading: 90.0,
+            acceleration: 1.5,
+            vertical_speed: -0.5,
+        });
+        state2.position_error = Some(PositionError {
+            circular_error: 3.0,
+            linear_error: 2.0,
+            vertical_error: 1.5,
+        });
+
+        state1.merge(&state2);
+
+        assert!(state1.kinematics.is_some());
+        let kin = state1.kinematics.as_ref().unwrap();
+        assert_eq!(kin.velocity, 15.0);
+        assert_eq!(kin.heading, 90.0);
+        assert_eq!(kin.acceleration, 1.5);
+        assert_eq!(kin.vertical_speed, -0.5);
+
+        assert!(state1.position_error.is_some());
+        let pe = state1.position_error.as_ref().unwrap();
+        assert_eq!(pe.circular_error, 3.0);
+        assert_eq!(pe.linear_error, 2.0);
+        assert_eq!(pe.vertical_error, 1.5);
+    }
+
+    #[test]
+    fn test_node_state_merge_older_does_not_overwrite_kinematics() {
+        use peat_schema::common::v1::Kinematics;
+
+        let mut state1 = NodeState::new((37.7, -122.4, 100.0));
+        state1.kinematics = Some(Kinematics {
+            velocity: 10.0,
+            heading: 45.0,
+            acceleration: 0.0,
+            vertical_speed: 0.0,
+        });
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        state1.update_position((37.8, -122.5, 150.0));
+
+        let state2 = NodeState::new((38.0, -123.0, 200.0));
+
+        state1.merge(&state2);
+
+        assert!(state1.kinematics.is_some());
+        assert_eq!(state1.kinematics.as_ref().unwrap().velocity, 10.0);
     }
 
     #[test]
