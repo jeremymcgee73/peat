@@ -1,6 +1,6 @@
 // Event routing and aggregation protocol (ADR-027)
 // Defines PeatEvent, aggregation policies, and event summaries
-// Version: 0.9.0-rc.29
+// Version: 1.1.0
 
 syntax = "proto3";
 
