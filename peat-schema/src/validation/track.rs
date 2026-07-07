@@ -3,6 +3,7 @@
 //! Validates Track and TrackUpdate messages for Peat Protocol.
 
 use super::{ValidationError, ValidationResult};
+use crate::common::v1::{Kinematics, PositionError};
 use crate::track::v1::{Track, TrackPosition, TrackUpdate, UpdateType};
 
 /// Validate a TrackUpdate message
@@ -68,6 +69,14 @@ pub fn validate_track(track: &Track) -> ValidationResult<()> {
 
     validate_track_position(position)?;
 
+    if let Some(ref kin) = track.kinematics {
+        validate_kinematics(kin)?;
+    }
+
+    if let Some(ref pe) = track.position_error {
+        validate_position_error(pe)?;
+    }
+
     // Source is required
     let source = track
         .source
@@ -81,7 +90,7 @@ pub fn validate_track(track: &Track) -> ValidationResult<()> {
     Ok(())
 }
 
-/// Validate a TrackPosition
+#[allow(deprecated)]
 fn validate_track_position(pos: &TrackPosition) -> ValidationResult<()> {
     // Latitude must be -90 to 90
     if pos.latitude < -90.0 || pos.latitude > 90.0 {
@@ -110,7 +119,81 @@ fn validate_track_position(pos: &TrackPosition) -> ValidationResult<()> {
     Ok(())
 }
 
+fn validate_kinematics(kin: &Kinematics) -> ValidationResult<()> {
+    if !kin.velocity.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "kinematics.velocity must be finite".to_string(),
+        ));
+    }
+    if kin.velocity < 0.0 {
+        return Err(ValidationError::InvalidValue(format!(
+            "kinematics.velocity {} must be non-negative",
+            kin.velocity
+        )));
+    }
+    if !kin.heading.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "kinematics.heading must be finite".to_string(),
+        ));
+    }
+    if kin.heading < 0.0 || kin.heading > 360.0 {
+        return Err(ValidationError::InvalidValue(format!(
+            "kinematics.heading {} must be between 0 and 360",
+            kin.heading
+        )));
+    }
+    if !kin.acceleration.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "kinematics.acceleration must be finite".to_string(),
+        ));
+    }
+    if !kin.vertical_speed.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "kinematics.vertical_speed must be finite".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_position_error(pe: &PositionError) -> ValidationResult<()> {
+    if !pe.circular_error.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "position_error.circular_error must be finite".to_string(),
+        ));
+    }
+    if pe.circular_error < 0.0 {
+        return Err(ValidationError::InvalidValue(format!(
+            "position_error.circular_error {} must be non-negative",
+            pe.circular_error
+        )));
+    }
+    if !pe.linear_error.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "position_error.linear_error must be finite".to_string(),
+        ));
+    }
+    if pe.linear_error < 0.0 {
+        return Err(ValidationError::InvalidValue(format!(
+            "position_error.linear_error {} must be non-negative",
+            pe.linear_error
+        )));
+    }
+    if !pe.vertical_error.is_finite() {
+        return Err(ValidationError::InvalidValue(
+            "position_error.vertical_error must be finite".to_string(),
+        ));
+    }
+    if pe.vertical_error < 0.0 {
+        return Err(ValidationError::InvalidValue(format!(
+            "position_error.vertical_error {} must be non-negative",
+            pe.vertical_error
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::common::v1::Timestamp;
@@ -140,6 +223,8 @@ mod tests {
             first_seen: None,
             last_seen: None,
             observation_count: 5,
+            kinematics: None,
+            position_error: None,
         }
     }
 
@@ -214,5 +299,165 @@ mod tests {
         }
         let err = validate_track_update(&update).unwrap_err();
         assert!(matches!(err, ValidationError::InvalidConfidence(_)));
+    }
+
+    #[test]
+    fn test_valid_kinematics() {
+        let mut track = valid_track();
+        track.kinematics = Some(Kinematics {
+            velocity: 15.0,
+            heading: 90.0,
+            acceleration: 1.5,
+            vertical_speed: -2.0,
+        });
+        assert!(validate_track(&track).is_ok());
+    }
+
+    #[test]
+    fn test_kinematics_negative_velocity() {
+        let mut track = valid_track();
+        track.kinematics = Some(Kinematics {
+            velocity: -1.0,
+            heading: 0.0,
+            acceleration: 0.0,
+            vertical_speed: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_kinematics_heading_out_of_range() {
+        let mut track = valid_track();
+        track.kinematics = Some(Kinematics {
+            velocity: 0.0,
+            heading: 361.0,
+            acceleration: 0.0,
+            vertical_speed: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_kinematics_nan_velocity() {
+        let mut track = valid_track();
+        track.kinematics = Some(Kinematics {
+            velocity: f32::NAN,
+            heading: 0.0,
+            acceleration: 0.0,
+            vertical_speed: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_kinematics_nan_heading() {
+        let mut track = valid_track();
+        track.kinematics = Some(Kinematics {
+            velocity: 0.0,
+            heading: f32::NAN,
+            acceleration: 0.0,
+            vertical_speed: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_kinematics_infinite_vertical_speed() {
+        let mut track = valid_track();
+        track.kinematics = Some(Kinematics {
+            velocity: 0.0,
+            heading: 0.0,
+            acceleration: 0.0,
+            vertical_speed: f32::INFINITY,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_valid_position_error() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: 3.0,
+            linear_error: 2.0,
+            vertical_error: 1.5,
+        });
+        assert!(validate_track(&track).is_ok());
+    }
+
+    #[test]
+    fn test_position_error_negative_circular() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: -1.0,
+            linear_error: 0.0,
+            vertical_error: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_position_error_negative_linear() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: 0.0,
+            linear_error: -1.0,
+            vertical_error: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_position_error_negative_vertical() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: 0.0,
+            linear_error: 0.0,
+            vertical_error: -1.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_position_error_nan_circular() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: f32::NAN,
+            linear_error: 0.0,
+            vertical_error: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_position_error_nan_linear() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: 0.0,
+            linear_error: f32::NAN,
+            vertical_error: 0.0,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
+    }
+
+    #[test]
+    fn test_position_error_nan_vertical() {
+        let mut track = valid_track();
+        track.position_error = Some(PositionError {
+            circular_error: 0.0,
+            linear_error: 0.0,
+            vertical_error: f32::NAN,
+        });
+        let err = validate_track(&track).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidValue(_)));
     }
 }

@@ -1,5 +1,5 @@
 // Cell definitions for Peat Protocol — smallest aggregation unit (tier 1 of 4)
-// Version: 2.0.0 — abstract hierarchy vocabulary per ADR-066
+// Version: 0.5.0
 
 syntax = "proto3";
 

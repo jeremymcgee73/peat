@@ -1,5 +1,5 @@
-// Beacon (discovery) definitions for CAP Protocol
-// Version: 1.0.0
+// Beacon (discovery) definitions for Peat Protocol
+// Version: 0.5.0
 
 syntax = "proto3";
 

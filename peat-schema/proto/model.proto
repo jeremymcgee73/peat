@@ -1,5 +1,5 @@
-// AI Model Deployment definitions for CAP Protocol
-// Version: 1.0.0
+// AI Model Deployment definitions for Peat Protocol
+// Version: 0.5.0
 //
 // Defines schema for distributing AI models from MLOps registries
 // to edge nodes via the PEAT mesh network.
