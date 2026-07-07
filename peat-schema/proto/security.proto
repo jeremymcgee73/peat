@@ -1,5 +1,5 @@
 // Security message types for PEAT Protocol Device Authentication (PKI)
-// Version: 1.1.0
+// Version: 0.9.0-rc.29
 // Related: ADR-006, Issue #160
 
 syntax = "proto3";
