@@ -1,4 +1,4 @@
-// Tactical role definitions for CAP Protocol
+// Tactical role definitions for Peat Protocol
 // Version: 1.1.0
 
 syntax = "proto3";
