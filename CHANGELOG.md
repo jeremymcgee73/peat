@@ -14,6 +14,28 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.30] - 2026-07-08
+
+### Added
+
+- **Kinematics and PositionError on Track/NodeState** ([#1023](https://github.com/defenseunicorns/peat/pull/1023)) —
+  `peat-schema` adds `Kinematics` and `PositionError` messages to `common.proto`,
+  wired into `Track` and `NodeState`. Existing `velocity`, `cep_m`, and
+  `vertical_error_m` fields are deprecated in favour of the new structured types.
+  `peat-protocol` model constructors updated to include the new fields.
+  (peat-schema, peat-protocol)
+
+### Fixed
+
+- **peat-protocol NodeState constructor** — missing `kinematics` and
+  `position_error` fields in `NodeState` initializer caused compile failure
+  against peat-schema 0.9.0-rc.29. (peat-protocol)
+
+### Changed — `peat-ffi`
+
+- **ADR-074 schema alignment** ([#1022](https://github.com/defenseunicorns/peat/pull/1022)) —
+  FFI types shrunk to proto-backed fields only. `peat-ffi` bumped to 0.2.11.
+
 ## [0.9.0-rc.29] - 2026-07-05
 
 ### Added
