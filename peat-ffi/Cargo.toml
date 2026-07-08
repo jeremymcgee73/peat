@@ -70,7 +70,12 @@ name = "peat-ffi"
 # `Option<String>` (SocketAddr isn't UniFFI-liftable) — JNI callers unaffected
 # except a malformed non-empty address now errors instead of silently
 # falling back to ephemeral. See peat#1013, peat#1017.
-version = "0.2.10"
+#
+# 0.2.11 (was 0.2.10): non-additive — ADR-074 schema alignment shrinks FFI
+# types to proto-backed fields only (Track, NodeState gain kinematics/
+# position_error; deprecated velocity/cep_m/vertical_error_m marked).
+# peat-schema 0.9.0-rc.30 adds Kinematics and PositionError to common.proto.
+version = "0.2.11"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
@@ -137,7 +142,7 @@ uniffi = { version = "0.31", features = ["cli", "tokio"] }
 jni = "0.21"
 
 # Peat crates - no ditto-backend for Android cross-compilation
-peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.29", default-features = false }
+peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.30", default-features = false }
 # Proto-generated types (ADR-074: single source of truth for message schemas)
 peat-schema = { path = "../peat-schema" }
 # peat-mesh direct for blob storage (ADR-060). Pulls NetworkedIrohBlobStore
