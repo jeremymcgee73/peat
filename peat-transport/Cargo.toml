@@ -11,13 +11,6 @@ repository.workspace = true
 # CAP dependencies
 peat-schema = { path = "../peat-schema" }
 peat-protocol = { path = "../peat-protocol" }
-# Translator trait + TranslationContext live in peat-mesh (ADR-059 Slice 1.a).
-# Optional, only pulled in by the `mesh-translator` feature so radio-only
-# consumers (TAK clients that don't sync through peat-mesh) can depend on
-# this crate without dragging peat-mesh into their dep graph. Same shape
-# as peat-btle's `mesh-translator` feature for Bitchat-style standalone
-# BLE consumers (ADR-059 codec-placement rule).
-peat-mesh = { workspace = true, default-features = false, optional = true }
 
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }
@@ -39,27 +32,7 @@ tracing = "0.1"
 thiserror = "1.0"
 anyhow = "1.0"
 
-# TAK transport
-tokio-rustls = "0.26"
-rustls-pemfile = "2.2"
-socket2 = { version = "0.5", features = ["all"] }
-rand = "0.8"
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-bytes = "1.10"
-pin-project-lite = "0.2"
-futures = "0.3"
-uuid = { workspace = true, features = ["v4"] }
-
 [dev-dependencies]
 tokio-test = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
 tracing-subscriber = { workspace = true }
-
-[features]
-default = []
-# ADR-059 Slice 1.5: opt-in CoT [`Translator`] impl
-# (`tak::CotTranslator`) wired against the peat-mesh Slice 1 trait.
-# Gated so radio-only TAK consumers can use this crate without
-# pulling peat-mesh.
-mesh-translator = ["dep:peat-mesh"]

@@ -1,13 +1,16 @@
 ---
 name: <repo-name>
-description: <one-line — what this skill is for, when to read it>
-when_to_use: <triggers — file paths, task types, or PR labels that should pull this skill into context>
-verifies_with: <one-line summary of what evidence proves a session in this repo is done>
+description: <one line that explains what the skill does and clearly names the file paths, task types, topics, or review work that should trigger it>
 ---
 
 # `<repo-name>` SKILL
 
-> **Template.** Copy this file to `<repo>/SKILL.md` and fill in every angle-bracketed placeholder. Delete sections that don't apply, but keep the headings in order. The shape is load-bearing — it's how the agent knows what to attend to.
+> **Template.** Copy this file to
+> `<repo>/.agents/skills/<repo-name>/SKILL.md` and fill in every
+> angle-bracketed placeholder. Delete sections that do not apply, but keep the
+> headings in order. The `name` and trigger-rich `description` are
+> load-bearing because Codex reads them before deciding whether to load the
+> skill body.
 
 <One paragraph orientation: what this repo is, why it exists, its role in the ecosystem. Max 4 sentences. No history, no aspirations — just the current truth.>
 
@@ -17,7 +20,7 @@ verifies_with: <one-line summary of what evidence proves a session in this repo 
 - <Trigger: task involves `<topic>`>
 - <Trigger: PR is labeled `<label>` or references issue type `<type>`>
 
-If none of these apply, stop here and use `peat/SKILL.md` (ecosystem) only.
+If none of these apply, stop here and use the `$peat-ecosystem` skill only.
 
 ## Scope
 
@@ -26,17 +29,17 @@ If none of these apply, stop here and use `peat/SKILL.md` (ecosystem) only.
 - <thing this skill covers>
 
 **Out of scope (route elsewhere):**
-- <thing> → `<other-repo>/SKILL.md`
-- <thing> → ecosystem skill `peat/SKILL.md`
+- <thing> → `<other-repo>/.agents/skills/<skill-name>/SKILL.md`
+- <thing> → `$peat-ecosystem`
 - <thing> → open an issue, do not implement here
 
 ## Workflow
 
 Numbered steps. Skipping a step requires explicit user instruction.
 
-1. **Orient.** Read `peat/SKILL.md` (ecosystem), this file, the affected files, `git status`, `git log -10`.
+1. **Orient.** Use `$peat-ecosystem`, read this file and the affected files, then inspect `git status` and `git log -10`.
 2. **Locate the spec.** Confirm the task has a GitHub issue with Context / Scope / Acceptance / Constraints / Dependencies. If not, stop and ask the user.
-3. **Plan.** Produce a 1–5 step plan. Cross-check against the hard invariants in `peat/SKILL.md` and the scope guards below.
+3. **Plan.** Produce a 1–5 step plan. Cross-check against the hard invariants in `$peat-ecosystem` and the scope guards below.
 4. **Implement.** Vertical slices. One concern per commit. Match existing conventions in this repo.
 5. **Verify.** Run every command in the verification checklist. Capture output.
 6. **Hand off.** Open PR referencing the issue. Summary states *what changed and why*. Flag cross-repo implications explicitly.
@@ -82,7 +85,7 @@ Add an entry each time a session produces output that needed correction. One lin
 
 ## References (read on demand, not by default)
 
-- Ecosystem invariants: `peat/SKILL.md`
+- Ecosystem invariants: `$peat-ecosystem`
 - <repo-specific architecture doc, if any>
 - <link to relevant issue tracker / project board>
 

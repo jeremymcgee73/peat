@@ -1,8 +1,6 @@
 ---
 name: peat-ecosystem
-description: Top-level skill for Claude Code sessions across any peat-* repo. Read first, then read the per-repo SKILL.md.
-when_to_use: Any session touching files in a defenseunicorns/peat-* repository, or coordinating changes across more than one peat repo.
-verifies_with: Each affected repo's CI green, no architecture invariant violated, PR references its issue with the required sections.
+description: Peat ecosystem architecture, security invariants, dependency rules, cross-repository workflow, and verification requirements. Use when editing or reviewing the peat workspace, coordinating changes across peat-* repositories, designing shared types or FFI surfaces, or evaluating ecosystem-wide architectural decisions.
 ---
 
 # Peat Ecosystem SKILL
@@ -15,7 +13,8 @@ Peat is an interoperability-first mesh registry sync platform built for heteroge
 - Cross-repo changes affecting more than one peat repo
 - Reviewing a PR in any peat repo
 
-After reading this file, read the relevant per-repo SKILL.md from the router below. Per-repo skills are authored against `peat/SKILL_TEMPLATE.md`.
+Invoke the relevant repo-scoped skill from the router below. Per-repo skills
+are authored against `SKILL_TEMPLATE.md`.
 
 ## Skill router
 
@@ -28,11 +27,16 @@ The ecosystem comprises **one Rust workspace repo** (`peat`) plus several siblin
 | Repo | Purpose | Skill |
 |---|---|---|
 | **peat** | Rust workspace. Hosts the ecosystem skill (this file) and the per-repo skill for the workspace. Active. | This file |
-| **peat-mesh** | Mesh networking; pluggable transport, peer discovery, topology, routing, optional Automerge/Iroh sync, optional HTTP/WS broker. **Top-tier active.** | `peat-mesh/SKILL.md` |
-| **peat-btle** | BLE transport bridge. M5Stack/ESP32 integration. | `peat-btle/SKILL.md` |
-| **peat-lite** | Lightweight implementation for constrained environments. | `peat-lite/SKILL.md` |
-| **peat-atak-plugin** | One consumer-plugin integration (Android/Kotlin). Pure Kotlin/Gradle — no Rust here. Consumes pre-built JNI/UniFFI bindings from `peat/peat-ffi`. Repo name is historical; this repo treats it as a generic consumer surface. | `peat-atak-plugin/SKILL.md` |
-| **peat-sim** | ContainerLab-based network simulation harness. Not on the production path. | `peat-sim/SKILL.md` |
+| **peat-mesh** | Mesh networking; pluggable transport, peer discovery, topology, routing, optional Automerge/Iroh sync, optional HTTP/WS broker. **Top-tier active.** | `../peat-mesh/.agents/skills/peat-mesh/SKILL.md` |
+| **peat-btle** | BLE transport bridge. M5Stack/ESP32 integration. | `../peat-btle/AGENTS.md` |
+| **peat-lite** | Lightweight implementation for constrained environments. | `../peat-lite/.agents/skills/peat-lite/SKILL.md` |
+| **peat-atak-plugin** | One consumer-plugin integration (Android/Kotlin). Pure Kotlin/Gradle — no Rust here. Consumes pre-built JNI/UniFFI bindings from `peat/peat-ffi`. Repo name is historical; this repo treats it as a generic consumer surface. | `../peat-atak-plugin/.agents/skills/peat-atak-plugin/SKILL.md` |
+| **peat-gateway** | Enterprise control plane, CDC, identity federation, KMS, and deployment packaging. | `../peat-gateway/.agents/skills/peat-gateway/SKILL.md` |
+| **peat-node** | Sidecar node exposing Peat over Connect/gRPC/gRPC-Web. | `../peat-node/.agents/skills/peat-node/SKILL.md` |
+| **peat-registry** | OCI registry synchronization for DDIL deployments. | `../peat-registry/.agents/skills/peat-registry/SKILL.md` |
+| **peat-rmw** | ROS2 middleware with Rust implementation and C++ shim. | `../peat-rmw/.agents/skills/peat-rmw/SKILL.md` |
+| **peat-sapient** | SAPIENT protocol library, Peat transforms, and mesh adapter. | `../peat-sapient/.agents/skills/peat-sapient/SKILL.md` |
+| **peat-sim** | ContainerLab-based network simulation harness. Not on the production path. | `../peat-sim/.agents/skills/peat-sim/SKILL.md` |
 
 **Workspace subcrates** (members of the `peat` repo, share this skill):
 
@@ -45,7 +49,9 @@ The ecosystem comprises **one Rust workspace repo** (`peat`) plus several siblin
 | `peat-persistence` | Persistence layer. |
 | `peat-ffi` | FFI bindings for Kotlin/Swift (UniFFI 0.28, proc-macro mode) + direct `jni 0.21` for Android. The only routinely-unsafe Rust in the ecosystem. |
 
-**Status unknown — confirm with Kit before authoring skills.** The following were listed in earlier drafts but aren't currently visible from this checkout: `peat-registry`, `peat-node`, `peat-gateway`, `peat-rmw`, `peat-mavlink`. They may be planned, renamed, deprecated, or in private repos. Per the active-repos record, only `peat` and `peat-mesh` are currently top-tier active.
+`peat-mavlink`, `peat-tak`, and other repositories without repo-scoped skills
+still use their checked-in `AGENTS.md` guidance when present. Confirm status
+before adding a new skill for a repository that lacks one.
 
 ## Hard invariants (cross-cutting)
 
@@ -53,9 +59,9 @@ These rules apply in every repo. Violating one without explicit user approval is
 
 **Language.** Rust everywhere except Kotlin in consumer plugins (currently `peat-atak-plugin`). No new language dependencies. No Python. No shell scripts for anything that belongs in Rust.
 
-**FIPS-approved cryptographic primitives only.** Every algorithm used anywhere in the peat ecosystem must be on the FIPS 140-3 approved list. AEAD: AES-GCM (not ChaCha20-Poly1305). Signatures: Ed25519 (FIPS 186-5) or ECDSA-P256/P384. Key agreement: ECDH-P256/P384 (X25519 only with explicit review). KDF: HKDF-SHA-2. MAC: HMAC-SHA-2. TLS/QUIC must run under a FIPS-mode crypto provider (e.g. `aws-lc-rs` for rustls; the default `ring` is **not** FIPS-validated). MLS suites must be FIPS-aligned (e.g. `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`). Existing ChaCha20-Poly1305 references in ADR-006/044/048/049 + spec docs are tracked for amendment; do not propagate them. Canonical reference: ADR-060 §5 "Cryptographic primitives (FIPS posture)" + `CLAUDE.md` § "Hard rule: FIPS-approved cryptographic primitives only".
+**FIPS-approved cryptographic primitives only.** Every algorithm used anywhere in the peat ecosystem must be on the FIPS 140-3 approved list. AEAD: AES-GCM (not ChaCha20-Poly1305). Signatures: Ed25519 (FIPS 186-5) or ECDSA-P256/P384. Key agreement: ECDH-P256/P384 (X25519 only with explicit review). KDF: HKDF-SHA-2. MAC: HMAC-SHA-2. TLS/QUIC must run under a FIPS-mode crypto provider (e.g. `aws-lc-rs` for rustls; the default `ring` is **not** FIPS-validated). MLS suites must be FIPS-aligned (e.g. `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`). Existing ChaCha20-Poly1305 references in ADR-006/044/048/049 + spec docs are tracked for amendment; do not propagate them. Canonical reference: ADR-060 §5 "Cryptographic primitives (FIPS posture)" + `AGENTS.md` § "Hard rule: FIPS-approved cryptographic primitives only".
 
-**No consumer-specific references in peat.** peat is the generic mesh substrate; consumers (mobile-app plugins, wearable firmware, CLI tools, server bridges) live in sibling repos. Code, comments, examples, READMEs, operational docs, JNI symbol names, package paths, and test fixtures in this repo MUST NOT name a specific consumer (ATAK, WinTAK, iTAK, WearTAK, etc.) or vendor-derived identifiers. Use "consumer", "consumer plugin", "CoT consumer", "mobile-app plugin", "wearable", "CLI tool", or "server bridge". Protocol-name appearances (e.g. CoT, TAK Server wire protocol) are allowed where the protocol itself is structurally load-bearing; consumer-name appearances are not. The only exception is ADRs in `docs/adr/` citing real-world use cases that motivated a design decision. See `CLAUDE.md` § "Hard rule: no consumer-specific references in peat" for the full rule + rationale. Verification gate (below) includes a grep check for ATAK / vendor names in new diffs.
+**No consumer-specific references in peat.** peat is the generic mesh substrate; consumers (mobile-app plugins, wearable firmware, CLI tools, server bridges) live in sibling repos. Code, comments, examples, READMEs, operational docs, JNI symbol names, package paths, and test fixtures in this repo MUST NOT name a specific consumer (ATAK, WinTAK, iTAK, WearTAK, etc.) or vendor-derived identifiers. Use "consumer", "consumer plugin", "CoT consumer", "mobile-app plugin", "wearable", "CLI tool", or "server bridge". Protocol-name appearances (e.g. CoT, TAK Server wire protocol) are allowed where the protocol itself is structurally load-bearing; consumer-name appearances are not. The only exception is ADRs in `docs/adr/` citing real-world use cases that motivated a design decision. See `AGENTS.md` § "Hard rule: no consumer-specific references in peat" for the full rule + rationale. Verification gate (below) includes a grep check for ATAK / vendor names in new diffs.
 
 **Dependency flow.** `peat` is the dependency anchor. Common types, traits, error handling flow *down* from `peat`. Repos depend on `peat`, never on each other directly. Circular dependencies are rejected.
 
@@ -79,7 +85,7 @@ These rules apply in every repo. Violating one without explicit user approval is
 
 For any task in a peat repo:
 
-1. **Orient.** Read this file. Read the per-repo SKILL.md from the router. Read `CLAUDE.md` if present. Run `git status` and `git log -10`.
+1. **Orient.** Read this file, invoke the relevant repo-scoped skill from the router, follow `AGENTS.md`, and inspect `git status` plus `git log -10`.
 2. **Locate the spec.** Confirm the task has a GitHub issue with the required sections (see "Issue format" below). If not, ask the user before implementing.
 3. **Plan.** Produce a short plan. Check it against the hard invariants and the per-repo skill's scope guards.
 4. **Implement** following the per-repo workflow. Vertical slices, one concern per commit.
@@ -94,7 +100,7 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 - [ ] No new cross-repo cycle introduced (`peat` does not depend on its consumers; sibling repos do not depend on each other)
 - [ ] PR references a GitHub issue with Context / Scope / Acceptance Criteria / Constraints / Dependencies sections
 - [ ] If a hard invariant was waived, the PR description names which one and quotes the user approval
-- [ ] **For changes inside the `peat` repo:** the new diff is free of consumer-specific identifiers (ATAK, WinTAK, iTAK, WearTAK, etc.). Run `git diff main -- ':!docs/adr' ':!docs/whitepaper' ':!CLAUDE.md' ':!SKILL.md' ':!CHANGELOG.md' | grep -E '^\+' | grep -iE '\b(atak|wintak|itak|weartak)\b' | grep -vE 'peat-atak-plugin|com\.atakmap|atakmap\.app|ATAKActivity'` — must be empty before merge. The pipeline checks ADDITIONS only (`^\+`); excludes the rule documents themselves (which legitimately enumerate the forbidden names as part of the rule definition), the release-notes archive (`CHANGELOG.md`, which by purpose records the history of vendor-name removals and may need to name what was removed to be useful), and ADR / whitepaper material; and tail-filters the sibling repo name `peat-atak-plugin` (its actual repo name, historical) plus the third-party host app's real Android identifiers (`com.atakmap.*`, `ATAKActivity`) that operational adb commands genuinely target. If a citation is genuinely load-bearing it belongs in an ADR (`docs/adr/`) or a CHANGELOG entry, not in code or operational docs.
+- [ ] **For changes inside the `peat` repo:** the new diff is free of consumer-specific identifiers (ATAK, WinTAK, iTAK, WearTAK, etc.). Run `git diff main -- ':!docs/adr' ':!docs/whitepaper' ':!AGENTS.md' ':!.agents/skills/peat-ecosystem/SKILL.md' ':!CHANGELOG.md' | grep -E '^\+' | grep -iE '\b(atak|wintak|itak|weartak)\b' | grep -vE 'peat-atak-plugin|com\.atakmap|atakmap\.app|ATAKActivity'` — must be empty before merge. The pipeline checks ADDITIONS only (`^\+`); excludes the rule documents themselves (which legitimately enumerate the forbidden names as part of the rule definition), the release-notes archive (`CHANGELOG.md`, which by purpose records the history of vendor-name removals and may need to name what was removed to be useful), and ADR / whitepaper material; and tail-filters the sibling repo name `peat-atak-plugin` (its actual repo name, historical) plus the third-party host app's real Android identifiers (`com.atakmap.*`, `ATAKActivity`) that operational adb commands genuinely target. If a citation is genuinely load-bearing it belongs in an ADR (`docs/adr/`) or a CHANGELOG entry, not in code or operational docs.
 
 "Seems right" or "the diff looks correct" is never sufficient.
 
@@ -114,7 +120,7 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 
 ## Scope guards
 
-- Kit is the general contractor across all repos. Claude Code sessions are sub-contractors, scoped to **one repo at a time**.
+- Kit is the general contractor across all repos. Codex sessions are sub-contractors, scoped to **one repo at a time**.
 - Cross-repo changes are coordinated through linked GitHub issues, not by reaching across repos.
 - Use the public API/traits of other peat repos. Never assume their internals.
 - Do not add a dependency on `peat` core that assumes types or traits not yet stabilized — flag assumptions in the PR.
@@ -122,7 +128,7 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 
 ## Issue format
 
-Each issue used as a Claude Code spec must include:
+Each issue used as a Codex spec must include:
 
 ```
 ## Context
