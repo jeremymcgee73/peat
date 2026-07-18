@@ -109,7 +109,7 @@ impl ConflictResolver {
         let mut commands = self.target_commands.write().await;
 
         // Remove from all target lists
-        for (_, cmd_list) in commands.iter_mut() {
+        for cmd_list in commands.values_mut() {
             cmd_list.retain(|cmd| cmd.command_id != command_id);
         }
 
