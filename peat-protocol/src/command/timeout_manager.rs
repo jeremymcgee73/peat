@@ -92,7 +92,7 @@ impl TimeoutManager {
         let mut expiring = self.expiring_commands.write().await;
 
         // Remove command from all expiration time buckets
-        for (_, cmd_list) in expiring.iter_mut() {
+        for cmd_list in expiring.values_mut() {
             cmd_list.retain(|id| id != command_id);
         }
 

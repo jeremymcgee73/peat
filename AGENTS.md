@@ -1,8 +1,12 @@
-# CLAUDE.md — `peat`
+# AGENTS.md — `peat`
 
-Before doing any work in this repo, read `SKILL.md`. This repo hosts both the **ecosystem skill** (used by every peat-* repo) and the **per-repo skill** for the `peat` top-level crate — they're in the same file, separated by a `---` break.
+For implementation, review, architecture, FFI, or cross-repository work, use the
+`$peat-ecosystem` skill in `.agents/skills/peat-ecosystem/SKILL.md`. Codex
+discovers that repo-scoped skill automatically.
 
-If your task touches another peat-* repo, read that repo's `SKILL.md` as well. The skill router in `SKILL.md` lists them.
+If a task touches another peat-* repository, also use that repository's skill
+under its `.agents/skills/` directory. Cross-repository changes require one PR
+per repository, linked through a tracking issue.
 
 ## Quick orientation
 
@@ -12,7 +16,9 @@ If your task touches another peat-* repo, read that repo's `SKILL.md` as well. T
 
 ## Hard rule
 
-A task in this repo is not done until the verification checklist in `SKILL.md` produces evidence. "Seems right" or "the diff looks correct" is never sufficient.
+A task in this repo is not done until the verification checklist in the
+`$peat-ecosystem` skill produces evidence. "Seems right" or "the diff looks
+correct" is never sufficient.
 
 Cross-repo changes require one PR per repo, linked through a tracking issue — not a single PR that reaches across repos.
 
