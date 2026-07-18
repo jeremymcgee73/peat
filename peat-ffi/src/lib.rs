@@ -196,7 +196,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // Setup UniFFI scaffolding
 uniffi::setup_scaffolding!();
 
-// FFIBuffer wrappers for Dart FFI bindings
+// Hand-maintained FFIBuffer wrappers for Dart FFI bindings. Default-enabled
+// during the ownership migration; consumer-owned native wrappers disable this
+// feature to avoid exporting a second copy of the same C symbols.
+#[cfg(feature = "dart-ffi")]
 pub mod dart_ffi;
 
 // Shared water-supply Counter — a self-contained Automerge CRDT doc carried

@@ -75,7 +75,14 @@ name = "peat-ffi"
 # types to proto-backed fields only (Track, NodeState gain kinematics/
 # position_error; deprecated velocity/cep_m/vertical_error_m marked).
 # peat-schema 0.9.0-rc.30 adds Kinematics and PositionError to common.proto.
-version = "0.2.11"
+#
+# 0.2.12 (was 0.2.11): adds the default-enabled `dart-ffi` compatibility
+# feature around the hand-maintained FFIBuffer adapter. Default builds retain
+# the existing exported symbols. Native wrappers that own the adapter can use
+# `default-features = false` and select their protocol features explicitly,
+# avoiding duplicate symbols while the adapter migrates to its consumer repo.
+# The standard UniFFI and JNI surfaces are unchanged. See peat#1030.
+version = "0.2.12"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
@@ -104,7 +111,11 @@ path = "examples/dual_test_peer.rs"
 required-features = ["sync", "bluetooth"]
 
 [features]
-default = ["sync"]
+default = ["sync", "dart-ffi"]
+# Compatibility switch for the hand-maintained Dart FFIBuffer adapter. This is
+# default-enabled so direct peat-ffi consumers retain their existing symbols.
+# A native wrapper that owns the adapter must use `default-features = false`.
+dart-ffi = []
 sync = ["peat-protocol/automerge-backend", "dep:peat-mesh", "peat-mesh/automerge-backend", "dep:automerge"]
 # Bluetooth LE transport - BLE mesh networking (ADR-039)
 # Enables peat-btle integration via TransportManager
