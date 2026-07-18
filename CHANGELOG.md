@@ -14,6 +14,31 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.31] - 2026-07-18
+
+### Changed
+
+- **Retire the migrated TAK transport implementation** ([#1026](https://github.com/defenseunicorns/peat/pull/1026)) —
+  removes the obsolete transport module after its maintained implementation moved
+  to the standalone integration repository. (`peat-transport`)
+
+### Fixed
+
+- **Three-node mesh convergence coverage** ([#1027](https://github.com/defenseunicorns/peat/pull/1027)) —
+  re-enables the multi-node convergence test and updates map iteration for the
+  Rust 1.97 Clippy baseline. (`peat-protocol`)
+
+### Changed — `peat-ffi`
+
+- **Feature-gated Dart compatibility adapter** ([#1031](https://github.com/defenseunicorns/peat/pull/1031)) —
+  `peat-ffi` 0.2.12 keeps the existing adapter enabled by default while allowing
+  native wrappers to disable it and provide a version-matched adapter without
+  duplicate optimized-link symbols.
+
+### Pinned
+
+- `peat-mesh` remains `>=0.9.0-rc.45, <0.9.1`; default feature selection is unchanged.
+
 ## [0.9.0-rc.30] - 2026-07-08
 
 ### Added
