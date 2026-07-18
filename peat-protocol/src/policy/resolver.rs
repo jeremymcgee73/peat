@@ -112,7 +112,7 @@ impl<T: Conflictable> GenericConflictResolver<T> {
         let mut items = self.active_items.write().await;
 
         // Remove from all key lists
-        for (_, item_list) in items.iter_mut() {
+        for item_list in items.values_mut() {
             item_list.retain(|item| item.id() != item_id);
         }
 
