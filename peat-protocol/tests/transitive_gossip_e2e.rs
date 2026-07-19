@@ -88,98 +88,10 @@ async fn transitive_gossip_hub_and_spoke_converges_peat891() {
 
     println!("  ✓ 3 backends created");
 
-    // Give discovery loops a moment to settle.
-    sleep(Duration::from_millis(50)).await;
-
-    // Hub-and-spoke wiring: alpha↔bravo and alpha↔charlie. NO bravo↔charlie.
-    // Both directions for each edge so sync works regardless of which side
-    // initiates.
-    use peat_protocol::network::formation_handshake::perform_initiator_handshake;
-
-    let alpha_endpoint = alpha.endpoint_id();
-    let bravo_endpoint = bravo.endpoint_id();
-    let charlie_endpoint = charlie.endpoint_id();
-
-    let alpha_info = peat_protocol::network::PeerInfo {
-        name: "alpha".into(),
-        node_id: hex::encode(alpha_endpoint.as_bytes()),
-        addresses: vec![addr_alpha.to_string()],
-        relay_url: None,
-    };
-    let bravo_info = peat_protocol::network::PeerInfo {
-        name: "bravo".into(),
-        node_id: hex::encode(bravo_endpoint.as_bytes()),
-        addresses: vec![addr_bravo.to_string()],
-        relay_url: None,
-    };
-    let charlie_info = peat_protocol::network::PeerInfo {
-        name: "charlie".into(),
-        node_id: hex::encode(charlie_endpoint.as_bytes()),
-        addresses: vec![addr_charlie.to_string()],
-        relay_url: None,
-    };
-
-    let key_alpha = alpha.formation_key().expect("alpha formation key");
-    let key_bravo = bravo.formation_key().expect("bravo formation key");
-    let key_charlie = charlie.formation_key().expect("charlie formation key");
-
-    // alpha → bravo
-    if let Some(conn) = alpha
-        .transport()
-        .connect_peer(&bravo_info)
-        .await
-        .expect("alpha→bravo connect")
-    {
-        perform_initiator_handshake(&conn, &key_alpha)
-            .await
-            .expect("alpha→bravo handshake");
-    }
-    // alpha → charlie
-    if let Some(conn) = alpha
-        .transport()
-        .connect_peer(&charlie_info)
-        .await
-        .expect("alpha→charlie connect")
-    {
-        perform_initiator_handshake(&conn, &key_alpha)
-            .await
-            .expect("alpha→charlie handshake");
-    }
-    // bravo → alpha (reverse for bidirectional sync over each edge)
-    if let Some(conn) = bravo
-        .transport()
-        .connect_peer(&alpha_info)
-        .await
-        .expect("bravo→alpha connect")
-    {
-        perform_initiator_handshake(&conn, &key_bravo)
-            .await
-            .expect("bravo→alpha handshake");
-    }
-    // charlie → alpha (reverse)
-    if let Some(conn) = charlie
-        .transport()
-        .connect_peer(&alpha_info)
-        .await
-        .expect("charlie→alpha connect")
-    {
-        perform_initiator_handshake(&conn, &key_charlie)
-            .await
-            .expect("charlie→alpha handshake");
-    }
-    // DELIBERATELY NO bravo↔charlie edge. The test fails if gossip is
-    // missing because the only path between the spokes is through alpha.
-    println!("  ✓ Hub-and-spoke wired: alpha↔bravo, alpha↔charlie. NO direct bravo↔charlie edge.");
-
-    // Settle window after the four connect_peer calls. The handshakes
-    // run async; without this, start_sync can race with handshake
-    // completion on slower CI runners, leaving one direction's sync
-    // stream partially wired. Symptom: the second gossip leg
-    // (charlie→bravo via alpha) is materially slower than the first.
-    // Locally 50ms is enough; the 500ms here is the comfortable upper
-    // bound that doesn't materially extend test wall-time.
-    sleep(Duration::from_millis(500)).await;
-
+    // Start sync before connecting. Connected events are broadcasts, so wiring
+    // peers first loses the events and leaves this test dependent on the 5s
+    // polling fallback in AutomergeBackend. Under parallel CI load that race
+    // manifested as one receive handler never becoming ready (#1034).
     alpha
         .sync_engine()
         .start_sync()
@@ -196,6 +108,59 @@ async fn transitive_gossip_hub_and_spoke_converges_peat891() {
         .await
         .expect("charlie start_sync");
     println!("  ✓ Sync started on all 3 nodes");
+
+    // Hub-and-spoke wiring: alpha↔bravo and alpha↔charlie. NO bravo↔charlie.
+    // A single authenticated Iroh connection provides both directions for
+    // each edge.
+    use peat_protocol::network::formation_handshake::perform_initiator_handshake;
+
+    let bravo_endpoint = bravo.endpoint_id();
+    let charlie_endpoint = charlie.endpoint_id();
+
+    let bravo_info = peat_protocol::network::PeerInfo {
+        name: "bravo".into(),
+        node_id: hex::encode(bravo_endpoint.as_bytes()),
+        addresses: vec![addr_bravo.to_string()],
+        relay_url: None,
+    };
+    let charlie_info = peat_protocol::network::PeerInfo {
+        name: "charlie".into(),
+        node_id: hex::encode(charlie_endpoint.as_bytes()),
+        addresses: vec![addr_charlie.to_string()],
+        relay_url: None,
+    };
+
+    let key_alpha = alpha.formation_key().expect("alpha formation key");
+
+    // alpha → bravo
+    if let Some(conn) = alpha
+        .transport()
+        .connect_peer(&bravo_info)
+        .await
+        .expect("alpha→bravo connect")
+    {
+        perform_initiator_handshake(&conn, &key_alpha)
+            .await
+            .expect("alpha→bravo handshake");
+        alpha.transport().emit_peer_connected(bravo_endpoint);
+    }
+    // alpha → charlie
+    if let Some(conn) = alpha
+        .transport()
+        .connect_peer(&charlie_info)
+        .await
+        .expect("alpha→charlie connect")
+    {
+        perform_initiator_handshake(&conn, &key_alpha)
+            .await
+            .expect("alpha→charlie handshake");
+        alpha.transport().emit_peer_connected(charlie_endpoint);
+    }
+    // Iroh connections are bidirectional. Reverse dials are unnecessary and
+    // would only exercise conflict resolution rather than the topology under
+    // test. DELIBERATELY NO bravo↔charlie edge: the only spoke-to-spoke path
+    // is through alpha.
+    println!("  ✓ Hub-and-spoke wired: alpha↔bravo, alpha↔charlie. NO direct bravo↔charlie edge.");
 
     // Subscribe to alpha's gossip broadcast directly so we can assert
     // the echo-filter string contract (peat#909 QA): the `Remote(src)`
@@ -293,6 +258,37 @@ async fn transitive_gossip_hub_and_spoke_converges_peat891() {
         "  ✓ Wrote '{}' on charlie — waiting for transitive convergence on bravo",
         charlie_to_bravo_doc_id
     );
+
+    let charlie_to_alpha_landed =
+        wait_for_doc(&alpha, "gossip_test", &charlie_to_bravo_doc_id, "alpha").await;
+    assert!(
+        charlie_to_alpha_landed,
+        "peat#1034 regression: doc '{}' written on charlie never reached alpha within {}s — \
+         the direct spoke-to-hub sync path failed before gossip could run.",
+        charlie_to_bravo_doc_id,
+        TRANSITIVE_SYNC_TIMEOUT.as_secs()
+    );
+    println!("  ✓ Alpha received charlie's doc over the direct spoke-to-hub edge");
+
+    let expected_remote_src = charlie_endpoint.to_string();
+    let observed_attribution = tokio::time::timeout(
+        Duration::from_secs(5),
+        find_remote_attribution_for_doc(
+            &mut alpha_gossip_rx,
+            "gossip_test",
+            &charlie_to_bravo_doc_id,
+        ),
+    )
+    .await
+    .expect(
+        "peat#1034 regression: alpha stored charlie's doc but did not broadcast its remote-change \
+         attribution within 5s, so the gossip propagation task could not fire",
+    );
+    assert_eq!(
+        observed_attribution, expected_remote_src,
+        "peat#1034 regression: alpha attributed charlie's doc to the wrong source peer"
+    );
+    println!("  ✓ Alpha broadcast charlie's doc with correct remote attribution");
 
     let charlie_to_bravo_landed =
         wait_for_doc(&bravo, "gossip_test", &charlie_to_bravo_doc_id, "bravo").await;
