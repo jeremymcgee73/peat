@@ -184,7 +184,11 @@ jobs:
              Do NOT re-flag already-addressed findings. If a prior review flagged something and the
              current push did not change the relevant code, it is still addressed by (b) or (c) — do
              not repeat it. Only flag a prior finding again if the author's attempted fix is itself wrong.
-             If all findings from prior reviews are addressed and no new issues exist, the review is clean.
+             IMPORTANT: a prior "No findings" result does NOT exempt you from evaluating the full
+             criteria list below. Review criteria may have been added or updated since the prior
+             review ran. Always evaluate every applicable criterion in step 4 against the current
+             diff — treat the prior review as input on what was already flagged, not as a ceiling
+             on what can be found.
           4. Review the diff against these criteria (apply EVERY applicable criterion — documentation-only
              PRs are NOT exempt; ADRs are binding design decisions and must be reviewed with the same
              rigor as code changes):
