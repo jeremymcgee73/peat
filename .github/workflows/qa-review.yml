@@ -185,7 +185,9 @@ jobs:
              current push did not change the relevant code, it is still addressed by (b) or (c) — do
              not repeat it. Only flag a prior finding again if the author's attempted fix is itself wrong.
              If all findings from prior reviews are addressed and no new issues exist, the review is clean.
-          4. Review the diff against these criteria:
+          4. Review the diff against these criteria (apply EVERY applicable criterion — documentation-only
+             PRs are NOT exempt; ADRs are binding design decisions and must be reviewed with the same
+             rigor as code changes):
              - Protocol/schema: backward-compatible with cap-schema; check ADR decisions
              - peat-mesh: must not break Automerge sync semantics or Iroh peer discovery
              - peat-ffi / peat-btle: FFI/BLE changes must validate all platform bindings (Android JNI, iOS UniFFI, Linux BlueZ, aarch64)
@@ -214,6 +216,33 @@ jobs:
                This is NOT formatter/style nitpicking — rustfmt/gofmt/prettier handles that.
              - Architectural reach: if a change crosses crate boundaries, alters protocol/transport
                semantics, or sits in ADR territory in a way warranting design discussion, escalate.
+             - Documentation and ADRs: for any PR that touches docs/ or ADR files, apply these
+               criteria in addition to (not instead of) the code criteria above:
+               (a) ADR structure: Status, Date, Author(s), Context, Decision, Consequences sections
+                   must all be present. Status must be one of: Proposed, Accepted, Deprecated,
+                   Superseded. Missing required section → [WARNING].
+               (b) Cross-ADR consistency: referenced ADRs must exist and the new ADR must not
+                   contradict their active decisions without explicitly superseding them. Use the
+                   Read tool to open referenced ADR files in docs/adr/ and verify the references
+                   are accurate. Contradicts an active ADR without superseding → [BLOCKER].
+                   Non-existent ADR reference → [WARNING].
+               (c) FIPS compliance: if the ADR proposes or references cryptographic primitives,
+                   they must be on the FIPS-approved list (ADR-060 §5: AES-256-GCM, Ed25519,
+                   ECDH P-256/P-384, HKDF-SHA-256, HMAC-SHA-256, SHA-256/384/512). Non-approved
+                   primitives (ChaCha20-Poly1305, BLAKE2/3, Salsa20, etc.) → [BLOCKER].
+               (d) Technical accuracy: claims about the current codebase ("crate X currently
+                   does Y", "module Z exposes W") must be spot-checked. Use Read/Bash to verify
+                   at least the key structural claims (file paths, module names, function/type
+                   existence). Materially inaccurate claim → [WARNING].
+               (e) Scope completeness: does the ADR identify all affected crates and components?
+                   Are there consequences or migration steps it should address but omits? Missing
+                   a clearly affected crate/component → [WARNING].
+               (f) Consumer-name rule: ADRs may cite consumer names when motivating a design
+                   decision, but should prefer generic language. Gratuitous consumer-name usage
+                   beyond what's needed to establish context → [IDIOM].
+               For non-ADR documentation (README, spec, whitepaper), check technical accuracy
+               against the codebase, cross-reference consistency, and that crypto references
+               comply with FIPS constraints using the same severity tags.
           5. Write findings using the Write tool:
              (a) Save the complete review body to $RUNNER_TEMP/peat-qa-review.md.
                  Start the body with EXACTLY (including the leading "## "):
@@ -261,7 +290,7 @@ jobs:
 
             emit_prompt "$OPUS_START_LINE" \
               | claude -p --model claude-opus-4-7 \
-                  --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Write'
+                  --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(find *),Bash(grep *),Bash(ls *),Read,Write'
             rc=$?
             echo "::endgroup::"
 
@@ -287,7 +316,7 @@ jobs:
 
           emit_prompt "$SONNET_START_LINE" \
             | claude -p --model claude-sonnet-4-6 \
-                --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Write'
+                --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(find *),Bash(grep *),Bash(ls *),Read,Write'
           rc=$?
           echo "::endgroup::"
 
