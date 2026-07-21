@@ -1,9 +1,9 @@
 # ADR-060: Encryption Tiers — At-Rest and In-Transit Across the Peat Stack
 
-**Status**: Proposed
+**Status**: Proposed (membership-authentication boundary clarified 2026-07-21)
 **Date**: 2026-05-18
 **Authors**: Kit Plummer
-**Related**: ADR-006 (Security Architecture), ADR-016 (TTL and Data Lifecycle), ADR-034 (Deletion and Tombstones), ADR-042 (UDP Bypass), ADR-044 (E2E Encryption and Key Management), ADR-049 (peat-mesh Extraction)
+**Related**: ADR-006 (Security Architecture), ADR-016 (TTL and Data Lifecycle), ADR-034 (Deletion and Tombstones), ADR-042 (UDP Bypass), ADR-044 (E2E Encryption and Key Management), ADR-048 (Membership Certificates), ADR-049 (peat-mesh Extraction), ADR-055 (Peat Gateway)
 **Triggered by**: peat-node #55 (filtered observe), peat-mesh #124 (Cipher trait), cross-peer regression discovered while implementing the above
 
 ---
@@ -53,6 +53,14 @@ Adversaries this ADR addresses, with explicit naming:
 | **T6** | Malicious formation member with payload key (insider) | Fully authenticated, fully privileged. ADR-044's MLS / membership-cert work addresses this; out of scope here. |
 
 This ADR's primary contribution is making T3 and **T4** first-class. T4 in particular has been provided accidentally by the old peat-node envelope and would have been silently removed by the proposed peat-mesh #124 refactor. T4 is a real and load-bearing role for tactical deployments — observers, joint-operations partners, archival nodes — and the design must preserve it deliberately rather than by side effect.
+
+### Membership-authentication boundary (2026-07-21 clarification)
+
+T2, T4, and T6 above describe the currently deployed FormationKey gate: possession of the formation-wide secret is sufficient to pass the HMAC challenge. Membership certificates add individual identity, expiry, tier, permission, and revocation claims, but those claims are an authorization boundary only where the node runtime configures and enforces certificate validation.
+
+This ADR does not decide that enforcement protocol. A future certificate-enforced model must subdivide the threat model into at least: a FormationKey holder without a valid certificate, a valid certified member without the payload key, an expired or revoked member, and a certified member with the payload key. The key hierarchy and T3/T4 encryption conclusions remain valid, but FormationKey possession must not be treated as proof that gateway-issued certificate claims were evaluated.
+
+ADR-006 and ADR-048 own the follow-up admission decision; ADR-055 blocks managed-runtime cutover on that alignment.
 
 ---
 
@@ -735,6 +743,8 @@ The cross-repo amendments table above will be removed from this ADR once each ro
 ---
 
 ## Decision log
+
+**2026-07-21**: Clarified that T2, T4, and T6 describe the currently deployed FormationKey admission gate, not universal membership-certificate enforcement. Gateway-issued certificate claims become an authorization boundary only after ADR-006/048 define and node runtimes implement the transport-neutral presentation, proof-of-possession, expiry, and revocation contract required by ADR-055 Amendment C.
 
 **2026-05-18**: Initial draft. Substrate cipher (peat-mesh #124, already coded but not committed) repositioned as Phase A defense-in-depth, deriving its key from FormationKey via HKDF. New per-collection posture axis (`Plaintext` / `FieldValues` / `FullOpacity`) introduced as Phase B. Per-field encryption at the sidecar layer added as Phase B. Attachments deferred to a follow-up ADR. The Phase 2 peat-node working tree from the original "Path Z" approach is to be repurposed: keep the `DocumentStore` migration and the substrate `Cipher` trait, replace the sidecar-side `StoreCipher` with a field-level `FieldCipher`.
 

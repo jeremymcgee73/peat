@@ -1,9 +1,9 @@
 # ADR-006: Security, Authentication, and Authorization for Peat Protocol
 
-**Status**: Proposed (amended 2026-05-18 for FIPS posture per ADR-060)
+**Status**: Proposed (amended 2026-07-21 for the gateway/node authentication boundary)
 **Date**: 2025-11-04
 **Authors**: Codex, Kit Plummer
-**Related**: ADR-005 (Data Sync Abstraction Layer), ADR-004 (Human-Machine Cell Composition), [ADR-060 §5 Cryptographic primitives (FIPS posture)](060-encryption-tiers-rest-and-transit.md#5-cryptographic-primitives-fips-posture)
+**Related**: ADR-005 (Data Sync Abstraction Layer), ADR-004 (Human-Machine Cell Composition), ADR-048 (Membership Certificates), ADR-055 (Peat Gateway), [ADR-060 §5 Cryptographic primitives (FIPS posture)](060-encryption-tiers-rest-and-transit.md#5-cryptographic-primitives-fips-posture)
 
 > **Amendment 2026-05-18 (via PR #870):** ChaCha20-Poly1305 references in this ADR are superseded by **AES-256-GCM** per ADR-060 §5 driver #6 (FIPS-approved primitives only). The original code samples and acceptance criteria below have been updated inline; the original record is preserved in git history. This amendment also resolves the latent contradiction this ADR has carried since its initial draft — the "Compliance Considerations" section already named FIPS 140-2/3 as a target, but the rest of the ADR specified the non-FIPS-approved ChaCha20-Poly1305. ADR-060 §5 is the authoritative primitive list for the peat ecosystem.
 
@@ -1118,9 +1118,28 @@ Failure to resolve a bundle is a fatal error — the reference implementation do
 
 ### Consequences
 
-- **Positive.** Multiple Peat clients share one operational credential file format. Migration between clients (peat-cli ↔ peat-gateway ↔ peat-lite) is config-only.
+- **Positive.** Multiple Peat clients share one version-1 operational credential file format. Migration is config-only only among clients that implement the same FormationKey-only admission semantics.
 - **Negative.** The schema is intentionally minimal; richer use cases (one bundle carrying credentials for multiple formations, embedded device PKI) need follow-up amendments.
 - **Risks.** Operators who hand-edit credential files surface schema errors at load time. The reject-unknown-fields stance flags typos and stale fields rather than silently ignoring them.
+
+### Current Enforcement Boundary (2026-07-21 Amendment)
+
+The version-1 bundle proves possession of a formation-wide secret. It does not identify an individual member and carries no tier, permission, expiry, or revocation claim. Possession of the `shared_key` is therefore sufficient for the current FormationKey challenge and must not be described as equivalent to certificate-authorized membership.
+
+`peat-mesh` defines certificate and certificate-bundle primitives, and its sync handler can perform an additional certificate check when a bundle is explicitly configured. That optional capability does not make certificate validation universal: the operational node bootstrap and the version-1 credential bundle do not yet establish a normative certificate exchange and enforcement path in both connection directions.
+
+Consequently, a certificate issued by an enterprise gateway can be cryptographically valid without its tier, permissions, expiry, or revocation state governing admission in every deployed node. Operator interfaces MUST NOT represent those claims as an enforced mesh authorization boundary until the node runtime wires the corresponding contract.
+
+A follow-up security decision MUST define:
+
+1. whether FormationKey remains a first admission gate or becomes bootstrap/key-wrapping material;
+2. how a peer proves possession of the private key bound to its membership certificate;
+3. bidirectional validation of mesh ID, issuer, expiry, revocation, tier, and permissions before sync and blob transfer;
+4. disconnected revocation and expiration behavior;
+5. credential rotation and migration for existing FormationKey-only deployments; and
+6. the versioned credential-bundle shape once certificate material becomes normative.
+
+ADR-055's managed-runtime cutover is blocked on this decision. Until it lands, the flat `app_id` + `shared_key` bundle remains the documented operational admission format and certificate authorization remains an additional, explicitly configured layer rather than a universal invariant.
 
 ### Related
 
