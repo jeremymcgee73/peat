@@ -1,9 +1,9 @@
 # ADR-048: Membership Certificates and Tactical Trust
 
-**Status**: Proposed
+**Status**: Proposed (transport-enforcement boundary clarified 2026-07-21)
 **Date**: 2025-01-29
 **Authors**: Codex, Kit Plummer
-**Related**: ADR-006 (Security Architecture), ADR-044 (E2E Encryption), ADR-039 (peat-btle Mesh Transport)
+**Related**: ADR-006 (Security Architecture), ADR-044 (E2E Encryption), ADR-039 (peat-btle Mesh Transport), ADR-055 (Peat Gateway), ADR-060 (Encryption Tiers)
 
 ## Context
 
@@ -217,6 +217,23 @@ When two mesh nodes discover each other via BLE:
 4. Store in peer registry: `node_id → (public_key, callsign, certificate)`
 
 Unknown or invalid certificates → reject peer, do not sync.
+
+### Transport-Neutral Enforcement Boundary (2026-07-21 Clarification)
+
+The trust model above is transport-neutral even though its original enrollment and discovery examples use BLE. The current substrate representation is `peat_mesh::security::MeshCertificate`; higher-level `MembershipCertificate` types may project to that wire certificate, but there must be one authoritative set of issuer, subject-key, mesh-ID, expiry, tier, permission, and revocation semantics.
+
+Current Iroh document sync uses a mandatory FormationKey challenge. The sync handler supports an optional certificate bundle for an additional accept-side check, but certificate exchange and validation are not yet a universal node-runtime contract. Therefore the "reject peer, do not sync" and hard-cutoff statements above describe the intended end state, not behavior guaranteed by every current `peat-node` deployment.
+
+Before certificate authorization becomes normative, a follow-up decision MUST specify:
+
+1. presentation and proof-of-possession during connection establishment;
+2. validation in both connection directions before document sync and blob transfer;
+3. certificate-bundle and revocation distribution during disconnected operation;
+4. expiry behavior for established connections and reconnects;
+5. the relationship between the formation-wide key and individual certificates; and
+6. compatibility and downgrade behavior for FormationKey-only peers.
+
+ADR-055's gateway may issue certificates and retain root authority material, but a managed formation runtime cannot treat those certificates as its admission boundary until this transport contract is implemented and tested end to end.
 
 ## Consequences
 
