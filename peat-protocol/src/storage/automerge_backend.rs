@@ -568,8 +568,19 @@ where
 
         for (key, doc) in docs {
             if let Some(doc_id) = self.strip_prefix(&key) {
-                let message = automerge_to_message(&doc)?;
-                results.push((doc_id.to_string(), message));
+                // Skip documents that can't be deserialized — typically
+                // partially-synced docs during catch-up (peat#1049).
+                match automerge_to_message(&doc) {
+                    Ok(message) => {
+                        results.push((doc_id.to_string(), message));
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Skipping document '{}' during scan: failed to deserialize (likely partially synced): {}",
+                            doc_id, e
+                        );
+                    }
+                }
             }
         }
 
@@ -1609,6 +1620,74 @@ mod tests {
         let ids: Vec<String> = results.iter().map(|(id, _)| id.clone()).collect();
         assert!(ids.contains(&"node-1".to_string()));
         assert!(ids.contains(&"node-2".to_string()));
+    }
+
+    /// Reproducer for peat#1049 — `scan()` aborts entirely when a
+    /// single document in the collection is partially synced (i.e.
+    /// stored in the AutomergeStore but missing a required field that
+    /// hasn't arrived yet via CRDT sync).
+    ///
+    /// Simulates the degraded-link scenario: a document key exists in
+    /// the store, but its Automerge doc is missing `fuel_minutes`.
+    /// Before the fix, `scan()` propagated the deserialization error
+    /// via `?` and returned nothing. After the fix, `scan()` skips
+    /// the partial document and returns the valid ones.
+    #[test]
+    fn test_scan_skips_partially_synced_document_peat1049() {
+        use crate::storage::capabilities::CrdtCapable;
+
+        let (backend, _temp) = create_test_backend();
+        let nodes: Arc<dyn TypedCollection<NodeState>> = backend.typed_collection("nodes");
+        let store = backend.automerge_store();
+
+        // Two fully-synced documents.
+        let node1 = NodeState {
+            fuel_minutes: 60,
+            health: 1,
+            phase: 1,
+            cell_id: Some("cell-1".to_string()),
+            ..Default::default()
+        };
+        let node2 = NodeState {
+            fuel_minutes: 45,
+            health: 1,
+            phase: 2,
+            cell_id: Some("cell-2".to_string()),
+            ..Default::default()
+        };
+        nodes.upsert("node-1", &node1).unwrap();
+        nodes.upsert("node-2", &node2).unwrap();
+
+        // Simulate a partially-synced document: key exists in the store
+        // but the Automerge doc is missing `fuel_minutes` — exactly
+        // what happens when CRDT ops arrive incrementally on a
+        // degraded link and `scan()` races ahead of sync catch-up.
+        let partial_json = serde_json::json!({
+            "health": 1,
+            "phase": 1,
+            "cell_id": "cell-3",
+        });
+        let partial_doc = message_to_automerge_into(&partial_json, None).unwrap();
+        store.put("nodes:node-3", &partial_doc).unwrap();
+
+        // Before the fix this unwrap fails: "Failed to deserialize JSON
+        // to message: missing field `fuel_minutes`"
+        // After the fix: scan() returns the two valid docs, skipping
+        // the partial one.
+        let results = nodes.scan().unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "scan should skip partially-synced documents, not abort"
+        );
+
+        let ids: Vec<String> = results.iter().map(|(id, _)| id.clone()).collect();
+        assert!(ids.contains(&"node-1".to_string()));
+        assert!(ids.contains(&"node-2".to_string()));
+        assert!(
+            !ids.contains(&"node-3".to_string()),
+            "partial document must not appear in scan results"
+        );
     }
 
     #[test]

@@ -14,6 +14,14 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+### Fixed
+
+- **scan() skips partially-synced documents** ([#1050](https://github.com/defenseunicorns/peat/pull/1050)) —
+  `TypedCollection::scan()` propagated deserialization errors from partially-synced
+  documents, aborting the entire scan during incremental CRDT sync on degraded links.
+  Undesodable documents are now skipped with a debug trace, matching the pattern in
+  `observe()`. (`peat-protocol`)
+
 ## [0.9.0-rc.31] - 2026-07-18
 
 ### Changed
