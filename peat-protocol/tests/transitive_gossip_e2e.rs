@@ -112,7 +112,6 @@ async fn transitive_gossip_hub_and_spoke_converges_peat891() {
     // Hub-and-spoke wiring: alpha↔bravo and alpha↔charlie. NO bravo↔charlie.
     // A single authenticated Iroh connection provides both directions for
     // each edge.
-    use peat_protocol::network::formation_handshake::perform_initiator_handshake;
 
     let bravo_endpoint = bravo.endpoint_id();
     let charlie_endpoint = charlie.endpoint_id();
@@ -139,7 +138,7 @@ async fn transitive_gossip_hub_and_spoke_converges_peat891() {
         .await
         .expect("alpha→bravo connect")
     {
-        perform_initiator_handshake(&conn, &key_alpha)
+        peat_mesh::storage::respond_to_formation_auth(&key_alpha, &conn)
             .await
             .expect("alpha→bravo handshake");
         alpha.transport().emit_peer_connected(bravo_endpoint);
@@ -151,7 +150,7 @@ async fn transitive_gossip_hub_and_spoke_converges_peat891() {
         .await
         .expect("alpha→charlie connect")
     {
-        perform_initiator_handshake(&conn, &key_alpha)
+        peat_mesh::storage::respond_to_formation_auth(&key_alpha, &conn)
             .await
             .expect("alpha→charlie handshake");
         alpha.transport().emit_peer_connected(charlie_endpoint);

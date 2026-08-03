@@ -1522,27 +1522,24 @@ mod tests {
         assert!(retrieved.position.is_some());
     }
 
-    /// Reproducer for peat#896 — sequential upserts to the same key must
-    /// accumulate Automerge history. The sync layer at
-    /// `peat_mesh::storage::automerge_sync::initiate_sync_inner` reads
-    /// the stored doc via `store.get(key)?.save()` and sends those bytes
-    /// to peers. If history is dropped, every write produces a
-    /// byte-identical (or near-identical) snapshot and the receiver's
-    /// CRDT merge picks one actor's value deterministically — which can
-    /// be the wrong/stale one (see peat#896 trace logs showing
-    /// `initiate_sync_inner: got doc, len=164` constant across writes
-    /// while alpha's view of bravo's counter stays frozen for 15-20 s
-    /// at a time).
+    /// Reproducer for peat#896 — sequential upserts to a FullHistory
+    /// collection must accumulate Automerge history. LatestOnly collections
+    /// such as `nodes` intentionally rebase each write to a bounded snapshot,
+    /// so this contract is pinned against `commands`.
     ///
-    /// Expected post-fix behavior: the saved byte count is **strictly
-    /// increasing** across sequential writes (history accumulates) and
-    /// the most recent write's value is the one a fresh `get` returns.
+    /// The FullHistory sync layer reads the stored doc and sends deltas from
+    /// its accumulated change graph. If history is dropped, every write
+    /// produces a byte-identical snapshot and the receiver's CRDT merge can
+    /// resolve to a stale actor value.
+    ///
+    /// Expected behavior: the saved byte count is strictly increasing across
+    /// sequential writes and the most recent write's value is returned.
     #[test]
-    fn test_typed_collection_upsert_preserves_history_peat896() {
+    fn test_typed_full_history_collection_upsert_preserves_history_peat896() {
         use crate::storage::capabilities::CrdtCapable;
 
         let (backend, _temp) = create_test_backend();
-        let nodes: Arc<dyn TypedCollection<NodeState>> = backend.typed_collection("nodes");
+        let nodes: Arc<dyn TypedCollection<NodeState>> = backend.typed_collection("commands");
         let store = backend.automerge_store();
 
         let mut saved_lens = vec![];
@@ -1555,7 +1552,10 @@ mod tests {
             nodes.upsert("alpha", &node).unwrap();
 
             // Probe the same byte sequence the sync layer would send.
-            let doc = store.get("nodes:alpha").unwrap().expect("doc must exist");
+            let doc = store
+                .get("commands:alpha")
+                .unwrap()
+                .expect("doc must exist");
             saved_lens.push(doc.save().len());
         }
 

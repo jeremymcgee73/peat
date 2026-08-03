@@ -304,14 +304,13 @@ async fn test_automerge_three_node_mesh() {
     };
 
     // Connect with formation handshakes (matches multi_node_mesh_e2e pattern)
-    use peat_protocol::network::formation_handshake::perform_initiator_handshake;
 
     if let Some(conn) = transport1
         .connect_peer(&peer_info_2)
         .await
         .expect("Should connect backend1 to backend2")
     {
-        perform_initiator_handshake(&conn, &formation_key1)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key1, &conn)
             .await
             .expect("Should authenticate backend1 to backend2");
     }
@@ -325,7 +324,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect backend1 to backend3")
     {
-        perform_initiator_handshake(&conn, &formation_key1)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key1, &conn)
             .await
             .expect("Should authenticate backend1 to backend3");
     }
@@ -338,7 +337,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect backend2 to backend3")
     {
-        perform_initiator_handshake(&conn, &formation_key2)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key2, &conn)
             .await
             .expect("Should authenticate backend2 to backend3");
     }
@@ -710,11 +709,10 @@ async fn test_automerge_different_credentials_rejected() {
     match transport1.connect(addr2).await {
         Ok(Some(conn)) => {
             // Connection established, now try handshake
-            use peat_protocol::network::formation_handshake::perform_initiator_handshake;
 
             let formation_key1 = backend1.formation_key().expect("Should have formation key");
 
-            match perform_initiator_handshake(&conn, &formation_key1).await {
+            match peat_mesh::storage::respond_to_formation_auth(&formation_key1, &conn).await {
                 Ok(()) => {
                     panic!("❌ SECURITY FAILURE: Handshake should have been rejected with different credentials!");
                 }
@@ -824,12 +822,12 @@ async fn test_automerge_same_credentials_accepted() {
         .expect("Should get new connection");
 
     // Perform handshake
-    use peat_protocol::network::formation_handshake::perform_initiator_handshake;
+
     let formation_key = initiator
         .formation_key()
         .expect("Should have formation key");
 
-    perform_initiator_handshake(&conn, &formation_key)
+    peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn)
         .await
         .expect("Handshake should succeed with matching credentials");
 

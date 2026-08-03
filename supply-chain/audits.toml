@@ -1383,7 +1383,7 @@ end = "2027-12-31"
 
 [[trusted.iroh]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2024-08-20"
 end = "2027-03-26"
 
@@ -1395,7 +1395,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-base]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2024-08-20"
 end = "2027-03-26"
 
@@ -1407,7 +1407,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-blobs]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2024-08-20"
 end = "2027-03-26"
 
@@ -1416,6 +1416,12 @@ criteria = "safe-to-deploy"
 user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
 start = "2020-01-01"
 end = "2027-12-31"
+
+[[trusted.iroh-dns]]
+criteria = "safe-to-deploy"
+user-id = 192066 # ramfox (ramfox)
+start = "2026-07-06"
+end = "2027-08-03"
 
 [[trusted.iroh-io]]
 criteria = "safe-to-deploy"
@@ -1437,13 +1443,19 @@ end = "2027-12-31"
 
 [[trusted.iroh-metrics]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2024-08-20"
 end = "2027-03-26"
 
 [[trusted.iroh-metrics-derive]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
+start = "2025-04-16"
+end = "2027-08-03"
+
+[[trusted.iroh-metrics-derive]]
+criteria = "safe-to-deploy"
+user-id = 192066 # ramfox (ramfox)
 start = "2025-04-30"
 end = "2027-03-26"
 
@@ -1473,7 +1485,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-relay]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-01-14"
 end = "2027-03-26"
 
@@ -1485,7 +1497,7 @@ end = "2027-12-31"
 
 [[trusted.iroh-tickets]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-11-05"
 end = "2027-03-26"
 
@@ -1503,7 +1515,7 @@ end = "2027-12-31"
 
 [[trusted.irpc]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-06-26"
 end = "2027-03-26"
 
@@ -1515,7 +1527,7 @@ end = "2027-12-31"
 
 [[trusted.irpc-derive]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-07-30"
 end = "2027-03-26"
 
@@ -1749,13 +1761,25 @@ end = "2027-03-26"
 
 [[trusted.n0-error]]
 criteria = "safe-to-deploy"
-user-id = 67874 # Franz Heinzmann (Frando)
+user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
+start = "2026-05-06"
+end = "2027-08-03"
+
+[[trusted.n0-error]]
+criteria = "safe-to-deploy"
+user-id = 67874
 start = "2025-10-31"
 end = "2027-03-26"
 
 [[trusted.n0-error-macros]]
 criteria = "safe-to-deploy"
-user-id = 67874 # Franz Heinzmann (Frando)
+user-id = 3079 # Friedel Ziegelmayer (dignifiedquire)
+start = "2026-05-06"
+end = "2027-08-03"
+
+[[trusted.n0-error-macros]]
+criteria = "safe-to-deploy"
+user-id = 67874
 start = "2025-10-31"
 end = "2027-03-26"
 
@@ -1767,7 +1791,7 @@ end = "2027-03-26"
 
 [[trusted.n0-snafu]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-05-29"
 end = "2027-03-26"
 
@@ -1851,7 +1875,7 @@ end = "2027-12-31"
 
 [[trusted.netwatch]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-01-14"
 end = "2027-03-26"
 
@@ -2199,7 +2223,7 @@ end = "2027-12-31"
 
 [[trusted.portmapper]]
 criteria = "safe-to-deploy"
-user-id = 192066
+user-id = 192066 # ramfox (ramfox)
 start = "2025-01-14"
 end = "2027-03-26"
 
@@ -3553,11 +3577,23 @@ user-id = 267 # Tony Arcieri (tarcieri)
 start = "2021-11-05"
 end = "2027-03-26"
 
+[[trusted.zeroize]]
+criteria = "safe-to-deploy"
+trusted-publisher = "github:RustCrypto/utils"
+start = "2026-06-12"
+end = "2027-08-03"
+
 [[trusted.zeroize_derive]]
 criteria = "safe-to-deploy"
 user-id = 267 # Tony Arcieri (tarcieri)
 start = "2019-03-23"
 end = "2027-03-26"
+
+[[trusted.zeroize_derive]]
+criteria = "safe-to-deploy"
+trusted-publisher = "github:RustCrypto/utils"
+start = "2026-06-12"
+end = "2027-08-03"
 
 [[trusted.zerotrie]]
 criteria = "safe-to-deploy"

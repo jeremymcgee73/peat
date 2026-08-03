@@ -9,7 +9,6 @@
 
 #![cfg(feature = "automerge-backend")]
 
-use peat_protocol::network::formation_handshake::perform_initiator_handshake;
 use peat_protocol::network::PeerInfo;
 use peat_protocol::sync::{DataSyncBackend, Document, Query, Value};
 use peat_protocol::testing::E2EHarness;
@@ -155,7 +154,12 @@ async fn test_hierarchical_sync_soldiers_to_leader() {
         match transport.connect_peer(&leader_peer_info).await {
             Ok(Some(conn)) => {
                 // New connection - perform handshake
-                match perform_initiator_handshake(&conn, &soldier_formation_keys[i]).await {
+                match peat_mesh::storage::respond_to_formation_auth(
+                    &soldier_formation_keys[i],
+                    &conn,
+                )
+                .await
+                {
                     Ok(_) => println!("   Soldier {} → Leader: connected + authenticated", i + 1),
                     Err(e) => println!("   Soldier {} → Leader: handshake failed: {}", i + 1, e),
                 }
@@ -398,7 +402,9 @@ async fn test_hierarchical_sync_leader_to_soldiers() {
     for (i, transport) in soldier_transports.iter().enumerate() {
         // connect_peer returns Option<Connection>: Some = new connection, None = accept path handling
         if let Ok(Some(conn)) = transport.connect_peer(&leader_peer_info).await {
-            let _ = perform_initiator_handshake(&conn, &soldier_formation_keys[i]).await;
+            let _ =
+                peat_mesh::storage::respond_to_formation_auth(&soldier_formation_keys[i], &conn)
+                    .await;
         }
     }
 

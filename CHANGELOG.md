@@ -14,6 +14,27 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+### Fixed
+
+- **FFI peer authentication uses one formation-auth protocol**
+  ([#1045](https://github.com/defenseunicorns/peat/issues/1045)) —
+  all `peat-protocol` and `peat-ffi` dial and accept paths now use peat-mesh's
+  canonical versioned handshake, so two nodes created through the exported FFI
+  API authenticate on both sides and synchronize documents.
+
+### Removed
+
+- Remove the incompatible
+  `peat_protocol::network::formation_handshake::{perform_initiator_handshake, perform_responder_handshake}`
+  API. Custom Iroh transport owners migrate to
+  `peat_mesh::storage::{respond_to_formation_auth, accept_formation_auth}`.
+
+### Pinned
+
+- Advance `peat-mesh` to `>=0.9.0-rc.59, <0.9.1` for the public canonical
+  acceptor API, and align peat-protocol's test-only Iroh pin to `1.0.2`.
+  Default feature selection is unchanged.
+
 ## [0.9.0-rc.32] - 2026-08-03
 
 ### Fixed

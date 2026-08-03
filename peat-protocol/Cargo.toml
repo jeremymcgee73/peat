@@ -135,9 +135,10 @@ serial_test = "3.1"  # Serialize tests sharing global state (iroh endpoints)
 # `EndpointAddr`) to construct minimal endpoint scaffolding for
 # transport-level sync e2e checks. Keeping iroh as a dev-only dep so
 # those tests keep compiling without putting iroh back into the
-# runtime dep tree. Same feature set as peat-mesh's iroh activation
-# (default-features off + `tls-aws-lc-rs`) for FIPS posture parity.
-iroh = { version = "=1.0.0-rc.1", default-features = false, features = ["tls-aws-lc-rs"] }
+# runtime dep tree. Pin exactly to peat-mesh's iroh version and feature
+# posture; two iroh versions in one process split process-global crypto
+# provider and ALPN state.
+iroh = { version = "=1.0.2", default-features = false, features = ["tls-aws-lc-rs"] }
 
 [[bench]]
 name = "cap_benchmarks"
