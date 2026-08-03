@@ -14,6 +14,8 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.32] - 2026-08-03
+
 ### Fixed
 
 - **scan() skips partially-synced documents** ([#1050](https://github.com/defenseunicorns/peat/pull/1050)) —
@@ -21,6 +23,10 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
   documents, aborting the entire scan during incremental CRDT sync on degraded links.
   Undesodable documents are now skipped with a debug trace, matching the pattern in
   `observe()`. (`peat-protocol`)
+
+### Pinned
+
+- `peat-mesh` remains `>=0.9.0-rc.45, <0.9.1`; default feature selection is unchanged.
 
 ## [0.9.0-rc.31] - 2026-07-18
 
