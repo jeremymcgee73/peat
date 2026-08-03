@@ -178,9 +178,6 @@ jobs:
               --property=ProtectHome=tmpfs \
               --property=PrivateTmp=yes \
               --property=PrivateDevices=yes \
-              --property=ProtectKernelTunables=yes \
-              --property=ProtectKernelModules=yes \
-              --property=ProtectControlGroups=yes \
               --property=LockPersonality=yes \
               --property=RestrictSUIDSGID=yes \
               --property=ProtectProc=invisible \
