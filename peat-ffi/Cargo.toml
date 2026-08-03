@@ -82,7 +82,13 @@ name = "peat-ffi"
 # `default-features = false` and select their protocol features explicitly,
 # avoiding duplicate symbols while the adapter migrates to its consumer repo.
 # The standard UniFFI and JNI surfaces are unchanged. See peat#1030.
-version = "0.2.12"
+#
+# 0.2.13 (was 0.2.12): fixes formation authentication between two nodes
+# created through the exported FFI surface. Dial and accept now use
+# peat-mesh's single versioned handshake, restoring authenticated
+# bidirectional document sync without changing UniFFI or JNI signatures.
+# See peat#1045.
+version = "0.2.13"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"

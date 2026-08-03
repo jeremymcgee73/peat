@@ -38,7 +38,11 @@ group = "com.defenseunicorns"
 // required, paired with peat-flutter#13), and four Dart C-ABI shims for
 // the new reconnect surface. No JNI ABI break; existing JNI consumers
 // link unchanged. See peat#1000.
-version = "0.1.4"
+//
+// 0.1.5 (was 0.1.4): runtime fix for formation authentication between
+// exported FFI nodes. Restores authenticated bidirectional document sync;
+// no UniFFI or JNI signatures changed. Ships peat-ffi 0.2.13. See peat#1045.
+version = "0.1.5"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"
