@@ -177,11 +177,13 @@ jobs:
               --property=ProtectSystem=strict \
               --property=ProtectHome=tmpfs \
               --property=PrivateTmp=yes \
-              --property=PrivateDevices=yes \
               --property=LockPersonality=yes \
               --property=RestrictSUIDSGID=yes \
               --property=ProtectProc=invisible \
               --property=InaccessiblePaths=/run/docker.sock \
+              --property=InaccessiblePaths=/dev/bus/usb \
+              --property=InaccessiblePaths=/dev/kvm \
+              --property=InaccessiblePaths=/dev/dri \
               --property=InaccessiblePaths=/var/run/docker.sock \
               --property="BindReadOnlyPaths=$codex_bin" \
               --property="BindReadOnlyPaths=$CODEX_HOME" \
