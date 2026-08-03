@@ -158,6 +158,45 @@ jobs:
             jq -r .verdict "$RUNNER_TEMP/peat-qa-result.json" > "$RUNNER_TEMP/peat-qa-verdict"
           }
 
+
+          run_codex() {
+            local codex_bin
+            : "${CODEX_HOME:?CODEX_HOME is required for the runner Codex login}"
+            codex_bin=$(readlink -f "$HOME/.local/bin/codex")
+            if [ ! -x "$codex_bin" ]; then
+              echo "::error::Codex executable unavailable at $codex_bin"
+              return 127
+            fi
+
+            # Codex read-only mode requires bubblewrap network-namespace setup, which
+            # this runner cannot perform. Run its unrestricted mode only inside this
+            # short-lived systemd sandbox: the checkout and Codex login are mounted
+            # read-only, and only RUNNER_TEMP is writable for the structured result.
+            systemd-run --user --wait --pipe --collect --quiet \
+              --property=NoNewPrivileges=yes \
+              --property=ProtectSystem=strict \
+              --property=ProtectHome=tmpfs \
+              --property=PrivateTmp=yes \
+              --property=PrivateDevices=yes \
+              --property=ProtectKernelTunables=yes \
+              --property=ProtectKernelModules=yes \
+              --property=ProtectControlGroups=yes \
+              --property=LockPersonality=yes \
+              --property=RestrictSUIDSGID=yes \
+              --property=ProtectProc=invisible \
+              --property=InaccessiblePaths=/run/docker.sock \
+              --property=InaccessiblePaths=/var/run/docker.sock \
+              --property="BindReadOnlyPaths=$codex_bin" \
+              --property="BindReadOnlyPaths=$CODEX_HOME" \
+              --property="BindReadOnlyPaths=$GITHUB_WORKSPACE" \
+              --property="ReadWritePaths=$RUNNER_TEMP" \
+              --property="WorkingDirectory=$GITHUB_WORKSPACE" \
+              --setenv="CODEX_HOME=$CODEX_HOME" \
+              "$codex_bin" exec --ephemeral --sandbox danger-full-access \
+                --output-schema "$RUNNER_TEMP/peat-qa-schema.json" \
+                --output-last-message "$RUNNER_TEMP/peat-qa-result.json" -
+          }
+
           emit_prompt() {
             # Expand both $START_LINE (per-attempt header) and $RUNNER_TEMP so the
             # agent receives the real absolute artifact paths. Without
@@ -320,7 +359,7 @@ jobs:
             fi
 
             emit_prompt "$PRIMARY_CODEX_START_LINE" \
-              | "$HOME/.local/bin/codex" exec --ephemeral --sandbox read-only --output-schema "$RUNNER_TEMP/peat-qa-schema.json" --output-last-message "$RUNNER_TEMP/peat-qa-result.json" -
+              | run_codex
             rc=$?
             if [ "$rc" -eq 0 ]; then
               materialize_review || rc=$?
@@ -348,7 +387,7 @@ jobs:
           fi
 
           emit_prompt "$FINAL_CODEX_START_LINE" \
-            | "$HOME/.local/bin/codex" exec --ephemeral --sandbox read-only --output-schema "$RUNNER_TEMP/peat-qa-schema.json" --output-last-message "$RUNNER_TEMP/peat-qa-result.json" -
+            | run_codex
           rc=$?
           if [ "$rc" -eq 0 ]; then
             materialize_review || rc=$?
