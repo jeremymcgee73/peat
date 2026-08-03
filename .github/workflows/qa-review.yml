@@ -191,6 +191,7 @@ jobs:
               --property="ReadWritePaths=$RUNNER_TEMP" \
               --property="WorkingDirectory=$GITHUB_WORKSPACE" \
               --setenv="CODEX_HOME=$CODEX_HOME" \
+              --setenv="GH_TOKEN=$GH_TOKEN" \
               "$codex_bin" exec --ephemeral --sandbox danger-full-access \
                 --output-schema "$RUNNER_TEMP/peat-qa-schema.json" \
                 --output-last-message "$RUNNER_TEMP/peat-qa-result.json" -
