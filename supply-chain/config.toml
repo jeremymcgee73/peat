@@ -22,6 +22,9 @@ audit-as-crates-io = true
 [policy.peat-ffi]
 audit-as-crates-io = true
 
+[policy.peat-mesh]
+audit-as-crates-io = true
+
 [policy.peat-protocol]
 audit-as-crates-io = true
 
