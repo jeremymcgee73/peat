@@ -15,12 +15,8 @@ jobs:
     name: Peat QA Review
     if: ${{ !github.event.pull_request.draft }}
     runs-on: peat-arm64-linux-gb10
-    # 40m budget. Round-3 incremental reviews on substantive PRs (verifying
-    # multiple prior-round findings + a new delta) have observed real work
-    # of ~9 min plus agentic finalization, which exceeded the previous 15m
-    # cap. The two-tier model strategy (3 Opus 4.7 attempts → 1 Sonnet 4.6
-    # fallback) adds worst-case ~18 min of failed-Opus retries before Sonnet
-    # runs, so 40m keeps headroom for a substantive Sonnet fallback review.
+    # 40m budget supports three Codex retries plus one final fresh Codex attempt
+    # for a substantive review.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -57,38 +53,24 @@ jobs:
             exit 0
           fi
 
-      - name: Review PR with Claude Code
+      - name: Review PR with Codex
         if: steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN:               ${{ secrets.GITHUB_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           META:                   ${{ steps.check.outputs.meta }}
         run: |
           set -uo pipefail
-          set +e   # GH Actions defaults to bash -e; -e would abort before rc=$? captures the claude exit code
-
-          # Fork PRs receive an empty secret (GitHub strips secrets from fork
-          # pull_request events). Unset the var so claude falls back to the
-          # runner-local credential (~/.claude/.credentials.json).
-          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            echo "CLAUDE_CODE_OAUTH_TOKEN is empty (expected for fork PRs) — falling back to runner-local credentials"
-            unset CLAUDE_CODE_OAUTH_TOKEN
-          fi
+          set +e   # GH Actions defaults to bash -e; -e would abort before rc=$? captures the Codex exit code
 
           PR_NUMBER="${{ github.event.pull_request.number }}"
           SHORT_SHA="${{ steps.check.outputs.short_sha }}"
 
-          # Two-tier resilience against upstream model incidents — status.claude.com
-          # has logged near-daily Opus 4.7 elevated-error windows in May 2026:
-          #   Primary:  up to 3 attempts on Opus 4.7, 15s apart.
-          #   Fallback: 1 attempt on Sonnet 4.6 with a disclaimer in the review body
-          #             so reviewers know [ARCH] coverage may be reduced and can
-          #             re-run CI when full architectural review is needed.
-          # Prompt template is single-quoted (preserves backticks); envsubst injects
-          # the per-model header line via $START_LINE.
+          # Retry transient Codex or network failures up to three times, then make
+          # one final fresh Codex attempt. The prompt template is single-quoted
+          # to preserve backticks; envsubst injects the per-attempt header line.
 
-          # Idempotency check — used inside the Opus loop and again before the
-          # Sonnet fallback. `gh pr review --approve/--request-changes` posts to
+          # Idempotency check — used inside the Codex retry loop and again before the
+          # final Codex attempt. `gh pr review --approve/--request-changes` posts to
           # the reviews endpoint; check --json reviews here and in the top-level
           # "Check for existing review" step.
           already_posted() {
@@ -156,7 +138,7 @@ jobs:
           }
 
           emit_prompt() {
-            # Expand both $START_LINE (per-model header) and $RUNNER_TEMP so the
+            # Expand both $START_LINE (per-attempt header) and $RUNNER_TEMP so the
             # agent receives the real absolute artifact paths. Without
             # $RUNNER_TEMP in the allowlist the prompt handed the agent the
             # literal string "$RUNNER_TEMP/peat-qa-review.md", which it could not
@@ -271,7 +253,7 @@ jobs:
                For non-ADR documentation (README, spec, whitepaper), check technical accuracy
                against the codebase, cross-reference consistency, and that crypto references
                comply with FIPS constraints using the same severity tags.
-          6. Write findings using the Write tool:
+          6. Do not modify repository files or call `gh pr review`. Write the findings to the following files using shell commands:
              (a) Save the complete review body to $RUNNER_TEMP/peat-qa-review.md.
                  Start the body with EXACTLY (including the leading "## "):
           $START_LINE
@@ -288,7 +270,7 @@ jobs:
                    [IDIOM]    — non-idiomatic implementation for the language; worth fixing, not blocking
                    [ARCH]     — architectural concern requiring human design review; do NOT propose a fix, escalate
                  If there are no findings under any tag, write a single line: "No findings."
-             (b) Use the Write tool to write the verdict to $RUNNER_TEMP/peat-qa-verdict:
+             (b) Write the verdict to $RUNNER_TEMP/peat-qa-verdict:
                  Write exactly: changes-requested if any [BLOCKER], [WARNING], or [ARCH] finding is present.
                  Write exactly: approve if the review is clean or has only [IDIOM] findings.
                  No other content in that file.
@@ -296,19 +278,19 @@ jobs:
           PROMPT
           }
 
-          OPUS_START_LINE="## Peat QA Review (SHA: ${SHORT_SHA})"
-          # Sonnet fallback header is two lines (header + disclaimer). The literal
+          PRIMARY_CODEX_START_LINE="## Peat QA Review (SHA: ${SHORT_SHA})"
+          # Final Codex attempt header is two lines (header + disclaimer). The literal
           # newline flows through envsubst into the prompt; reviewers see the
           # disclaimer in the posted comment so they can re-run CI on substantive
-          # PRs when full [ARCH] coverage is needed.
-          SONNET_START_LINE="## Peat QA Review (SHA: ${SHORT_SHA}) — fallback model: Sonnet 4.6
-          > Opus 4.7 was unavailable; this review was produced by Sonnet 4.6. [ARCH] coverage may be reduced — re-run CI on this PR when Opus is available if full architectural review is needed."
+          # PRs when a new review is needed.
+          FINAL_CODEX_START_LINE="## Peat QA Review (SHA: ${SHORT_SHA}) — final Codex attempt
+          > Initial Codex attempts failed; this review was produced by a final Codex attempt."
 
-          MAX_OPUS_ATTEMPTS=3
+          MAX_CODEX_ATTEMPTS=3
           rc=0
 
-          for attempt in $(seq 1 $MAX_OPUS_ATTEMPTS); do
-            echo "::group::QA Review Opus 4.7 attempt ${attempt}/${MAX_OPUS_ATTEMPTS}"
+          for attempt in $(seq 1 $MAX_CODEX_ATTEMPTS); do
+            echo "::group::QA Review Codex attempt ${attempt}/${MAX_CODEX_ATTEMPTS}"
 
             if already_posted; then
               echo "Review for SHA ${SHORT_SHA} (meta ${META}) already posted; treating as success."
@@ -316,9 +298,8 @@ jobs:
               exit 0
             fi
 
-            emit_prompt "$OPUS_START_LINE" \
-              | claude -p --model claude-opus-4-7 \
-                  --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh issue view *),Bash(find *),Bash(grep *),Bash(ls *),Read,Write'
+            emit_prompt "$PRIMARY_CODEX_START_LINE" \
+              | "$HOME/.local/bin/codex" exec --ephemeral --sandbox workspace-write --add-dir "$RUNNER_TEMP" -
             rc=$?
             echo "::endgroup::"
 
@@ -327,14 +308,14 @@ jobs:
               exit 0
             fi
 
-            if [ "$attempt" -lt "$MAX_OPUS_ATTEMPTS" ]; then
-              echo "Opus 4.7 attempt ${attempt} failed (claude -p exit ${rc}); sleeping 15s before retry..."
+            if [ "$attempt" -lt "$MAX_CODEX_ATTEMPTS" ]; then
+              echo "Codex attempt ${attempt} failed (Codex exit ${rc}); sleeping 15s before retry..."
               sleep 15
             fi
           done
 
-          echo "All ${MAX_OPUS_ATTEMPTS} Opus 4.7 attempts failed; falling back to Sonnet 4.6."
-          echo "::group::QA Review Sonnet 4.6 fallback"
+          echo "All ${MAX_CODEX_ATTEMPTS} Codex attempts failed; making one final Codex attempt."
+          echo "::group::QA Review final Codex attempt"
 
           if already_posted; then
             echo "Review for SHA ${SHORT_SHA} (meta ${META}) already posted; treating as success."
@@ -342,9 +323,8 @@ jobs:
             exit 0
           fi
 
-          emit_prompt "$SONNET_START_LINE" \
-            | claude -p --model claude-sonnet-4-6 \
-                --allowedTools 'Bash(gh pr diff *),Bash(gh pr view *),Bash(gh issue view *),Bash(find *),Bash(grep *),Bash(ls *),Read,Write'
+          emit_prompt "$FINAL_CODEX_START_LINE" \
+            | "$HOME/.local/bin/codex" exec --ephemeral --sandbox workspace-write --add-dir "$RUNNER_TEMP" -
           rc=$?
           echo "::endgroup::"
 
@@ -353,5 +333,5 @@ jobs:
             exit 0
           fi
 
-          echo "Sonnet 4.6 fallback also failed (likely a broader Anthropic API incident — see status.claude.com)."
+          echo "Codex final attempt also failed (likely a broader OpenAI API incident — see status.openai.com)."
           exit 1
