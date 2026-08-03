@@ -65,6 +65,18 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           SHORT_SHA="${{ steps.check.outputs.short_sha }}"
 
+          cat > "$RUNNER_TEMP/peat-qa-schema.json" <<JSON
+          {
+            "type": "object",
+            "properties": {
+              "review": {"type": "string"},
+              "verdict": {"type": "string", "enum": ["approve", "changes-requested"]}
+            },
+            "required": ["review", "verdict"],
+            "additionalProperties": false
+          }
+          JSON
+
           # Retry transient Codex or network failures up to three times, then make
           # one final fresh Codex attempt. The prompt template is single-quoted
           # to preserve backticks; envsubst injects the per-attempt header line.
@@ -135,6 +147,15 @@ jobs:
               echo "::error::gh pr review ${verb} failed — verdict not posted"
               exit 1
             fi
+          }
+
+          materialize_review() {
+            if ! jq -e '(.review | type == "string" and length > 0) and (.verdict == "approve" or .verdict == "changes-requested")' "$RUNNER_TEMP/peat-qa-result.json" >/dev/null 2>&1; then
+              echo "::error::Codex returned an invalid review result; refusing to post an empty review."
+              return 1
+            fi
+            jq -r .review "$RUNNER_TEMP/peat-qa-result.json" > "$RUNNER_TEMP/peat-qa-review.md"
+            jq -r .verdict "$RUNNER_TEMP/peat-qa-result.json" > "$RUNNER_TEMP/peat-qa-verdict"
           }
 
           emit_prompt() {
@@ -253,8 +274,8 @@ jobs:
                For non-ADR documentation (README, spec, whitepaper), check technical accuracy
                against the codebase, cross-reference consistency, and that crypto references
                comply with FIPS constraints using the same severity tags.
-          6. Do not modify repository files or call `gh pr review`. Write the findings to the following files using shell commands:
-             (a) Save the complete review body to $RUNNER_TEMP/peat-qa-review.md.
+          6. Do not modify repository files, write files, or call `gh pr review`. Return only a JSON object that conforms to the supplied schema:
+             (a) `review`: the complete review body.
                  Start the body with EXACTLY (including the leading "## "):
           $START_LINE
                  Every finding must carry a tag with a defined action. Do NOT post optional/nice-to-have
@@ -270,10 +291,10 @@ jobs:
                    [IDIOM]    — non-idiomatic implementation for the language; worth fixing, not blocking
                    [ARCH]     — architectural concern requiring human design review; do NOT propose a fix, escalate
                  If there are no findings under any tag, write a single line: "No findings."
-             (b) Write the verdict to $RUNNER_TEMP/peat-qa-verdict:
+             (b) `verdict`:
                  Write exactly: changes-requested if any [BLOCKER], [WARNING], or [ARCH] finding is present.
                  Write exactly: approve if the review is clean or has only [IDIOM] findings.
-                 No other content in that file.
+                 Do not return any fields other than `review` and `verdict`.
              (c) Do NOT call gh pr review — the workflow posts the official review after you finish.
           PROMPT
           }
@@ -299,8 +320,11 @@ jobs:
             fi
 
             emit_prompt "$PRIMARY_CODEX_START_LINE" \
-              | "$HOME/.local/bin/codex" exec --ephemeral --sandbox workspace-write --add-dir "$RUNNER_TEMP" -
+              | "$HOME/.local/bin/codex" exec --ephemeral --sandbox read-only --output-schema "$RUNNER_TEMP/peat-qa-schema.json" --output-last-message "$RUNNER_TEMP/peat-qa-result.json" -
             rc=$?
+            if [ "$rc" -eq 0 ]; then
+              materialize_review || rc=$?
+            fi
             echo "::endgroup::"
 
             if [ "$rc" -eq 0 ]; then
@@ -324,8 +348,11 @@ jobs:
           fi
 
           emit_prompt "$FINAL_CODEX_START_LINE" \
-            | "$HOME/.local/bin/codex" exec --ephemeral --sandbox workspace-write --add-dir "$RUNNER_TEMP" -
+            | "$HOME/.local/bin/codex" exec --ephemeral --sandbox read-only --output-schema "$RUNNER_TEMP/peat-qa-schema.json" --output-last-message "$RUNNER_TEMP/peat-qa-result.json" -
           rc=$?
+          if [ "$rc" -eq 0 ]; then
+            materialize_review || rc=$?
+          fi
           echo "::endgroup::"
 
           if [ "$rc" -eq 0 ]; then
