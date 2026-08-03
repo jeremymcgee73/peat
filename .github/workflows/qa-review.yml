@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
   issues: read
-  pull-requests: write
+  pull-requests: read
 
 jobs:
   qa-review:
@@ -188,6 +188,7 @@ jobs:
               --property="BindReadOnlyPaths=$codex_bin" \
               --property="BindReadOnlyPaths=$CODEX_HOME" \
               --property="BindReadOnlyPaths=$GITHUB_WORKSPACE" \
+              --property="BindPaths=$RUNNER_TEMP" \
               --property="ReadWritePaths=$RUNNER_TEMP" \
               --property="WorkingDirectory=$GITHUB_WORKSPACE" \
               --setenv="CODEX_HOME=$CODEX_HOME" \
