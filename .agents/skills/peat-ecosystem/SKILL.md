@@ -92,6 +92,47 @@ For any task in a peat repo:
 5. **Verify** per the per-repo skill's exit criteria.
 6. **Hand off.** Open PR referencing the issue. Summary states *what changed and why*. Flag any cross-repo implications.
 
+## Changelog and GitHub Release notes contract
+
+`CHANGELOG.md` and GitHub Release notes serve different scopes:
+
+- A changelog entry records the delta assigned to one immutable version. Keep it
+  accurate and version-scoped, including a failed release's intended source
+  change even when publication later fails.
+- GitHub Release notes tell operators what the complete published release
+  delivers. A tag-specific changelog extraction is an input, never sufficient
+  evidence that the release notes are complete.
+
+Before publishing or editing a GitHub Release:
+
+1. **Choose the real baseline.** Normally compare with the previous release. If
+   any intermediate tag was failed, partial, incompatible, withdrawn, or
+   superseded, compare from the last complete usable release and state the
+   disposition of every intermediate tag and any immutable artifact it
+   published.
+2. **Inventory the shipped work.** Inspect the tag comparison, merged commits,
+   linked issues and PRs, cross-repository dependency releases, qualification
+   trackers, and retained nonzero outcomes. GitHub-generated notes may help
+   enumerate PRs; they do not replace this review.
+3. **Write operator-facing notes.** Include, as applicable:
+   - release status, upgrade guidance, and corrective-train history;
+   - behavior grouped by user/operator impact rather than commit order;
+   - issue/PR traceability, including cross-repository work and open trackers;
+   - verification actually executed, distinguishing source, candidate,
+     physical, and exact published-artifact evidence;
+   - package checksums or image digests needed to identify qualified artifacts;
+   - waivers, failed gates, known limitations, and claims the release does not
+     make; and
+   - a full comparison link from the selected baseline.
+4. **Verify after publication.** Read the release back from GitHub and confirm
+   the expected title, baseline, traceability, warnings, artifact identities,
+   and complete body. A successful workflow or `gh release edit` exit is not
+   proof that the audience-facing notes are complete.
+
+Release work is not complete while the GitHub Release describes only the final
+patch in a multi-tag corrective train or omits the issues and evidence that
+justify recommending—or withholding recommendation of—the artifact.
+
 ## Verification (ecosystem-level)
 
 Beyond the per-repo verify checklist, an ecosystem-level change is not done until:
@@ -117,6 +158,7 @@ Beyond the per-repo verify checklist, an ecosystem-level change is not done unti
 | "This change makes Peat assume the counterpart is also running Peat — fine for now, we'll generalize later." | Interoperability-first is the product. Generalize before merging, or don't merge. |
 | "Just one mention of ATAK in the comment is fine — that's the consumer everyone knows about." | No consumer-specific references in peat. Ever. Use "consumer plugin" / "CoT consumer" / "mobile-app plugin". One mention becomes 382 mentions in two years. Verification gate greps for it. |
 | "The JNI symbol name has to encode the Java package path of the calling class." | True for the suffix; the Java package path itself is a choice. Pick a generic namespace (`com.defenseunicorns.peat.PeatJni`), not a consumer-specific one (`com.defenseunicorns.<vendor>.peat.PeatJni`). |
+| "The workflow copied this version's changelog, so the Release notes are done." | A changelog stanza is version-scoped; Release notes are operator-scoped. Inventory the real baseline, corrective tags, issues/PRs, cross-repo work, evidence, artifacts, and open limitations, then read the published body back. |
 
 ## Scope guards
 
@@ -157,6 +199,8 @@ Populate as sessions run. One line per gotcha plus a `Why:` line.
   Why: peat#864 ("`subscribe_progress` emits no terminal frame") was three separate defects — a peat-mesh sync_cooldown silent-drop, a missing peat-protocol watcher, and a wholesale-scalar Automerge merge race — each fixed in a different repo; closing the issue after the first fix would have been wrong.
 - Don't close an issue when the wire-up lands but the end-to-end acceptance test still fails; reopen with a narrowed title rather than filing a vague follow-up.
   Why: peat#864 was prematurely closed at the rc.7 wire-up while its named acceptance test still stalled; reopening with the narrowed scope kept the bisect trail intact.
+- A corrective release train cannot use only the final tag's changelog stanza as its GitHub Release notes.
+  Why: peat-node v0.4.18 initially documented only its `protoc` workflow fix, hiding the sync, packaging, dependency, simulation, qualification, and issue/PR work accumulated since the last complete usable release; the published notes required a full v0.4.15...v0.4.18 reconstruction.
 
 ---
 
@@ -225,5 +269,5 @@ Still open:
 - Required reviewers per repo / CODEOWNERS — none currently in `peat` repo. Adopt CODEOWNERS, or document the review-routing convention in the ecosystem skill.
 
 ---
-*Last updated: 2026-05-05*
+*Last updated: 2026-07-29*
 *Maintained by: Kit Plummer, VP Data and Autonomy, Defense Unicorns*

@@ -5,7 +5,7 @@
 **Authors**: Kit Plummer, Claude  
 **Organization**: Defense Unicorns (https://defenseunicorns.com)  
 **Priority**: URGENT - Blocking for Defense Unicorns transition  
-**Relates To**: ADR-011 (Automerge + Iroh), ADR-032 (Pluggable Transport), ADR-039 (peat-btle), ADR-041 (Multi-Transport Embedded)
+**Relates To**: ADR-011 (Automerge + Iroh), ADR-032 (Pluggable Transport), ADR-039 (peat-btle), ADR-041 (Multi-Transport Embedded), ADR-075 (Top-Level Rust Facade)
 
 ---
 
@@ -314,18 +314,14 @@ Options:
 2. **MeshProvider moves to peat-mesh** - The trait is part of peat-mesh's public API
 3. **MeshProvider is a wrapper** - peat-protocol defines MeshProvider, which wraps peat-mesh internally
 
-*Recommendation*: Option 1 - MeshProvider trait stays in peat-protocol (it's the Peat-specific interface), peat-mesh implements it. This allows other implementations (Ditto, mock) to also implement MeshProvider.
+**Resolution (2026-07-21)**: The original Option 1 recommendation was rejected during extraction because it would require `peat-mesh` to depend on the higher-level `peat-protocol` crate. The implemented dependency direction is one-way:
 
-```rust
-// In peat-protocol
-pub trait MeshProvider { ... }
-
-// In peat-mesh
-impl MeshProvider for PeatMesh { ... }
-
-// In peat-mesh-ditto (if needed)
-impl MeshProvider for DittoMesh { ... }
+```text
+peat-protocol ──depends on──▶ peat-mesh
+peat-mesh     ──must not────▶ peat-protocol / peat-schema
 ```
+
+Protocol-specific provider traits and adapters remain in `peat-protocol` and wrap or consume the generic `peat-mesh` surface. The Phase 0 result (PR #622) removing all reverse dependencies is authoritative.
 
 #### Q5: Repository Structure
 
@@ -540,6 +536,24 @@ full = ["iroh", "ble"]
 
 ---
 
+## Consumer Dependency Rule (2026-07-21 Amendment)
+
+The extraction establishes the following consumer layers:
+
+```text
+peat-schema    Peat wire and domain types
+peat-mesh      Generic synchronization, transport, storage, and substrate security
+peat-protocol  Peat semantics; compatibility re-exports for mesh and schema
+peat           Canonical Rust facade and tested compatibility set (ADR-075)
+peat-node      Deployable single-formation runtime
+```
+
+General Rust integrations SHOULD use the top-level `peat` facade and its namespaced component exports. Specialized consumers MAY depend directly on the one component crate whose boundary they require. A consumer SHOULD NOT independently pin `peat-mesh`, `peat-schema`, and `peat-protocol`; `peat-protocol` retains its mesh/schema re-exports for compatibility, while ADR-075 makes `peat` the canonical new integration path. An operational consumer that does not require in-process Rust integration SHOULD prefer a versioned runtime service contract when one satisfies its durability and security requirements.
+
+The dependency direction remains strict: `peat-mesh` never imports protocol/schema semantics, and sibling application repositories do not become dependencies of `peat`, `peat-protocol`, or `peat-mesh`.
+
+The "zero Peat-specific semantics" boundary also applies to policy vocabulary. Generic certificate, formation-authentication, and transport primitives may live in `peat-mesh`; Peat-specific hierarchy, role policy, and domain-tier vocabulary belong in `peat-schema` or `peat-protocol`. Existing substrate types that mix generic certificate mechanics with domain-specific tier names require an ownership audit before that public surface is expanded.
+
 ## Consequences
 
 ### Positive
@@ -598,10 +612,11 @@ full = ["iroh", "ble"]
 | TBD | Repository structure | Currently monorepo workspace, separate repo planned |
 | TBD | Transport ownership | peat-mesh owns transport trait + Iroh default |
 | 2026-05-18 | Security primitives FIPS amendment (PR #870) | ChaCha20-Poly1305 superseded by AES-256-GCM in peat-mesh substrate per ADR-060 §5; X25519 flagged as marginal pending FIPS review. The 2026-02-11 Phase 5 row above is preserved as a historical record of what shipped; the FIPS amendment is the forward-looking decision. peat-mesh sibling-repo code changes tracked separately under the cross-repo workflow. |
+| 2026-07-21 | Codify consumer dependency rule and resolve Q4 | ADR-075 defines `peat` as the canonical Rust facade; specialized consumers may select one component boundary; `peat-mesh` has no reverse dependency on protocol/schema |
 
 ---
 
-**Last Updated**: 2026-05-18
+**Last Updated**: 2026-07-21
 **Status**: IMPLEMENTED — All 8 phases complete (PRs #622-#629)
 **Result**: 50,124 lines of standalone mesh code, 1,151 unit tests, zero peat-protocol/peat-schema dependencies
 **Next Action**: README, examples, crates.io publish, Collection convenience API

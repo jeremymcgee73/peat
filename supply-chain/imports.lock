@@ -574,8 +574,8 @@ user-login = "taiki-e"
 user-name = "Taiki Endo"
 
 [[publisher.crossbeam-epoch]]
-version = "0.9.18"
-when = "2024-01-08"
+version = "0.9.20"
+when = "2026-07-06"
 user-id = 33035
 user-login = "taiki-e"
 user-name = "Taiki Endo"
@@ -623,8 +623,8 @@ user-login = "rozbb"
 user-name = "Michael Rosenberg"
 
 [[publisher.curve25519-dalek]]
-version = "5.0.0-pre.6"
-when = "2026-02-04"
+version = "5.0.0"
+when = "2026-07-06"
 user-id = 6979
 user-login = "rozbb"
 user-name = "Michael Rosenberg"
@@ -800,8 +800,8 @@ user-login = "rozbb"
 user-name = "Michael Rosenberg"
 
 [[publisher.ed25519-dalek]]
-version = "3.0.0-pre.7"
-when = "2026-05-06"
+version = "3.0.0-rc.0"
+when = "2026-05-28"
 user-id = 6979
 user-login = "rozbb"
 user-name = "Michael Rosenberg"
@@ -1277,32 +1277,32 @@ user-login = "lo48576"
 user-name = "YOSHIOKA Takuma"
 
 [[publisher.iroh]]
-version = "1.0.0-rc.1"
-when = "2026-05-27"
-user-id = 3079
-user-login = "dignifiedquire"
-user-name = "Friedel Ziegelmayer"
+version = "1.0.2"
+when = "2026-07-06"
+user-id = 192066
+user-login = "ramfox"
+user-name = "ramfox"
 
 [[publisher.iroh-base]]
-version = "1.0.0-rc.1"
-when = "2026-05-27"
-user-id = 3079
-user-login = "dignifiedquire"
-user-name = "Friedel Ziegelmayer"
+version = "1.0.3"
+when = "2026-07-20"
+user-id = 192066
+user-login = "ramfox"
+user-name = "ramfox"
 
 [[publisher.iroh-blobs]]
-version = "0.102.0"
-when = "2026-05-27"
+version = "0.103.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-dns]]
-version = "1.0.0-rc.1"
-when = "2026-05-27"
-user-id = 3079
-user-login = "dignifiedquire"
-user-name = "Friedel Ziegelmayer"
+version = "1.0.2"
+when = "2026-07-06"
+user-id = 192066
+user-login = "ramfox"
+user-name = "ramfox"
 
 [[publisher.iroh-io]]
 version = "0.6.2"
@@ -1312,50 +1312,57 @@ user-login = "rklaehn"
 user-name = "Rüdiger Klaehn"
 
 [[publisher.iroh-mdns-address-lookup]]
-version = "0.3.0"
-when = "2026-05-27"
+version = "0.4.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-metrics]]
-version = "1.0.0-rc.0"
-when = "2026-05-07"
+version = "1.0.1"
+when = "2026-06-15"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
+
+[[publisher.iroh-metrics-derive]]
+version = "1.0.1"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-relay]]
-version = "1.0.0-rc.1"
-when = "2026-05-27"
-user-id = 3079
-user-login = "dignifiedquire"
-user-name = "Friedel Ziegelmayer"
+version = "1.0.2"
+when = "2026-07-06"
+user-id = 192066
+user-login = "ramfox"
+user-name = "ramfox"
 
 [[publisher.iroh-tickets]]
-version = "1.0.0-rc.1"
-when = "2026-05-27"
+version = "1.0.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.iroh-util]]
-version = "0.5.0"
-when = "2026-05-27"
+version = "0.6.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.irpc]]
-version = "0.16.0"
-when = "2026-05-27"
+version = "0.17.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.irpc-derive]]
-version = "0.16.0"
-when = "2026-05-27"
+version = "0.17.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1580,18 +1587,18 @@ user-login = "havarnov"
 user-name = "Håvar Nøvik"
 
 [[publisher.n0-error]]
-version = "0.1.3"
-when = "2026-01-15"
-user-id = 67874
-user-login = "Frando"
-user-name = "Franz Heinzmann"
+version = "1.0.0"
+when = "2026-06-15"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
 
 [[publisher.n0-error-macros]]
-version = "0.1.3"
-when = "2026-01-15"
-user-id = 67874
-user-login = "Frando"
-user-name = "Franz Heinzmann"
+version = "1.0.0"
+when = "2026-06-15"
+user-id = 3079
+user-login = "dignifiedquire"
+user-name = "Friedel Ziegelmayer"
 
 [[publisher.n0-future]]
 version = "0.3.2"
@@ -1601,15 +1608,8 @@ user-login = "matheus23"
 user-name = "Philipp Krüger"
 
 [[publisher.n0-watcher]]
-version = "0.6.1"
-when = "2026-02-04"
-user-id = 172951
-user-login = "matheus23"
-user-name = "Philipp Krüger"
-
-[[publisher.n0-watcher]]
-version = "1.0.0-rc.0"
-when = "2026-05-06"
+version = "1.0.0"
+when = "2026-06-15"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1636,8 +1636,8 @@ user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.netdev]]
-version = "0.43.0"
-when = "2026-05-03"
+version = "0.45.0"
+when = "2026-06-16"
 user-id = 117934
 user-login = "shellrow"
 user-name = "Shintaro Ito"
@@ -1650,15 +1650,8 @@ user-login = "cathay4t"
 user-name = "Gris Ge"
 
 [[publisher.netlink-packet-route]]
-version = "0.29.0"
-when = "2026-02-19"
-user-id = 14819
-user-login = "cathay4t"
-user-name = "Gris Ge"
-
-[[publisher.netlink-packet-route]]
-version = "0.30.0"
-when = "2026-04-15"
+version = "0.31.0"
+when = "2026-06-10"
 user-id = 14819
 user-login = "cathay4t"
 user-name = "Gris Ge"
@@ -1678,8 +1671,8 @@ user-login = "cathay4t"
 user-name = "Gris Ge"
 
 [[publisher.netwatch]]
-version = "0.18.0"
-when = "2026-05-26"
+version = "0.19.1"
+when = "2026-06-29"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1692,22 +1685,22 @@ user-login = "SteveLauC"
 user-name = "SteveLauC"
 
 [[publisher.noq]]
-version = "1.0.0-rc.1"
-when = "2026-05-26"
+version = "1.0.1"
+when = "2026-06-29"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.noq-proto]]
-version = "1.0.0-rc.1"
-when = "2026-05-26"
+version = "1.1.1"
+when = "2026-07-29"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
 
 [[publisher.noq-udp]]
-version = "1.0.0-rc.1"
-when = "2026-05-26"
+version = "1.0.1"
+when = "2026-06-29"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -1881,8 +1874,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.peat]]
-version = "0.9.0-rc.28"
-when = "2026-06-24"
+version = "0.9.0-rc.32"
+when = "2026-08-03"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1895,8 +1888,8 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-ffi]]
-version = "0.2.9"
-when = "2026-06-24"
+version = "0.2.12"
+when = "2026-07-18"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1909,22 +1902,22 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-mesh]]
-version = "0.9.0-rc.44"
-when = "2026-07-05"
+version = "0.9.0-rc.59"
+when = "2026-08-03"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-protocol]]
-version = "0.9.0-rc.28"
-when = "2026-06-24"
+version = "0.9.0-rc.32"
+when = "2026-08-03"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-schema]]
-version = "0.9.0-rc.28"
-when = "2026-06-24"
+version = "0.9.0-rc.32"
+when = "2026-08-03"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -2007,8 +2000,8 @@ user-login = "taiki-e"
 user-name = "Taiki Endo"
 
 [[publisher.portmapper]]
-version = "0.18.0"
-when = "2026-05-26"
+version = "0.19.1"
+when = "2026-06-29"
 user-id = 3079
 user-login = "dignifiedquire"
 user-name = "Friedel Ziegelmayer"
@@ -2309,13 +2302,6 @@ when = "2025-12-29"
 user-id = 4556
 user-login = "djc"
 user-name = "Dirkjan Ochtman"
-
-[[publisher.rustls-pemfile]]
-version = "2.2.0"
-when = "2024-09-30"
-user-id = 2751
-user-login = "ctz"
-user-name = "Joe Birr-Pixton"
 
 [[publisher.rustls-pki-types]]
 version = "1.14.0"
@@ -3826,18 +3812,14 @@ user-login = "joshlf"
 user-name = "Joshua Liebow-Feeser"
 
 [[publisher.zeroize]]
-version = "1.8.2"
-when = "2025-09-29"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
+version = "1.9.0"
+when = "2026-06-12"
+trusted-publisher = "github:RustCrypto/utils"
 
 [[publisher.zeroize_derive]]
-version = "1.4.3"
-when = "2025-12-29"
-user-id = 267
-user-login = "tarcieri"
-user-name = "Tony Arcieri"
+version = "1.5.0"
+when = "2026-06-12"
+trusted-publisher = "github:RustCrypto/utils"
 
 [[publisher.zerotrie]]
 version = "0.2.3"

@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.31"
+version = "0.9.0-rc.32"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -288,7 +288,13 @@ repository = "https://github.com/defenseunicorns/peat"
 # `NetworkedIrohBlobStore::fetch_blob_from_peer` (peat#1013 direct-P2P blob
 # transfer), which this workspace's new `blob_fetch_start` UniFFI export
 # consumes directly.
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "f8e6fdca3bfe5817836fb48026e18328e6b8ddb9", default-features = false }
+#
+# Floor bumped to rc.59 (2026-08-03) — peat-mesh#358 exposes the
+# canonical accept-side formation authentication function paired with
+# `respond_to_formation_auth`. peat-protocol removes its incompatible
+# parallel handshake and calls both transport-owned halves directly.
+# Temporarily pin peat-mesh#361 until its stale-path reaccept fix releases.
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "e49a5521789820f7a6c3c855a7580af93eb3783f", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

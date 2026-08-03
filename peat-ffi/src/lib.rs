@@ -982,10 +982,9 @@ async fn connect_peer_inner(
         return Ok(());
     };
 
-    // The AutomergeIrohBackend accept loop uses peat-protocol's responder, so
-    // the dial side must use the matching peat-protocol wire format.
-    if let Err(e) = peat_protocol::network::perform_initiator_handshake(&conn, &formation_key).await
-    {
+    // Use peat-mesh's canonical connector half; the peer's protocol accept
+    // loop uses the paired `accept_formation_auth` implementation.
+    if let Err(e) = peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn).await {
         conn.close(1u32.into(), b"authentication failed");
         iroh_transport.disconnect(&peer_id).ok();
         return Err(PeatError::ConnectionError {
@@ -2414,8 +2413,8 @@ async fn dial_peer_and_sync(
         return true;
     };
 
-    // Match the peat-protocol responder owned by AutomergeIrohBackend.
-    match peat_protocol::network::perform_initiator_handshake(&conn, &formation_key).await {
+    // Use the same canonical connector half as `connect_peer_inner`.
+    match peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn).await {
         Ok(()) => {
             iroh_transport.emit_peer_connected(peer_id);
             if let Some(coordinator) = storage_backend.sync_coordinator() {
@@ -4068,6 +4067,99 @@ mod tests {
             assert!(
                 connected,
                 "node_b must join node_a's connected_peers after a background connect_peer_nowait dial"
+            );
+        }
+
+        /// Regression for peat#1045: blocking connect must authenticate through
+        /// the exported FFI surface on both peers, then carry document sync.
+        #[test]
+        fn blocking_connect_authenticates_both_peers_and_syncs_document() {
+            let tmp_a = tempfile::tempdir().unwrap();
+            let tmp_b = tempfile::tempdir().unwrap();
+            let node_a = create_node(test_cfg(tmp_a.path().to_str().unwrap())).expect("node_a");
+            let node_b = create_node(test_cfg(tmp_b.path().to_str().unwrap())).expect("node_b");
+
+            node_a.start_sync().expect("start node_a sync");
+            node_b.start_sync().expect("start node_b sync");
+
+            let node_a_id = node_a.node_id();
+            let node_b_id = node_b.node_id();
+            let peer_b = PeerInfo {
+                name: "node-b".to_string(),
+                node_id: node_b_id.clone(),
+                addresses: vec![node_b
+                    .endpoint_socket_addr()
+                    .expect("node_b must report a bound loopback socket addr")],
+                relay_url: None,
+            };
+
+            node_a
+                .connect_peer(peer_b)
+                .expect("matching FFI nodes must complete formation authentication");
+
+            let peers_converged = (0..120).any(|_| {
+                if node_a.connected_peers().contains(&node_b_id)
+                    && node_b.connected_peers().contains(&node_a_id)
+                {
+                    true
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    false
+                }
+            });
+            assert!(
+                peers_converged,
+                "both peers must report the authenticated connection"
+            );
+
+            node_a
+                .put_document("ffi-handshake", "doc-1", r#"{"value":1}"#)
+                .expect("put source document");
+            node_a
+                .sync_document("ffi-handshake", "doc-1")
+                .expect("sync source document");
+
+            let document_converged = (0..120).any(|_| {
+                if node_b
+                    .get_document("ffi-handshake", "doc-1")
+                    .expect("read destination document")
+                    .as_deref()
+                    == Some(r#"{"value":1}"#)
+                {
+                    true
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    false
+                }
+            });
+            assert!(
+                document_converged,
+                "document written through the exported node API must converge"
+            );
+
+            node_b
+                .put_document("ffi-handshake", "doc-2", r#"{"value":2}"#)
+                .expect("put reverse source document");
+            node_b
+                .sync_document("ffi-handshake", "doc-2")
+                .expect("sync reverse source document");
+
+            let reverse_document_converged = (0..120).any(|_| {
+                if node_a
+                    .get_document("ffi-handshake", "doc-2")
+                    .expect("read reverse destination document")
+                    .as_deref()
+                    == Some(r#"{"value":2}"#)
+                {
+                    true
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    false
+                }
+            });
+            assert!(
+                reverse_document_converged,
+                "document written through the reverse exported node API must converge"
             );
         }
 

@@ -117,7 +117,6 @@ async fn test_automerge_three_node_mesh() {
 
     // Full mesh: Connect ALL pairs in BOTH directions for bidirectional sync.
     // This ensures sync works from any node to any other node.
-    use peat_protocol::network::formation_handshake::perform_initiator_handshake;
 
     // Node1 → Node2
     if let Some(conn) = transport1
@@ -125,7 +124,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect node1 to node2")
     {
-        perform_initiator_handshake(&conn, &formation_key1)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key1, &conn)
             .await
             .expect("Should authenticate node1 to node2");
         println!("    Node1 → Node2 connected");
@@ -137,7 +136,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect node1 to node3")
     {
-        perform_initiator_handshake(&conn, &formation_key1)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key1, &conn)
             .await
             .expect("Should authenticate node1 to node3");
         println!("    Node1 → Node3 connected");
@@ -149,7 +148,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect node2 to node1")
     {
-        perform_initiator_handshake(&conn, &formation_key2)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key2, &conn)
             .await
             .expect("Should authenticate node2 to node1");
         println!("    Node2 → Node1 connected");
@@ -161,7 +160,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect node2 to node3")
     {
-        perform_initiator_handshake(&conn, &formation_key2)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key2, &conn)
             .await
             .expect("Should authenticate node2 to node3");
         println!("    Node2 → Node3 connected");
@@ -173,7 +172,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect node3 to node1")
     {
-        perform_initiator_handshake(&conn, &formation_key3)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key3, &conn)
             .await
             .expect("Should authenticate node3 to node1");
         println!("    Node3 → Node1 connected");
@@ -185,7 +184,7 @@ async fn test_automerge_three_node_mesh() {
         .await
         .expect("Should connect node3 to node2")
     {
-        perform_initiator_handshake(&conn, &formation_key3)
+        peat_mesh::storage::respond_to_formation_auth(&formation_key3, &conn)
             .await
             .expect("Should authenticate node3 to node2");
         println!("    Node3 → Node2 connected");

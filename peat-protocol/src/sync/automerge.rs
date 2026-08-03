@@ -1645,7 +1645,6 @@ impl AutomergeIrohBackend {
     /// ```
     #[cfg(feature = "automerge-backend")]
     pub async fn connect_to_discovered_peers_now(&self) -> Result<usize> {
-        use crate::network::formation_handshake::perform_initiator_handshake;
         use crate::network::PeerInfo as NetworkPeerInfo;
 
         let formation_key = self
@@ -1691,7 +1690,9 @@ impl AutomergeIrohBackend {
                         }
 
                         // New connection - perform formation handshake
-                        match perform_initiator_handshake(&conn, &formation_key).await {
+                        match peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn)
+                            .await
+                        {
                             Ok(()) => {
                                 tracing::debug!(
                                     "Immediate connect: authenticated with peer {}",
@@ -2453,8 +2454,6 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let formation_key_accept = formation_key.clone();
 
             tokio::spawn(async move {
-                use crate::network::formation_handshake::perform_responder_handshake;
-
                 // Issue #346: Track consecutive errors to detect permanent failures
                 let mut consecutive_errors = 0u32;
                 const MAX_CONSECUTIVE_ERRORS: u32 = 10;
@@ -2470,7 +2469,12 @@ impl PeerDiscovery for IrohPeerDiscovery {
                             let peer_id = conn.remote_id();
 
                             // Perform formation handshake to authenticate peer
-                            match perform_responder_handshake(&conn, &formation_key_accept).await {
+                            match peat_mesh::storage::accept_formation_auth(
+                                &formation_key_accept,
+                                &conn,
+                            )
+                            .await
+                            {
                                 Ok(()) => {
                                     // Issue #346: Emit Connected AFTER successful handshake
                                     transport.emit_peer_connected(peer_id);
@@ -2565,8 +2569,6 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let availability_check = self.peer_availability_check.clone();
 
             tokio::spawn(async move {
-                use crate::network::formation_handshake::perform_initiator_handshake;
-
                 tracing::info!("Starting mDNS discovery event handler");
                 let mut stream = mdns.subscribe().await;
 
@@ -2617,8 +2619,11 @@ impl PeerDiscovery for IrohPeerDiscovery {
                             match transport.connect_by_id(peer_id).await {
                                 Ok(Some(conn)) => {
                                     // New connection - perform formation handshake
-                                    match perform_initiator_handshake(&conn, &formation_key_mdns)
-                                        .await
+                                    match peat_mesh::storage::respond_to_formation_auth(
+                                        &formation_key_mdns,
+                                        &conn,
+                                    )
+                                    .await
                                     {
                                         Ok(()) => {
                                             tracing::info!(
@@ -2781,12 +2786,11 @@ impl PeerDiscovery for IrohPeerDiscovery {
                         }
                         match transport.connect_peer(&peer).await {
                             Ok(Some(conn)) => {
-                                // Dial-side formation auth MUST use peat-mesh's
-                                // `respond_to_formation_auth` (peat-mesh#267): the
-                                // rc.43 acceptor runs `run_formation_auth`, and
-                                // peat-protocol's legacy `perform_initiator_handshake`
-                                // speaks a different wire format that peers reject.
-                                match peat_mesh::storage::mesh_sync_transport::respond_to_formation_auth(
+                                // Authentication is transport-owned: use
+                                // peat-mesh's canonical connector half, paired
+                                // with `accept_formation_auth` on accepted
+                                // connections.
+                                match peat_mesh::storage::respond_to_formation_auth(
                                     &formation_key_peat,
                                     &conn,
                                 )
@@ -2840,7 +2844,6 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let availability_check_topology = self.peer_availability_check.clone();
 
             tokio::spawn(async move {
-                use crate::network::formation_handshake::perform_initiator_handshake;
                 use crate::network::PeerInfo as NetworkPeerInfo;
 
                 // Take the receiver from the mutex
@@ -2938,9 +2941,9 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                         }
 
                                         // Perform formation handshake
-                                        match perform_initiator_handshake(
-                                            &conn,
+                                        match peat_mesh::storage::respond_to_formation_auth(
                                             &formation_key_topology,
+                                            &conn,
                                         )
                                         .await
                                         {
@@ -3025,7 +3028,6 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let availability_check_periodic = self.peer_availability_check.clone();
 
             tokio::spawn(async move {
-                use crate::network::formation_handshake::perform_initiator_handshake;
                 use crate::network::iroh_transport::TransportPeerEvent;
                 use crate::network::PeerInfo as NetworkPeerInfo;
 
@@ -3155,8 +3157,11 @@ impl PeerDiscovery for IrohPeerDiscovery {
                                     }
 
                                     // New connection - perform formation handshake
-                                    match perform_initiator_handshake(&conn, &formation_key_connect)
-                                        .await
+                                    match peat_mesh::storage::respond_to_formation_auth(
+                                        &formation_key_connect,
+                                        &conn,
+                                    )
+                                    .await
                                     {
                                         Ok(()) => {
                                             tracing::info!(
@@ -3335,10 +3340,10 @@ impl PeerDiscovery for IrohPeerDiscovery {
         // Perform formation handshake to authenticate (only if we got a new connection)
         #[cfg(feature = "automerge-backend")]
         if let Some(conn) = conn_opt {
-            use crate::network::formation_handshake::perform_initiator_handshake;
-
             let endpoint_id = conn.remote_id();
-            if let Err(e) = perform_initiator_handshake(&conn, &formation_key).await {
+            if let Err(e) =
+                peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn).await
+            {
                 // Authentication failed - close the connection
                 // Issue #346: Don't call disconnect() here - the connection
                 // in the map might be a different one after conflict resolution.
@@ -3588,8 +3593,8 @@ impl SyncEngine for IrohSyncEngine {
 
                 // New connection - perform formation handshake
                 if let Some(ref formation_key) = self.formation_key {
-                    use crate::network::formation_handshake::perform_initiator_handshake;
-                    match perform_initiator_handshake(&conn, formation_key).await {
+                    match peat_mesh::storage::respond_to_formation_auth(formation_key, &conn).await
+                    {
                         Ok(()) => {
                             tracing::info!(
                                 peer_endpoint = %endpoint_id_hex,

@@ -1,9 +1,9 @@
 # ADR-060: Encryption Tiers — At-Rest and In-Transit Across the Peat Stack
 
-**Status**: Proposed
+**Status**: Proposed (membership-authentication boundary clarified 2026-07-21)
 **Date**: 2026-05-18
 **Authors**: Kit Plummer
-**Related**: ADR-006 (Security Architecture), ADR-016 (TTL and Data Lifecycle), ADR-034 (Deletion and Tombstones), ADR-042 (UDP Bypass), ADR-044 (E2E Encryption and Key Management), ADR-049 (peat-mesh Extraction)
+**Related**: ADR-006 (Security Architecture), ADR-016 (TTL and Data Lifecycle), ADR-034 (Deletion and Tombstones), ADR-042 (UDP Bypass), ADR-044 (E2E Encryption and Key Management), ADR-048 (Membership Certificates), ADR-049 (peat-mesh Extraction), ADR-055 (Peat Gateway)
 **Triggered by**: peat-node #55 (filtered observe), peat-mesh #124 (Cipher trait), cross-peer regression discovered while implementing the above
 
 ---
@@ -53,6 +53,14 @@ Adversaries this ADR addresses, with explicit naming:
 | **T6** | Malicious formation member with payload key (insider) | Fully authenticated, fully privileged. ADR-044's MLS / membership-cert work addresses this; out of scope here. |
 
 This ADR's primary contribution is making T3 and **T4** first-class. T4 in particular has been provided accidentally by the old peat-node envelope and would have been silently removed by the proposed peat-mesh #124 refactor. T4 is a real and load-bearing role for tactical deployments — observers, joint-operations partners, archival nodes — and the design must preserve it deliberately rather than by side effect.
+
+### Membership-authentication boundary (2026-07-21 clarification)
+
+T2, T4, and T6 above describe the currently deployed FormationKey gate: possession of the formation-wide secret is sufficient to pass the HMAC challenge. Membership certificates add individual identity, expiry, tier, permission, and revocation claims, but those claims are an authorization boundary only where the node runtime configures and enforces certificate validation.
+
+This ADR does not decide that enforcement protocol. A future certificate-enforced model must subdivide the threat model into at least: a FormationKey holder without a valid certificate, a valid certified member without the payload key, an expired or revoked member, and a certified member with the payload key. The key hierarchy and T3/T4 encryption conclusions remain valid, but FormationKey possession must not be treated as proof that gateway-issued certificate claims were evaluated.
+
+ADR-006 and ADR-048 own the follow-up admission decision; ADR-055 blocks managed-runtime cutover on that alignment.
 
 ---
 
@@ -224,10 +232,23 @@ Per driver #6, every primitive used by this ADR's encryption tiers must be FIPS 
 | AEAD (field-value cipher, substrate at-rest cipher) | **AES-256-GCM** | NIST SP 800-38D | Fresh 96-bit nonce per encryption; never derive deterministically. |
 | KDF (FormationKey → at-rest key) | **HKDF-SHA-256** | NIST SP 800-56C / SP 800-108 | Context string `"peat-mesh/at-rest/v1"`; versioned (§Open Questions #2). |
 | Signatures (existing — peer identity, ADR-006) | **Ed25519** | FIPS 186-5 (Feb 2023) | Approved as of FIPS 186-5; current ecosystem usage is compatible. |
-| Key agreement (peer identity, where used) | **ECDH-P256** preferred; X25519 only with explicit caveat | NIST SP 800-56A (ECDH); SP 800-186 lists Curve25519 but CMVP coverage of ECDH-with-X25519 is uneven | Flag X25519 references for explicit review during the ADR-006/044 amendments. |
+| Key agreement (peer identity, where used) | **ECDH-P256 / ECDH-P384** | NIST SP 800-56A | P-256 is the ecosystem default; X25519 is not permitted as the default. |
 | MAC (where used) | **HMAC-SHA-256** | FIPS 198-1 | — |
 | Hash | **SHA-256 / SHA-384** | FIPS 180-4 | — |
 | TLS / QUIC (Iroh) | **rustls under FIPS-mode provider** (e.g. `aws-lc-rs`) | rustls FIPS profile; aws-lc-rs is CMVP-validated | Iroh's quinn/rustls stack must be configured with a FIPS provider in deployments claiming FIPS posture. Default `ring` backend is **not** FIPS-validated. |
+
+**peat-btle provider and wire posture.** The peat-btle #75 migration routes
+mesh-wide and per-peer AEAD, ECDH, HKDF, HMAC, and hashing through `aws-lc-rs`.
+Normal builds use the regular AWS-LC provider with only the approved algorithms
+in this table; validated deployment packaging selects the crate's mutually
+exclusive `fips` feature, which links `aws-lc-fips-sys`. A binary may claim use
+of the validated module only when built with that feature.
+
+The migration is a clean wire and identity cutover: mesh-encrypted documents
+and per-peer E2EE messages carry crypto version 2, encrypted beacons carry
+version 3, ECDH public keys use 65-byte uncompressed SEC1 P-256 encoding, and
+NodeId/mesh-key derivations change to SHA-256/HKDF-SHA-256. Receivers reject
+earlier crypto versions; mixed-version encrypted meshes are unsupported.
 
 **Explicit non-choices:**
 
@@ -724,7 +745,7 @@ Driver #6 supersedes ChaCha20-Poly1305 references elsewhere in the ecosystem. Th
 This ADR commits ecosystem-spanning design decisions that touch sibling repos. Tracking the cross-repo work explicitly so the contracted shapes don't drift:
 
 - **peat-mesh AEAD + DH primitive swap.** AES-256-GCM + ECDH-P256 in `src/security/encryption.rs` + `src/transport/bypass.rs`. Landed on `feat/cipher-trait-and-fips-aead-swap` (peat-mesh PR #125). When peat-mesh #125 merges, **peat-protocol** (workspace member in this repo at `peat-protocol/src/security/encryption.rs:42-46`) requires a coordinated one-line test update (`shared.as_bytes()` → `shared.raw_secret_bytes().as_slice()`); track as a follow-up commit in this repo's next workspace-deps bump.
-- **peat-btle AEAD + DH primitive swap.** AES-256-GCM + ECDH-P256 in `src/security/mesh_key.rs` + `src/security/peer_key.rs` + `src/security/peer_session.rs`. Wire format `KeyExchangeMessage` grows 37 → 38 bytes. Landed on `feat/fips-aead-and-ecdh-swap` (peat-btle PR #62). Pre-production swap, no live peers — wire-compat work not needed.
+- **peat-btle approved-primitive migration.** Tracked by [peat-btle #75](https://github.com/defenseunicorns/peat-btle/issues/75). The migration covers AES-256-GCM, ECDH-P256, HKDF/HMAC-SHA-256, SHA-256 identity and beacon derivation, and explicit regular-versus-validated AWS-LC provider selection. `KeyExchangeMessage` grows from 37 to 71 bytes because it adds a version byte and replaces the 32-byte X25519 key with a 65-byte uncompressed SEC1 P-256 key. Mesh encryption and E2EE wire versions reject older peers; the NodeId and mesh-key derivation changes also make this a clean identity cutover.
 - **peat-registry `RegistryClient` adapter.** §Decision §6.5 specifies an encrypt-on-push / decrypt-on-pull adapter on the `RegistryClient` trait with plaintext-offset checkpoint semantics. **Not yet acked by peat-registry maintainers** — file a tracking issue in peat-registry referencing this section + open a coordination thread before Phase E starts implementation. The RPC/trait shape committed here is the ecosystem-level decision; the sibling-repo PR may push back on specific signature details.
 - **peat-sim `encryption_mode` parameter on `NetworkedIrohBlobStore::create_blob_from_bytes`.** §Decision §6.6 specifies the signature change. **Not yet acked by peat-sim maintainers** — same coordination path as peat-registry.
 - **peat-node `SendAttachments` proto extension.** §Decision §6.4 + Phase E specify `EncryptionMode encryption_mode` on `FileSpec` + the narrowing of the `bundle_id` idempotency contract to `DETERMINISTIC` mode only. peat-node consumer-side amendment to land alongside Phase E.
@@ -735,6 +756,8 @@ The cross-repo amendments table above will be removed from this ADR once each ro
 ---
 
 ## Decision log
+
+**2026-07-21**: Clarified that T2, T4, and T6 describe the currently deployed FormationKey admission gate, not universal membership-certificate enforcement. Gateway-issued certificate claims become an authorization boundary only after ADR-006/048 define and node runtimes implement the transport-neutral presentation, proof-of-possession, expiry, and revocation contract required by ADR-055 Amendment C.
 
 **2026-05-18**: Initial draft. Substrate cipher (peat-mesh #124, already coded but not committed) repositioned as Phase A defense-in-depth, deriving its key from FormationKey via HKDF. New per-collection posture axis (`Plaintext` / `FieldValues` / `FullOpacity`) introduced as Phase B. Per-field encryption at the sidecar layer added as Phase B. Attachments deferred to a follow-up ADR. The Phase 2 peat-node working tree from the original "Path Z" approach is to be repurposed: keep the `DocumentStore` migration and the substrate `Cipher` trait, replace the sidecar-side `StoreCipher` with a field-level `FieldCipher`.
 

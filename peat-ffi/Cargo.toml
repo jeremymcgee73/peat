@@ -82,7 +82,13 @@ name = "peat-ffi"
 # `default-features = false` and select their protocol features explicitly,
 # avoiding duplicate symbols while the adapter migrates to its consumer repo.
 # The standard UniFFI and JNI surfaces are unchanged. See peat#1030.
-version = "0.2.12"
+#
+# 0.2.13 (was 0.2.12): fixes formation authentication between two nodes
+# created through the exported FFI surface. Dial and accept now use
+# peat-mesh's single versioned handshake, restoring authenticated
+# bidirectional document sync without changing UniFFI or JNI signatures.
+# See peat#1045.
+version = "0.2.13"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
@@ -153,9 +159,9 @@ uniffi = { version = "0.31", features = ["cli", "tokio"] }
 jni = "0.21"
 
 # Peat crates - no ditto-backend for Android cross-compilation
-peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.31", default-features = false }
+peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.32", default-features = false }
 # Proto-generated types (ADR-074: single source of truth for message schemas)
-peat-schema = { path = "../peat-schema", version = "=0.9.0-rc.31" }
+peat-schema = { path = "../peat-schema", version = "=0.9.0-rc.32" }
 # peat-mesh direct for blob storage (ADR-060). Pulls NetworkedIrohBlobStore
 # which we use behind the peat_mesh::storage::BlobStore trait.
 peat-mesh = { workspace = true, optional = true }

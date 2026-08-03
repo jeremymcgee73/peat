@@ -4,21 +4,22 @@
 **Date**: 2026-03-10
 **Authors**: Kit Plummer
 **Organization**: (r)evolve - Revolve Team LLC (https://revolveteam.com)
-**Relates To**: ADR-043 (Consumer Interface Adapters), ADR-045 (Zarf/UDS Integration), ADR-048 (Membership Certificates), ADR-049 (Peat-Mesh Extraction), ADR-050 (SDK Integration), ADR-054 (UDS Registry Replication)
+**Relates To**: ADR-006 (Security Architecture), ADR-043 (Consumer Interface Adapters), ADR-045 (Zarf/UDS Integration), ADR-048 (Membership Certificates), ADR-049 (Peat-Mesh Extraction), ADR-050 (SDK Integration), ADR-054 (UDS Registry Replication), ADR-060 (Encryption Tiers), ADR-075 (Top-Level Rust Facade)
 
 **Amendments**:
 - **2026-05-08 — Amendment A: Full-duplex NATS flow.** Adds control-plane ingress (subscriber path) alongside the original CDC egress (publisher) treatment. NATS becomes a bidirectional channel; Kafka and Redis Streams remain egress-only. See "2a. Control-Plane Ingress (Amendment A — NATS)" below. Tracking: peat#839, peat-gateway#91, peat-gateway#94.
 - **2026-05-09 — Amendment B: Subject-schema clarification.** Supersedes Amendment A's two-pattern subject design (`{org}.ctl.>` + `{org}.{app}.ctl.>`), which JetStream rejects with error 10052 because the two patterns overlap (`{org}.ctl.ctl.<x>` matches both). Replaces them with a single per-org pattern `{org}.{app}.ctl.>` plus a reserved sentinel `app_id = "_org"` for org-level lifecycle events (e.g. `acme._org.ctl.formations.create`). The reservation is enforced at the tenant-manager layer — see "2a. Control-Plane Ingress" below for the revised tables. Tracking: peat#842, peat-gateway#91, peat-gateway#106.
+- **2026-07-21 — Amendment C: Control-plane / formation-runtime boundary.** Separates the enterprise control plane and authority boundary from formation-scoped mesh execution. `peat-gateway` retains tenancy, identity federation, authority-key custody, enrollment policy, CDC routing, and workload reconciliation; a formation-scoped `peat-node` owns Automerge/Iroh persistence, discovery, and sync. Direct `peat-mesh` use remains a supported transitional authority path until the managed-runtime service contract satisfies the migration gates below. Tracking: peat#1039.
 
 ---
 
 ## Executive Summary
 
-`peat-mesh-node` is a single-formation, single-authority mesh node for tactical edge deployment. Enterprise and cloud environments need a dedicated, horizontally scalable control plane — `peat-gateway` — providing multi-org tenancy, CDC to external event streams, IDAM/ICAM-federated enrollment, an admin UI, and first-class Zarf/UDS packaging for air-gapped deployment.
+`peat-node` is a single-formation mesh runtime for tactical edge and co-located application deployment. Enterprise and cloud environments need a dedicated, horizontally scalable control plane — `peat-gateway` — providing multi-org tenancy, CDC to external event streams, IDAM/ICAM-federated enrollment, an admin UI, and first-class Zarf/UDS packaging for air-gapped deployment.
 
 ## Context
 
-`peat-mesh-node` participates in one mesh, manages one certificate store, and exposes a broker API for local consumers. This is the right design for a tactical edge node, but enterprise deployments need:
+`peat-node` participates in one formation, owns an Automerge/Iroh runtime, and exposes a Connect/gRPC API for co-located consumers. This is the right design for a formation-scoped data plane, but enterprise deployments need:
 
 - **Multi-tenancy**: Multiple organizations sharing a gateway instance, each with independent formations (app IDs), isolated key material, and separate data paths.
 - **Change Data Capture (CDC)**: CRDT document mutations must flow to external event infrastructure — Kafka, NATS, Redis Streams — for downstream analytics, audit, and integration pipelines.
@@ -28,13 +29,13 @@
 
 **Amended 2026-05-08 (Amendment A)**: The gateway is also a *consumer* of control-plane events on NATS — formation lifecycle, peer enrollment requests, certificate revocations, and IdP claim refreshes can originate from external orchestration systems and arrive over the same broker the gateway publishes CDC events to. NATS therefore needs to be designed as a bidirectional integration, not a one-way sink.
 
-None of these belong in `peat-mesh-node` — they require a dedicated service.
+These enterprise concerns require a dedicated gateway service; they do not belong in the formation-scoped node runtime.
 
 ## Decision
 
 ### Introduce `peat-gateway`
 
-A new standalone repository (`defenseunicorns/peat-gateway`) that depends on `peat-mesh` as a library and provides the enterprise control plane layer. Same pattern as `peat-registry`.
+A new standalone repository (`defenseunicorns/peat-gateway`) provides the enterprise control plane layer. The current implementation consumes `peat-mesh` directly for genesis, certificate, document-observation, and broker contracts. Amendment C narrows the target boundary: direct library integration remains transitional for authority operations, while formation-scoped mesh execution moves behind a managed `peat-node` service contract.
 
 ### Tenancy Model
 
@@ -526,16 +527,58 @@ Base image: Chainguard `glibc-dynamic` for minimal CVE surface (consistent with 
 
 **Separate repo**: `defenseunicorns/peat-gateway`. The gateway has a fundamentally different dependency tree (rdkafka, OIDC client, SAML parser, Postgres driver, admin UI assets), release cycle, and deployment model from the mesh library. Same pattern as `peat-registry`.
 
-```toml
-[dependencies]
-peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
-```
+Dependency selection follows the boundary in Amendment C:
+
+- **Current / transitional authority path:** depend directly on the narrow `peat-mesh` security surface required for genesis and certificate operations.
+- **In-process Peat semantics:** prefer the top-level `peat` facade and its `peat::protocol` namespace per ADR-075. A specialized consumer MAY depend directly on `peat-protocol`, which retains compatibility re-exports of `peat-schema` and `peat-mesh`.
+- **Managed formation runtime:** depend on a published, versioned `peat-node` client/protobuf contract rather than composing another Automerge/Iroh runtime.
+- Consumers SHOULD NOT independently pin `peat-mesh`, `peat-schema`, and `peat-protocol`; general Rust integrations use the tested `peat` compatibility set, while specialized integrations select only the component boundary they require.
+
+### Amendment C: Control Plane and Formation Runtime Boundary
+
+The architecture above records the original in-process design. This amendment supersedes the parts that place formation-scoped Automerge/Iroh execution inside the gateway process. It does not change the gateway's enterprise responsibilities or move root authority material into the node runtime.
+
+#### Responsibility boundary
+
+| Component | Owns | Does not own |
+|---|---|---|
+| `peat-gateway` | Organizations, formation lifecycle, IDAM/ICAM policy, root authority and KMS custody, enrollment decisions, CDC routing, audit, admin APIs, runtime reconciliation | Automerge/Iroh composition after managed-runtime cutover; peer election or role-scoring loops |
+| Formation-scoped `peat-node` | One formation's document store, Iroh endpoint, peer discovery, reconnect, sync lifecycle, and blob distribution | Multi-org policy, root authority custody, enterprise identity decisions |
+| Optional per-node coordinator | Deterministic `peat-protocol` coordination such as election, role scoring, and formation gating | Central enterprise tenancy or cross-peer authoritative decisions |
+
+The gateway MAY reconcile and configure per-formation node workloads. It MUST NOT compute deterministic peer coordination centrally on behalf of the formation; coordination remains peer-equal and co-located with participating nodes.
+
+Root formation authority keys remain in the gateway/KMS trust boundary. A managed node receives only scoped participation and runtime material. The gateway MUST NOT place an unwrapped root authority key in a node data volume or node configuration.
+
+#### Runtime cardinality and ownership
+
+The baseline deployment assigns a dedicated node runtime to each active formation. A node process remains single-formation even when one gateway manages many formations. Deployments MAY run multiple formation participants for availability, but at most one gateway replica owns reconciliation and CDC cursor advancement for a formation at a time. Ownership uses a lease or equivalent fencing mechanism; duplicate observers must not produce uncoordinated cursor advancement.
+
+The gateway reconciles workloads through the deployment platform. It does not spawn child node processes or attempt to add containers dynamically to an existing gateway pod.
+
+#### Managed-runtime service contract
+
+Cutover from direct mesh execution is gated on a versioned contract that provides:
+
+1. **Reusable client artifact** — a published generated client or independently versioned protobuf package; consumers do not copy the node proto.
+2. **Compatibility negotiation** — API version, schema version, mesh/protocol compatibility, and capability reporting.
+3. **Authenticated control channel** — a permissioned Unix socket for strict co-location or mutually authenticated workload identity across pods, scoped to one formation.
+4. **Durable change feed** — an explicit snapshot boundary, opaque resume cursor, tombstone replay, stable event identity, and acknowledgment semantics compatible with at-least-once CDC.
+5. **Credential lifecycle** — scoped provisioning, rotation, revocation, drain, and deletion without exposing root authority material.
+6. **Runtime reconciliation** — stable identity, persistent storage, readiness, ownership fencing, restart recovery, and destructive-deletion semantics.
+7. **Security-model alignment** — a decided relationship between FormationKey admission and membership-certificate enforcement, as tracked by ADR-006, ADR-048, and ADR-060.
+
+`Subscribe`-style snapshot-plus-live delivery without a resume cursor is not sufficient for the gateway's at-least-once CDC guarantee. The CDC contract is intentionally producer-independent: an in-process `DocumentStore` may satisfy it during migration, and a managed node may satisfy it after the gates above are met.
+
+#### Migration state
+
+This amendment defines a target boundary, not an assertion that the cutover is implemented. Until all gates are met, the gateway MAY continue direct `peat-mesh` integration for authority and formation-observation behavior. Callers and operator documentation MUST distinguish the current in-process path from the managed-runtime target.
 
 ## Consequences
 
 ### Positive
 
-- Enterprise deployments get a production-ready control plane without forking `peat-mesh-node`
+- Enterprise deployments get a production-ready control plane without forking or overloading `peat-node`
 - Org-level multi-tenancy enables SaaS and shared-infrastructure deployments
 - CDC enables integration with existing enterprise data pipelines and SIEM/audit systems
 - IDAM integration removes the need for static enrollment tokens in production
@@ -552,6 +595,7 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - Admin UI is a separate frontend stack (SvelteKit) to maintain
 - Zarf packaging and UDS integration adds CI/CD complexity
 - *(Amendment A)* NATS surface is now bidirectional — per-org broker ACL discipline becomes a tenant isolation boundary, increasing operational and review burden
+- *(Amendment C)* Formation-scoped workloads add deployment, PVC, identity, version-compatibility, and lifecycle-reconciliation overhead
 
 ### Risks
 
@@ -560,6 +604,8 @@ peat-mesh = { version = "0.5", features = ["automerge-backend", "broker"] }
 - Multi-org key management (many root keypairs) increases blast radius of gateway compromise — mitigate with KMS delegation
 - Org isolation bugs could leak data across tenants — requires thorough integration testing
 - *(Amendment A)* Misconfigured per-org NATS ACLs could enable cross-tenant control-plane writes — mitigated by defence in depth (broker ACL + in-process `org_id` revalidation) and asserted in functional tests
+- *(Amendment C)* A node service boundary without authenticated RPC or durable replay would weaken tenant isolation and CDC guarantees; cutover is prohibited until the managed-runtime gates are met
+- *(Amendment C)* FormationKey admission and gateway-issued certificate claims are not yet one enforced authorization contract; ADR-006/048/060 must resolve the relationship before certificates are represented as a mesh admission boundary
 
 ## Implementation Phases
 

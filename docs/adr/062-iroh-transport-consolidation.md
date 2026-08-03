@@ -49,9 +49,18 @@ To support the call sites peat-protocol currently has, peat-mesh adds a small la
 
 ### What peat-protocol still owns
 
-- The **formation handshake** (`peat-protocol/src/network/formation_handshake.rs::perform_initiator_handshake`). This is a protocol-level concern (Ed25519 challenge, formation-key verification), not transport. peat-mesh's `IrohTransport::connect_*` returns the raw `iroh::Connection`; the handshake runs on the caller side after connect.
-- The **sync coordinator** (`peat-protocol/src/sync/automerge.rs`). The sync loop, `peer_discovery()`, the `PeerAvailabilityCheck` gates added in peat#874/#917 — all stay. They just call peat-mesh's transport surface instead of peat-protocol's.
-- The **`AutomergeIrohBackend`** trait adapter at `sync/automerge.rs:1240`. Inner `AutomergeBackend` still drives sync; the adapter is unchanged.
+- The **sync coordinator** (`peat-protocol/src/sync/automerge.rs`). The sync
+  loop, `peer_discovery()`, and availability gates stay in peat-protocol while
+  invoking peat-mesh's transport surface.
+- The **`AutomergeIrohBackend`** trait adapter at
+  `sync/automerge.rs:1240`.
+
+**Amendment (2026-08-03, peat#1045 / peat-mesh#358):** formation
+authentication is transport-owned. The earlier protocol-owned handshake
+duplicated peat-mesh's versioned wire protocol and became incompatible with
+its acceptor. `peat-protocol/src/network/formation_handshake.rs` is removed;
+custom Iroh lifecycle owners use
+`peat_mesh::storage::{respond_to_formation_auth, accept_formation_auth}`.
 
 ### What's deleted
 

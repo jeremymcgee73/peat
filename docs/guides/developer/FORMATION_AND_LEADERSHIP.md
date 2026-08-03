@@ -138,32 +138,30 @@ let key = FormationKey::new(formation_id, &shared_secret_32);
 
 ### The handshake
 
-When one node dials another, they run a challenge-response over a dedicated ALPN before
-any state is exchanged (`peat_protocol::network::formation_handshake`):
+When one node dials another, peat-mesh runs a versioned challenge-response on
+the accepted sync connection before any state is exchanged:
 
 ```rust
-use peat_protocol::network::formation_handshake::{
-    FORMATION_HANDSHAKE_ALPN,         // b"peat/formation-auth/1"
-    perform_initiator_handshake,
-    perform_responder_handshake,
-};
+use peat_mesh::storage::{accept_formation_auth, respond_to_formation_auth};
 ```
 
 The flow:
 
-1. Initiator opens a stream on `FORMATION_HANDSHAKE_ALPN` and sends its `formation_id`.
-2. Responder replies with a fresh random **nonce** (the challenge).
-3. Initiator returns `HMAC-SHA-256(nonce ‖ formation_id)` using the formation key.
-4. Responder verifies in constant time. Match ⇒ admitted; mismatch ⇒ rejected.
+1. The connector opens a bidirectional authentication stream and sends the
+   wire-version byte.
+2. The acceptor sends its formation ID and a fresh random **nonce**.
+3. The connector verifies the formation ID and returns
+   `HMAC-SHA-256(nonce ‖ formation_id)` using the formation key.
+4. The acceptor verifies in constant time and sends the accept/reject verdict.
 
-Because the nonce is fresh per handshake and the `formation_id` is mixed into the MAC,
-the exchange is non-replayable and a node in a *different* formation (different id or
-secret) is rejected. Only after success is the peer added to the formation's peer set and
-allowed to sync.
+Because the nonce is fresh per handshake and the `formation_id` is mixed into
+the MAC, the exchange is non-replayable and a node in a *different* formation
+(different ID or secret) is rejected. Only after success is the peer added to
+the formation's peer set and allowed to sync.
 
-> Most applications get this for free by standing up `peat_mesh::AutomergeBackend` with a
-> `FormationKey`; the backend performs the handshake on every connection. Reach for the
-> `perform_*_handshake` functions directly only if you are building a custom transport.
+> Most applications get this for free from peat-mesh's sync protocol handler.
+> Call `respond_to_formation_auth` and `accept_formation_auth` directly only
+> when a host owns the Iroh connection lifecycle outside that handler.
 
 ### Membership
 
@@ -397,7 +395,7 @@ All paths are under `peat_protocol::` unless noted.
 | Concern | Type / fn | Location |
 |---------|-----------|----------|
 | Formation key (HKDF-SHA-256) | `peat_mesh::security::FormationKey` — `from_base64`, `new` | `peat-mesh/src/security/formation_key.rs` |
-| Handshake (HMAC-SHA-256 C/R) | `network::formation_handshake::{FORMATION_HANDSHAKE_ALPN, perform_initiator_handshake, perform_responder_handshake}` | `peat-protocol/src/network/formation_handshake.rs` |
+| Handshake (HMAC-SHA-256 C/R) | `peat_mesh::storage::{respond_to_formation_auth, accept_formation_auth}` | `peat-mesh/src/storage/mesh_sync_transport.rs` |
 | Leadership score | `cell::LeadershipScore::{from_capabilities, compare}` | `peat-protocol/src/cell/leader_election.rs` |
 | Election state machine | `cell::LeaderElectionManager` — `start_election`, `process_election_message`, `check_leader_failure`, `send_heartbeat_if_leader`, `get_state`, `get_leader`, `get_round` | `peat-protocol/src/cell/leader_election.rs` |
 | Cell message bus | `cell::CellMessageBus::new(cell_id, node_id)` | `peat-protocol/src/cell/messaging.rs` |

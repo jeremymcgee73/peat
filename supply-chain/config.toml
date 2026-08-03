@@ -96,16 +96,8 @@ criteria = "safe-to-deploy"
 version = "0.1.65"
 criteria = "safe-to-deploy"
 
-[[exemptions.iroh-dns]]
-version = "1.0.0-rc.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.iroh-mdns-address-lookup]]
 version = "0.2.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.iroh-metrics-derive]]
-version = "1.0.0-rc.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.iroh-util]]
@@ -130,14 +122,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.jni-sys-macros]]
 version = "0.4.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.n0-error]]
-version = "1.0.0-rc.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.n0-error-macros]]
-version = "1.0.0-rc.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ndk-context]]
