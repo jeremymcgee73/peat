@@ -2612,6 +2612,19 @@ impl PeatNode {
         self.supervisor.reset_backoff_all();
         self.run_supervisor_tick(now_unix_ms());
     }
+
+    /// Notify the owned iroh endpoint that network interfaces may have changed,
+    /// then make every known peer immediately eligible for reconnection.
+    ///
+    /// Mobile consumers should call this after an OS network-path callback.
+    /// The iroh hook is harmless when the endpoint already observed the change,
+    /// and does not recreate this node or discard its in-memory state.
+    pub fn notify_network_change(&self) {
+        self.runtime
+            .block_on(self.iroh_transport.endpoint().network_change());
+        self.supervisor.reset_backoff_all();
+        self.run_supervisor_tick(now_unix_ms());
+    }
 }
 
 // =============================================================================
@@ -3968,24 +3981,23 @@ mod tests {
             assert_eq!(got2.relay_url.as_deref(), Some("https://relay.example"));
         }
 
-        /// Surface-tier smoke for the three reconnect triggers
-        /// (`reconnect_known_peers`, `wake_reconnect`, `on_peer_observed`) — they
-        /// are fire-and-forget (return void), so this drives them through the
-        /// `PeatNode` UniFFI surface and asserts they neither panic nor corrupt
-        /// roster state, both with an empty roster and with a remembered offline
-        /// peer (which makes them actually run a reconnect pass). Catches an
-        /// arg-marshalling or wiring break that an internal supervisor unit test
-        /// can't see.
+        /// Surface-tier smoke for the reconnect and network-change triggers —
+        /// this drives them through the `PeatNode` UniFFI surface and asserts
+        /// they neither panic nor corrupt roster state, both with an empty
+        /// roster and with a remembered offline peer (which makes them actually
+        /// run a reconnect pass). Catches an arg-marshalling or wiring break
+        /// that an internal supervisor unit test can't see.
         #[test]
         fn reconnect_triggers_callable_through_the_node() {
             let tmp = tempfile::tempdir().unwrap();
             let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
 
-            // Empty roster: all three are safe no-ops, including on_peer_observed
-            // for an unknown id.
+            // Empty roster: every trigger is a safe no-op, including
+            // on_peer_observed for an unknown id.
             node.reconnect_known_peers();
             node.wake_reconnect();
             node.on_peer_observed("not-a-known-peer".to_string());
+            node.notify_network_change();
             assert!(
                 node.roster_list().is_empty(),
                 "no-op triggers must not invent roster entries"
@@ -4010,6 +4022,7 @@ mod tests {
             node.reconnect_known_peers();
             node.on_peer_observed(peer_id.clone());
             node.wake_reconnect();
+            node.notify_network_change();
 
             assert_eq!(node.roster_list().len(), 1);
             assert!(
