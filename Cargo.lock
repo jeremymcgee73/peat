@@ -3988,7 +3988,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peat"
-version = "0.9.0-rc.32"
+version = "0.9.0-rc.33"
 
 [[package]]
 name = "peat-btle"
@@ -4065,9 +4065,9 @@ dependencies = [
 
 [[package]]
 name = "peat-mesh"
-version = "0.9.0-rc.60"
+version = "0.9.0-rc.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d32a58dbce91e4ede433f961d01ed0fe15c99635591854afc93b33a2ba32c8b0"
+checksum = "7cbd37c1134b78765934332aee72e43942e5d16aa92ba9b3676b275fd9680cb5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4089,6 +4089,7 @@ dependencies = [
  "mdns-sd",
  "negentropy",
  "p256",
+ "parking_lot",
  "peat-btle",
  "peat-lite",
  "postcard",
@@ -4111,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "peat-persistence"
-version = "0.9.0-rc.32"
+version = "0.9.0-rc.33"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4136,7 +4137,7 @@ dependencies = [
 
 [[package]]
 name = "peat-protocol"
-version = "0.9.0-rc.32"
+version = "0.9.0-rc.33"
 dependencies = [
  "anyhow",
  "argon2",
@@ -4182,7 +4183,7 @@ dependencies = [
 
 [[package]]
 name = "peat-quickstart"
-version = "0.9.0-rc.32"
+version = "0.9.0-rc.33"
 dependencies = [
  "anyhow",
  "clap",
@@ -4198,7 +4199,7 @@ dependencies = [
 
 [[package]]
 name = "peat-schema"
-version = "0.9.0-rc.32"
+version = "0.9.0-rc.33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4215,7 +4216,7 @@ dependencies = [
 
 [[package]]
 name = "peat-transport"
-version = "0.9.0-rc.32"
+version = "0.9.0-rc.33"
 dependencies = [
  "anyhow",
  "axum",
