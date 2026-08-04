@@ -14,6 +14,14 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+## [0.9.0-rc.33] - 2026-08-04
+
+### Added
+
+- Re-export `peat-mesh 0.9.0-rc.61`, including opt-in grouped durable
+  commits across document keys with explicit queue-delay, entry-count, and
+  serialized-byte bounds. Immediate durability remains the default.
+
 ### Fixed
 
 - **FFI peer authentication uses one formation-auth protocol**
@@ -31,9 +39,10 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ### Pinned
 
-- Advance `peat-mesh` to `>=0.9.0-rc.59, <0.9.1` for the public canonical
-  acceptor API, and align peat-protocol's test-only Iroh pin to `1.0.2`.
-  Default feature selection is unchanged.
+- Advance `peat-mesh` to `>=0.9.0-rc.61, <0.9.1` for canonical formation
+  authentication, authenticated path replacement, enforced per-collection
+  coalescing deadlines, and grouped durable commits. Align peat-protocol's
+  test-only Iroh pin to `1.0.2`; default feature selection is unchanged.
 
 ## [0.9.0-rc.32] - 2026-08-03
 
