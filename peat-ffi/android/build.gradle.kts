@@ -42,7 +42,11 @@ group = "com.defenseunicorns"
 // 0.1.5 (was 0.1.4): runtime fix for formation authentication between
 // exported FFI nodes. Restores authenticated bidirectional document sync;
 // no UniFFI or JNI signatures changed. Ships peat-ffi 0.2.13. See peat#1045.
-version = "0.1.5"
+//
+// 0.1.6 (was 0.1.5): adds the network-change lifecycle notification and
+// stale authenticated-path recovery after interface changes. Existing APIs
+// remain source-compatible. Ships peat-ffi 0.2.14. See peat#1057.
+version = "0.1.6"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"

@@ -4029,7 +4029,7 @@ dependencies = [
 
 [[package]]
 name = "peat-ffi"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4065,9 +4065,9 @@ dependencies = [
 
 [[package]]
 name = "peat-mesh"
-version = "0.9.0-rc.59"
+version = "0.9.0-rc.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b38d4db22a0201d1ab0ee57d81d7f2aefb4d9b467dfac4114a47ba847a4b11e"
+checksum = "d32a58dbce91e4ede433f961d01ed0fe15c99635591854afc93b33a2ba32c8b0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4638,7 +4638,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -4658,7 +4658,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

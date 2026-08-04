@@ -88,7 +88,13 @@ name = "peat-ffi"
 # peat-mesh's single versioned handshake, restoring authenticated
 # bidirectional document sync without changing UniFFI or JNI signatures.
 # See peat#1045.
-version = "0.2.13"
+#
+# 0.2.14 (was 0.2.13): adds the network-change lifecycle notification to
+# UniFFI and the Dart FFI-buffer adapter. It refreshes the owned Iroh endpoint
+# before waking reconnect work; peat-mesh rc.60 replaces stale authenticated
+# paths after interface recovery. Existing methods and discovery defaults are
+# unchanged. See peat#1057.
+version = "0.2.14"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"

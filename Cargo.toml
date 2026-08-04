@@ -293,7 +293,11 @@ repository = "https://github.com/defenseunicorns/peat"
 # canonical accept-side formation authentication function paired with
 # `respond_to_formation_auth`. peat-protocol removes its incompatible
 # parallel handshake and calls both transport-owned halves directly.
-peat-mesh = { version = ">=0.9.0-rc.59, <0.9.1", default-features = false }
+#
+# Floor bumped to rc.60 (2026-08-03) — peat-mesh#361 replaces aged
+# authenticated Iroh paths after interface changes and removes reconnect sinks
+# when translators are unregistered.
+peat-mesh = { version = ">=0.9.0-rc.60, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

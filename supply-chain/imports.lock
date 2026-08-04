@@ -9,6 +9,10 @@ audited_as = "0.9.0-rc.21"
 version = "0.2.13"
 audited_as = "0.2.12"
 
+[[unpublished.peat-ffi]]
+version = "0.2.14"
+audited_as = "0.2.12"
+
 [[unpublished.peat-protocol]]
 version = "0.9.0-rc.22"
 audited_as = "0.9.0-rc.21"
@@ -1906,8 +1910,8 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-mesh]]
-version = "0.9.0-rc.59"
-when = "2026-08-03"
+version = "0.9.0-rc.60"
+when = "2026-08-04"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
