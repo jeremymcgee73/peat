@@ -269,6 +269,7 @@ extern "C" {
     );
     fn uniffi_peat_ffi_fn_method_peatnode_reconnect_known_peers(h: u64, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_wake_reconnect(h: u64, s: *mut CallStatus);
+    fn uniffi_peat_ffi_fn_method_peatnode_notify_network_change(h: u64, s: *mut CallStatus);
     fn uniffi_peat_ffi_fn_method_peatnode_on_peer_observed(
         h: u64,
         node_id: RustBuf,
@@ -1033,6 +1034,18 @@ pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_wake_recon
 ) {
     let mut s = CallStatus::new();
     uniffi_peat_ffi_fn_method_peatnode_wake_reconnect((*a.add(0)).u64, &mut s);
+    ret_void(r, &s);
+}
+
+// notify_network_change(handle) -> void. Refreshes iroh interface state and
+// wakes the reconnect supervisor.
+#[no_mangle]
+pub unsafe extern "C" fn uniffi_ffibuffer_peat_ffi_fn_method_peatnode_notify_network_change(
+    a: *const Elem,
+    r: *mut Elem,
+) {
+    let mut s = CallStatus::new();
+    uniffi_peat_ffi_fn_method_peatnode_notify_network_change((*a.add(0)).u64, &mut s);
     ret_void(r, &s);
 }
 

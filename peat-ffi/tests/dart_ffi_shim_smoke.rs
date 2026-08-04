@@ -1,6 +1,7 @@
 #![cfg(feature = "sync")]
 
 use peat_ffi::dart_ffi::{
+    uniffi_ffibuffer_peat_ffi_fn_method_peatnode_notify_network_change,
     uniffi_ffibuffer_peat_ffi_fn_method_peatnode_on_peer_observed,
     uniffi_ffibuffer_peat_ffi_fn_method_peatnode_reconnect_known_peers,
     uniffi_ffibuffer_peat_ffi_fn_method_peatnode_roster_remember,
@@ -89,6 +90,15 @@ fn reconnect_shims_consume_fresh_arc_handles() {
     call_void_shim(
         uniffi_ffibuffer_peat_ffi_fn_method_peatnode_wake_reconnect,
         &wake_args,
+    );
+    assert_handle_consumed(&node);
+
+    let network_change_args = [Elem {
+        u64: fresh_handle(&node),
+    }];
+    call_void_shim(
+        uniffi_ffibuffer_peat_ffi_fn_method_peatnode_notify_network_change,
+        &network_change_args,
     );
     assert_handle_consumed(&node);
 
