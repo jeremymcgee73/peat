@@ -112,14 +112,17 @@ object PeatJni {
         appId: String,
         sharedKey: String,
         storagePath: String,
+        bindAddress: String?,
     ): Long
 
     @JvmStatic external fun createNodeWithConfigJni(
         appId: String,
         sharedKey: String,
+        nodeId: String?,
         storagePath: String,
         enableBle: Boolean,
         blePowerProfile: String?,
+        bindAddress: String?,
     ): Long
 
     @JvmStatic external fun getGlobalNodeHandleJni(): Long

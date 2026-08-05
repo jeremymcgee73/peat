@@ -7712,15 +7712,16 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
 /// [`Java_com_defenseunicorns_peat_PeatJni_setAndroidContextJni`] from
 /// `Application.onCreate()` BEFORE the first `createNode` call.
 ///
-/// **Identity derivation:** same as [`createNodeJni`] — the node's iroh
-/// EndpointId is derived from the `storagePath` basename. Renaming the
-/// storage directory rotates the EndpointId.
+/// **Identity derivation:** `nodeId`, when non-null and non-empty, is the
+/// formation-derived identity seed. Otherwise the storage-directory basename
+/// preserves the legacy identity.
 ///
 /// Kotlin signature:
 /// ```kotlin
 /// external fun createNodeWithConfigJni(
 ///     appId: String,
 ///     sharedKey: String,
+///     nodeId: String?,         // null/empty = storage-directory basename
 ///     storagePath: String,
 ///     enableBle: Boolean,
 ///     blePowerProfile: String?, // "aggressive", "balanced", or "low_power"
@@ -10613,7 +10614,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         #[cfg(feature = "sync")]
         NativeMethod {
             name: "createNodeJni".into(),
-            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J"
+                .into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeJni as *mut c_void,
         },
         #[cfg(feature = "sync")]
@@ -11257,7 +11259,8 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                 #[cfg(feature = "sync")]
                 NativeMethod {
                     name: "createNodeJni".into(),
-                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J".into(),
+                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J"
+                        .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeJni as *mut c_void,
                 },
                 #[cfg(feature = "sync")]

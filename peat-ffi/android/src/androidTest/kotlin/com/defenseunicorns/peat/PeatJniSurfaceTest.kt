@@ -79,7 +79,7 @@ class PeatJniSurfaceTest {
             mkdirs()
         }
         storageDirs.add(storageDir)
-        val handle = PeatJni.createNodeJni(APP_ID, SHARED_KEY, storageDir.absolutePath)
+        val handle = PeatJni.createNodeJni(APP_ID, SHARED_KEY, storageDir.absolutePath, "127.0.0.1")
         assertTrue(
             "createNodeJni returned 0 for $label (check logcat for PeatRust tag)",
             handle != 0L,
@@ -179,6 +179,52 @@ class PeatJniSurfaceTest {
                 "Kotlin Any → JNI jobject → NewGlobalRef → ndk_context::initialize_android_context " +
                 "round-trip is intact",
             PeatJni.verifyAndroidContextJni(),
+        )
+    }
+
+    /**
+     * Pins a mobile-app consumer entrypoint: explicit logical identity plus
+     * a concrete Wi-Fi interface address. Successful creation proves the
+     * seven-argument Kotlin descriptor matches the registered Rust JNI method;
+     * the endpoint assertion proves `bindAddress` reaches the Iroh bind.
+     */
+    @Test
+    fun b_createNodeWithConfigJni_acceptsIdentityAndConcreteBindAddress() {
+        val cacheDir =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .cacheDir
+        val storageDir =
+            File(cacheDir, "peat-ffi-surface-config-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(storageDir)
+
+        val handle =
+            PeatJni.createNodeWithConfigJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-surface-config",
+                storageDir.absolutePath,
+                false,
+                null,
+                "127.0.0.1",
+            )
+        assertTrue(
+            "createNodeWithConfigJni returned 0 for the seven-argument consumer path",
+            handle != 0L,
+        )
+        handles.add(handle)
+
+        val endpointAddress = PeatJni.endpointSocketAddrJni(handle)
+        assertNotNull("configured node must expose its bound endpoint", endpointAddress)
+        assertTrue(
+            "bindAddress must reach the Iroh endpoint; got $endpointAddress",
+            endpointAddress!!.startsWith("127.0.0.1:"),
+        )
+        assertTrue(
+            "explicit nodeId must produce a non-empty formation endpoint identity",
+            PeatJni.nodeIdJni(handle).isNotEmpty(),
         )
     }
 
@@ -441,10 +487,10 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefTestJni(): String = PeatJni.testJni()
     @Suppress("unused")
-    private fun peatJniRefCreateNode(): Long = PeatJni.createNodeJni("a", "b", "c")
+    private fun peatJniRefCreateNode(): Long = PeatJni.createNodeJni("a", "b", "c", null)
     @Suppress("unused")
     private fun peatJniRefCreateNodeWithConfig(): Long =
-        PeatJni.createNodeWithConfigJni("a", "b", "c", false, null)
+        PeatJni.createNodeWithConfigJni("a", "b", null, "c", false, null, null)
     @Suppress("unused")
     private fun peatJniRefGetGlobalNodeHandle(): Long = PeatJni.getGlobalNodeHandleJni()
     @Suppress("unused")
