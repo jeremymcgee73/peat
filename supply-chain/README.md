@@ -16,11 +16,11 @@ Each release of a first-party workspace crate that has been published gets an ex
 
 **Operational workflow.** When the workspace cuts a new rc release (e.g. `0.9.0-rc.11`), three new exemption stanzas must land in `config.toml` — one for each first-party crate. Forgetting this is the most common CI failure on docs-only PRs that didn't intend to touch supply-chain. The peat#870 docs branch hit exactly this when main bumped to rc.10 without matching exemptions.
 
-### First-party Git dependency policies
+### Why `[policy.peat-mesh]` and `[policy.peat-btle]` are *absent*
 
-Slice-4.d cutover (2026-05-12, peat#852) removed the `[policy.peat-mesh]` + `[policy.peat-btle]` `audit-as-crates-io = false` entries that lived during the earlier git-override interim. With both crates resolving from crates.io directly, `cargo-vet` treats them as normal third-party dependencies; `audit-as-crates-io = false` is valid only while consuming first-party code through a Git source.
+Slice-4.d cutover (2026-05-12, peat#852) removed the `[policy.peat-mesh]` + `[policy.peat-btle]` `audit-as-crates-io = false` entries that lived here during the git-override interim. With both crates resolving from crates.io directly (after the workspace `[patch.crates-io]` block was dropped), `cargo-vet` treats them as normal third-party deps — and `audit-as-crates-io = false` is only valid for first-party-via-git sources, so the policies became errors rather than no-ops.
 
-Peat#1004 temporarily reintroduces `[policy.peat-mesh]` while its stacked peat-mesh#375 change is pinned for CI review. Remove that policy with the Git pin after the prerequisite is released. For normal crates.io version updates, keep using the `[[trusted.peat-mesh]]` and `[[trusted.peat-btle]]` publisher-trust entries in `audits.toml`; do not add a policy block.
+The actually-consumed versions (currently `peat-mesh 0.9.0-rc.64`, `peat-btle 0.4.0`) are vet-covered by the `[[trusted.peat-mesh]]` + `[[trusted.peat-btle]]` publisher-trust entries in `audits.toml`, not by version-keyed exemptions in `config.toml`. Don't reintroduce the policy blocks; reach for `audits.toml` if a new version needs to be trusted.
 
 ### Third-party `[[exemptions.*]]` entries
 
