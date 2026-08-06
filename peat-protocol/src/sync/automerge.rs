@@ -41,6 +41,11 @@ use crate::storage::automerge_conversion::automerge_to_message;
 use crate::sync::traits::*;
 use crate::sync::types::*;
 
+/// Elect exactly one initiator when both mDNS peers discover each other.
+fn should_initiate_mdns_connection(local: &[u8], remote: &[u8]) -> bool {
+    local < remote
+}
+
 /// Automerge-based backend for CRDT synchronization
 ///
 /// This backend implements all DataSyncBackend traits using Automerge as the
@@ -2567,6 +2572,7 @@ impl PeerDiscovery for IrohPeerDiscovery {
             // iroh-connect allocations firing per rediscovery. Cloning
             // the Arc<dyn Fn> here so it lives across the tokio::spawn.
             let availability_check = self.peer_availability_check.clone();
+            let local_endpoint_id = transport.endpoint_id();
 
             tokio::spawn(async move {
                 tracing::info!("Starting mDNS discovery event handler");
@@ -2576,6 +2582,14 @@ impl PeerDiscovery for IrohPeerDiscovery {
                     match event {
                         DiscoveryEvent::Discovered { endpoint_info, .. } => {
                             let peer_id = endpoint_info.endpoint_id;
+                            // Apply the same single-initiator rule as the
+                            // peat-controlled browse path below.
+                            if !should_initiate_mdns_connection(
+                                local_endpoint_id.as_bytes(),
+                                peer_id.as_bytes(),
+                            ) {
+                                continue;
+                            }
                             tracing::info!(
                                 peer_id = %peer_id,
                                 "mDNS discovered peer, attempting connection"
@@ -2698,6 +2712,7 @@ impl PeerDiscovery for IrohPeerDiscovery {
             let transport = Arc::clone(&self.transport);
             let formation_key_peat = formation_key.clone();
             let availability_check = self.peer_availability_check.clone();
+            let local_endpoint_id = transport.endpoint_id();
 
             tokio::spawn(async move {
                 use crate::network::PeerInfo as NetworkPeerInfo;
@@ -2774,6 +2789,15 @@ impl PeerDiscovery for IrohPeerDiscovery {
                     };
 
                     for (peer_id, peer) in to_dial {
+                        // Exactly one endpoint initiates each mDNS connection.
+                        // A simultaneous reciprocal dial can replace the
+                        // connection carrying the initial document sweep.
+                        if !should_initiate_mdns_connection(
+                            local_endpoint_id.as_bytes(),
+                            peer_id.as_bytes(),
+                        ) {
+                            continue;
+                        }
                         if transport.get_connection(&peer_id).is_some() {
                             continue; // already connected
                         }
@@ -4420,6 +4444,16 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
+    #[test]
+    fn mdns_dial_order_elects_exactly_one_initiator() {
+        let lower = [0u8; 32];
+        let mut higher = lower;
+        higher[31] = 1;
+
+        assert!(should_initiate_mdns_connection(&lower, &higher));
+        assert!(!should_initiate_mdns_connection(&higher, &lower));
+        assert!(!should_initiate_mdns_connection(&lower, &lower));
+    }
 
     /// peat#873 — structural pin for the mDNS-discovery breaker gate.
     ///

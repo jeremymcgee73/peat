@@ -20,7 +20,7 @@ Each release of a first-party workspace crate that has been published gets an ex
 
 Slice-4.d cutover (2026-05-12, peat#852) removed the `[policy.peat-mesh]` + `[policy.peat-btle]` `audit-as-crates-io = false` entries that lived here during the git-override interim. With both crates resolving from crates.io directly (after the workspace `[patch.crates-io]` block was dropped), `cargo-vet` treats them as normal third-party deps — and `audit-as-crates-io = false` is only valid for first-party-via-git sources, so the policies became errors rather than no-ops.
 
-The actually-consumed versions (currently `peat-mesh 0.9.0-rc.11`, `peat-btle 0.4.0`) are vet-covered by the `[[trusted.peat-mesh]]` + `[[trusted.peat-btle]]` publisher-trust entries in `audits.toml`, not by version-keyed exemptions in `config.toml`. Don't reintroduce the policy blocks; reach for `audits.toml` if a new version needs to be trusted.
+The actually-consumed versions (currently `peat-mesh 0.9.0-rc.64`, `peat-btle 0.4.0`) are vet-covered by the `[[trusted.peat-mesh]]` + `[[trusted.peat-btle]]` publisher-trust entries in `audits.toml`, not by version-keyed exemptions in `config.toml`. Don't reintroduce the policy blocks; reach for `audits.toml` if a new version needs to be trusted.
 
 ### Third-party `[[exemptions.*]]` entries
 

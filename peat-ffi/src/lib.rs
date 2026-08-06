@@ -159,11 +159,15 @@ use peat_protocol::cot::{
 };
 
 #[cfg(feature = "sync")]
+use peat_mesh::storage::SyncTransport;
+#[cfg(feature = "sync")]
+use peat_mesh::sync::{
+    AutomergeBackend as MeshAutomergeBackend, AutomergeBackendConfig, SyncEngine,
+};
+#[cfg(feature = "sync")]
 use peat_protocol::network::{IrohTransport, PeerInfo as PeatPeerInfo, TransportPeerEvent};
 #[cfg(feature = "sync")]
-use peat_protocol::storage::{AutomergeBackend, AutomergeStore, StorageBackend, SyncCapable};
-#[cfg(feature = "sync")]
-use peat_protocol::sync::automerge::AutomergeIrohBackend;
+use peat_protocol::storage::AutomergeStore;
 #[cfg(feature = "sync")]
 use peat_protocol::sync::{BackendConfig, DataSyncBackend, TransportConfig};
 // Blob transfer via peat-mesh NetworkedIrohBlobStore (ADR-060).
@@ -842,17 +846,13 @@ impl Drop for SubscriptionHandle {
 #[cfg(feature = "sync")]
 const MAX_CONCURRENT_RECONNECT_DIALS: usize = 8;
 
-/// Wraps AutomergeIrohBackend for authenticated document sync.
+/// Wraps the canonical mesh Automerge backend for authenticated document sync.
 /// Requires matching app_id and shared_key for peer connections.
 #[cfg(feature = "sync")]
 #[derive(uniffi::Object)]
 pub struct PeatNode {
-    /// The sync backend with FormationKey authentication
-    sync_backend: Arc<AutomergeIrohBackend>,
-    /// Storage backend for document operations (shared with sync_backend)
-    /// Note: This is the SAME backend instance used by sync_backend to ensure
-    /// sync coordinator state is shared. Do NOT create a separate backend.
-    storage_backend: Arc<AutomergeBackend>,
+    /// Canonical sync and document backend with FormationKey authentication.
+    sync_backend: Arc<MeshAutomergeBackend>,
     /// Generic application-level mesh document layer wrapping `sync_backend`.
     /// Composed alongside the existing typed surface (nodes, cells,
     /// tracks, …) so callers can reach generic publish/get/query/observe
@@ -961,62 +961,52 @@ pub struct PeatNode {
 #[cfg(feature = "sync")]
 async fn connect_peer_inner(
     iroh_transport: &IrohTransport,
-    sync_backend: &AutomergeIrohBackend,
-    storage_backend: &AutomergeBackend,
+    sync_backend: &MeshAutomergeBackend,
     peat_peer: PeatPeerInfo,
 ) -> Result<(), PeatError> {
-    let conn_opt = iroh_transport
-        .connect_peer(&peat_peer)
+    sync_backend
+        .connect_peer(
+            &peat_peer.node_id,
+            &peat_peer.addresses,
+            peat_peer.relay_url.as_deref(),
+        )
         .await
         .map_err(|e| PeatError::ConnectionError { msg: e.to_string() })?;
 
-    // None: no new connection — the accept path is handling it.
-    let Some(conn) = conn_opt else {
-        return Ok(());
-    };
-    let peer_id = conn.remote_id();
+    let peer_id = sync_backend
+        .transport()
+        .connected_peers()
+        .into_iter()
+        .find(|id| {
+            id.to_string() == peat_peer.node_id || hex::encode(id.as_bytes()) == peat_peer.node_id
+        })
+        .ok_or_else(|| PeatError::ConnectionError {
+            msg: format!(
+                "authenticated peer {} missing from connection registry",
+                peat_peer.node_id
+            ),
+        })?;
 
-    let Some(formation_key) = sync_backend.formation_key() else {
-        // No formation key — emit Connected without handshake (backward compat).
-        iroh_transport.emit_peer_connected(peer_id);
-        return Ok(());
-    };
-
-    // Use peat-mesh's canonical connector half; the peer's protocol accept
-    // loop uses the paired `accept_formation_auth` implementation.
-    if let Err(e) = peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn).await {
-        conn.close(1u32.into(), b"authentication failed");
-        iroh_transport.disconnect(&peer_id).ok();
-        return Err(PeatError::ConnectionError {
-            msg: format!("Formation handshake failed: {}", e),
-        });
+    if let Some(connection) = sync_backend.transport().get_connection(&peer_id) {
+        iroh_transport.track_authenticated_connection(connection);
     }
 
-    // Emit Connected to trigger immediate sync handler spawning.
-    iroh_transport.emit_peer_connected(peer_id);
-
-    // Explicitly trigger document sync with the new peer. The event-based sync
-    // handler spawner should also handle this, but we trigger directly to
-    // ensure documents flow.
-    if let Some(coordinator) = storage_backend.sync_coordinator() {
-        let coord = Arc::clone(coordinator);
-        tokio::spawn(async move {
-            // Brief delay for the connection to stabilize.
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            match coord.sync_all_documents_with_peer(peer_id).await {
-                Ok(()) => {
-                    tracing::debug!(peer = ?peer_id, "sync_all_documents_with_peer succeeded");
-                    #[cfg(target_os = "android")]
-                    android_log("sync_all_documents_with_peer: SUCCESS");
-                }
-                Err(e) => {
-                    tracing::warn!(peer = ?peer_id, error = %e, "sync_all_documents_with_peer failed");
-                    #[cfg(target_os = "android")]
-                    android_log(&format!("sync_all_documents_with_peer: FAILED - {}", e));
-                }
+    let coordinator = Arc::clone(sync_backend.coordinator());
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        match coordinator.sync_all_documents_with_peer(peer_id).await {
+            Ok(()) => {
+                tracing::debug!(peer = ?peer_id, "sync_all_documents_with_peer succeeded");
+                #[cfg(target_os = "android")]
+                android_log("sync_all_documents_with_peer: SUCCESS");
             }
-        });
-    }
+            Err(e) => {
+                tracing::warn!(peer = ?peer_id, error = %e, "sync_all_documents_with_peer failed");
+                #[cfg(target_os = "android")]
+                android_log(&format!("sync_all_documents_with_peer: FAILED - {}", e));
+            }
+        }
+    });
 
     Ok(())
 }
@@ -1132,66 +1122,34 @@ impl PeatNode {
     pub fn start_sync(&self) -> Result<(), PeatError> {
         #[cfg(target_os = "android")]
         android_log("start_sync: called");
-
-        // IMPORTANT: Use runtime.enter() to ensure tokio::spawn() inside start_sync()
-        // can find the runtime context. block_on() alone doesn't guarantee this on
-        // all platforms (especially Android where the JNI thread may not have proper
-        // thread-local storage for the Tokio runtime handle).
         let _guard = self.runtime.enter();
-
-        #[cfg(target_os = "android")]
-        android_log("start_sync: runtime entered");
-
-        // Must run inside Tokio runtime because start_sync() calls tokio::spawn()
-        let result = self.runtime.block_on(async {
-            #[cfg(target_os = "android")]
-            android_log("start_sync: inside block_on");
-
-            // CRITICAL: Call start_sync() on the ACTUAL storage_backend instance,
-            // NOT on sync_backend.sync_engine() which returns a CLONED instance
-            // that doesn't have the transport event subscriptions set up!
-            //
-            // Note: The authenticated accept loop (with formation handshake and
-            // Connected event emission) is already running — it was started by
-            // sync_backend.initialize() in create_node(). The storage_backend's
-            // start_sync() will see the accept loop as already running and skip
-            // starting the plain (unauthenticated) accept loop.
-            self.storage_backend
-                .start_sync()
-                .map_err(|e| PeatError::SyncError { msg: e.to_string() })
-        });
-
+        let result = self
+            .runtime
+            .block_on(self.sync_backend.start_sync())
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() });
         #[cfg(target_os = "android")]
         match &result {
-            Ok(_) => android_log("start_sync: SUCCESS - sync handlers spawned"),
+            Ok(_) => android_log("start_sync: SUCCESS - canonical sync handlers spawned"),
             Err(e) => android_log(&format!("start_sync: FAILED - {}", e)),
         }
-
         result
     }
 
     /// Stop sync operations
     pub fn stop_sync(&self) -> Result<(), PeatError> {
-        // Must run inside Tokio runtime for consistency with start_sync()
-        self.runtime.block_on(async {
-            self.storage_backend
-                .stop_sync()
-                .map_err(|e| PeatError::SyncError { msg: e.to_string() })
-        })
+        self.runtime
+            .block_on(self.sync_backend.stop_sync())
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
     }
 
     /// Get sync statistics
     pub fn sync_stats(&self) -> Result<SyncStats, PeatError> {
-        let stats = self
-            .storage_backend
-            .sync_stats()
-            .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
-
+        let peers = self.sync_backend.transport().connected_peers();
         Ok(SyncStats {
-            sync_active: stats.peer_count > 0, // Infer from peer count
-            connected_peers: self.iroh_transport.peer_count() as u32,
-            bytes_sent: stats.bytes_sent,
-            bytes_received: stats.bytes_received,
+            sync_active: !peers.is_empty(),
+            connected_peers: peers.len() as u32,
+            bytes_sent: self.sync_backend.coordinator().total_bytes_sent(),
+            bytes_received: self.sync_backend.coordinator().total_bytes_received(),
         })
     }
 
@@ -1285,55 +1243,46 @@ impl PeatNode {
     /// they have. Useful for ensuring newly created documents propagate
     /// after the initial connection.
     pub fn request_sync(&self) -> Result<(), PeatError> {
-        if let Some(coordinator) = self.storage_backend.sync_coordinator() {
-            let peers = self.iroh_transport.connected_peers();
-            let peer_count = peers.len();
-            // Logcat-visible signal of every request_sync invocation:
-            // peer count + each push's success/failure. peat-protocol's
-            // internal `tracing::info!` doesn't reach logcat because no
-            // tracing-subscriber is installed on Android, so the only
-            // way to observe whether `sync_all_documents_with_peer`
-            // actually ran is to surface it here at the FFI boundary
-            // where `android_log` works.
-            #[cfg(target_os = "android")]
-            android_log(&format!(
-                "request_sync: starting with {} connected peer(s)",
-                peer_count
-            ));
-            let coord = Arc::clone(coordinator);
-            self.runtime.block_on(async {
-                for peer_id in peers {
-                    match coord.sync_all_documents_with_peer(peer_id).await {
-                        Ok(()) => {
-                            #[cfg(target_os = "android")]
-                            {
-                                let peer_hex = hex::encode(peer_id.as_bytes());
-                                android_log(&format!(
-                                    "request_sync: pushed to peer {}",
-                                    &peer_hex[..16]
-                                ));
-                            }
+        let peers = self.sync_backend.transport().connected_peers();
+        let peer_count = peers.len();
+        #[cfg(target_os = "android")]
+        android_log(&format!(
+            "request_sync: starting with {} connected peer(s)",
+            peer_count
+        ));
+        let coordinator = Arc::clone(self.sync_backend.coordinator());
+        self.runtime.block_on(async {
+            for peer_id in peers {
+                match coordinator.sync_all_documents_with_peer(peer_id).await {
+                    Ok(()) => {
+                        #[cfg(target_os = "android")]
+                        {
+                            let peer_hex = hex::encode(peer_id.as_bytes());
+                            android_log(&format!(
+                                "request_sync: pushed to peer {}",
+                                &peer_hex[..16]
+                            ));
                         }
-                        Err(_e) => {
-                            #[cfg(target_os = "android")]
-                            {
-                                let peer_hex = hex::encode(peer_id.as_bytes());
-                                android_log(&format!(
-                                    "request_sync: FAILED for peer {}: {}",
-                                    &peer_hex[..16],
-                                    _e
-                                ));
-                            }
+                    }
+                    Err(_e) => {
+                        #[cfg(target_os = "android")]
+                        {
+                            let peer_hex = hex::encode(peer_id.as_bytes());
+                            android_log(&format!(
+                                "request_sync: FAILED for peer {}: {}",
+                                &peer_hex[..16],
+                                _e
+                            ));
                         }
                     }
                 }
-            });
-            #[cfg(target_os = "android")]
-            android_log(&format!(
-                "request_sync: complete ({} peer(s) attempted)",
-                peer_count
-            ));
-        }
+            }
+        });
+        #[cfg(target_os = "android")]
+        android_log(&format!(
+            "request_sync: complete ({} peer(s) attempted)",
+            peer_count
+        ));
         Ok(())
     }
 
@@ -1353,7 +1302,6 @@ impl PeatNode {
         self.runtime.block_on(connect_peer_inner(
             &self.iroh_transport,
             &self.sync_backend,
-            &self.storage_backend,
             peat_peer,
         ))
     }
@@ -1378,13 +1326,9 @@ impl PeatNode {
         };
         let iroh_transport = Arc::clone(&self.iroh_transport);
         let sync_backend = Arc::clone(&self.sync_backend);
-        let storage_backend = Arc::clone(&self.storage_backend);
 
         self.runtime.spawn(async move {
-            if let Err(e) =
-                connect_peer_inner(&iroh_transport, &sync_backend, &storage_backend, peat_peer)
-                    .await
-            {
+            if let Err(e) = connect_peer_inner(&iroh_transport, &sync_backend, peat_peer).await {
                 tracing::warn!(error = %e, "connect_peer_nowait: background dial failed");
                 #[cfg(target_os = "android")]
                 android_log(&format!("connect_peer_nowait: {}", e));
@@ -1394,124 +1338,88 @@ impl PeatNode {
         Ok(())
     }
 
-    /// Disconnect from a peer by node ID
-    ///
-    /// Note: Currently disconnects matching peer from internal connection map.
+    /// Disconnect from a peer by canonical endpoint ID.
     pub fn disconnect_peer(&self, node_id: &str) -> Result<(), PeatError> {
-        // Find the matching endpoint ID from connected peers
-        let connected = self.iroh_transport.connected_peers();
-        for endpoint_id in connected {
-            if hex::encode(endpoint_id.as_bytes()) == node_id {
-                return self
-                    .iroh_transport
-                    .disconnect(&endpoint_id)
-                    .map_err(|e| PeatError::ConnectionError { msg: e.to_string() });
-            }
+        let endpoint_id: peat_mesh::network::EndpointId =
+            node_id.parse().map_err(|e| PeatError::InvalidInput {
+                msg: format!("Invalid peer endpoint ID '{}': {}", node_id, e),
+            })?;
+        if let Some(connection) = self.sync_backend.transport().get_connection(&endpoint_id) {
+            connection.close(0u32.into(), b"requested by FFI consumer");
+            self.sync_backend
+                .transport()
+                .remove_connection(&endpoint_id);
+            self.iroh_transport.disconnect(&endpoint_id).ok();
+            Ok(())
+        } else {
+            Err(PeatError::ConnectionError {
+                msg: format!("Peer {} not found in connected peers", node_id),
+            })
         }
-
-        Err(PeatError::ConnectionError {
-            msg: format!("Peer {} not found in connected peers", node_id),
-        })
     }
 
-    /// Store a JSON document in a collection
+    /// Store a JSON document through the canonical mesh document layer.
     pub fn put_document(
         &self,
         collection: &str,
         doc_id: &str,
         json_data: &str,
     ) -> Result<(), PeatError> {
-        // Parse JSON to validate it
-        let _: serde_json::Value =
-            serde_json::from_str(json_data).map_err(|e| PeatError::InvalidInput {
-                msg: format!("Invalid JSON: {}", e),
-            })?;
-
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collection);
-
-            coll.upsert(doc_id, json_data.as_bytes().to_vec())
-                .map_err(|e| PeatError::StorageError { msg: e.to_string() })
+            publish_document_into_node_with_id(&self.node, collection, json_data, doc_id).await?;
+            Ok(())
         })
     }
 
-    /// Retrieve a document from the **raw-bytes store** as JSON.
-    ///
-    /// # Storage path
-    ///
-    /// This reads from `storage_backend.collection()` — the raw
-    /// key-value store. It will NOT see documents that were:
-    ///
-    /// - Published via `publishDocumentJni` (which goes through
-    ///   `peat_mesh::Node::publish`, the document layer)
-    /// - Received from a peer via Automerge sync (which writes into the
-    ///   document layer's CRDT, not the raw store)
-    ///
-    /// The JNI counterpart `getDocumentJni` deliberately uses
-    /// `peat_mesh::Node::get()` instead so it round-trips with
-    /// `publishDocumentJni`. If you're writing a new JNI method
-    /// that reads documents published or synced via the document
-    /// layer, follow `getDocumentJni`'s pattern, not this method's.
+    /// Retrieve a canonical mesh document as JSON.
     pub fn get_document(
         &self,
         collection: &str,
         doc_id: &str,
     ) -> Result<Option<String>, PeatError> {
+        let id = doc_id.to_string();
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collection);
-
-            match coll.get(doc_id) {
-                Ok(Some(bytes)) => {
-                    let json = String::from_utf8(bytes).map_err(|e| PeatError::StorageError {
-                        msg: format!("Invalid UTF-8: {}", e),
-                    })?;
-                    Ok(Some(json))
-                }
-                Ok(None) => Ok(None),
-                Err(e) => Err(PeatError::StorageError { msg: e.to_string() }),
-            }
-        })
-    }
-
-    /// Delete a document from a collection
-    pub fn delete_document(&self, collection: &str, doc_id: &str) -> Result<(), PeatError> {
-        self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collection);
-
-            coll.delete(doc_id)
+            self.node
+                .get(collection, &id)
+                .await
+                .map(|document| document.map(|doc| serialize_document_for_get_jni(&doc)))
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })
         })
     }
 
-    /// List all document IDs in a collection
-    pub fn list_documents(&self, collection: &str) -> Result<Vec<String>, PeatError> {
-        self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collection);
-
-            let docs = coll
-                .scan()
-                .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
-
-            Ok(docs.into_iter().map(|(id, _)| id).collect())
-        })
+    /// Delete a document from the canonical mesh document layer.
+    pub fn delete_document(&self, collection: &str, doc_id: &str) -> Result<(), PeatError> {
+        let id = doc_id.to_string();
+        self.runtime
+            .block_on(self.node.delete(collection, &id, None))
+            .map(|_| ())
+            .map_err(|e| PeatError::StorageError { msg: e.to_string() })
     }
 
-    /// Manually trigger sync for a specific document
+    /// List all document IDs in a collection.
+    pub fn list_documents(&self, collection: &str) -> Result<Vec<String>, PeatError> {
+        let prefix = format!("{}:", collection);
+        self.sync_backend
+            .store()
+            .scan_prefix(&prefix)
+            .map(|docs| {
+                docs.into_iter()
+                    .filter_map(|(key, _)| key.strip_prefix(&prefix).map(str::to_string))
+                    .collect()
+            })
+            .map_err(|e| PeatError::StorageError { msg: e.to_string() })
+    }
+
+    /// Manually trigger canonical sync for a specific document.
     pub fn sync_document(&self, collection: &str, doc_id: &str) -> Result<(), PeatError> {
         let doc_key = format!("{}:{}", collection, doc_id);
-
-        self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-
-            backend
-                .sync_document(&doc_key)
-                .await
-                .map_err(|e| PeatError::SyncError { msg: e.to_string() })
-        })
+        self.runtime
+            .block_on(
+                self.sync_backend
+                    .coordinator()
+                    .sync_document_with_all_peers(&doc_key),
+            )
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
     }
 
     /// Subscribe to document changes
@@ -1939,45 +1847,38 @@ pub(crate) fn create_node_with_identity(
         );
     }
 
-    // Create storage backend with transport
-    let storage_backend = Arc::new(AutomergeBackend::with_transport(
-        Arc::clone(&store),
-        Arc::clone(&transport),
-    ));
-
-    // Create sync backend (AutomergeIrohBackend) for authenticated P2P sync
-    // Note: AutomergeIrohBackend wraps storage::AutomergeBackend for the
-    // DataSyncBackend trait
-    let sync_backend = Arc::new(AutomergeIrohBackend::new(
-        Arc::clone(&storage_backend),
-        Arc::clone(&transport),
-    ));
-
-    // IMPORTANT (Issue #275): Subscribe to peer events BEFORE initializing sync
-    // backend. The initialize() call spawns the accept loop, so we need to
-    // subscribe first to catch all connection events including the initial
-    // ones.
+    // Subscribe before the canonical router starts so its mirrored connection
+    // events cannot race the foreign callback bridge.
     let mut event_rx = transport.subscribe_peer_events();
 
-    // TIMING: Sync backend initialization
     let phase_start = Instant::now();
-
-    // Initialize sync backend with credentials for FormationKey authentication
-    let backend_config = BackendConfig {
-        app_id: config.app_id.clone(),
-        persistence_dir: storage_path.clone(),
-        shared_key: Some(config.shared_key.clone()),
-        transport: TransportConfig::default(),
-        extra: std::collections::HashMap::new(),
-    };
-
-    runtime.block_on(async {
-        sync_backend
-            .initialize(backend_config)
+    let mut mesh_config = AutomergeBackendConfig::default();
+    mesh_config.data_dir = storage_path.clone();
+    mesh_config.formation_id = config.app_id.clone();
+    mesh_config.base64_shared_key = config.shared_key.clone();
+    let sync_backend = runtime.block_on(async {
+        let backend = MeshAutomergeBackend::with_iroh_parts(
+            mesh_config,
+            transport.endpoint().clone(),
+            Arc::clone(&store),
+        )
+        .await
+        .map_err(|e| PeatError::SyncError {
+            msg: format!("Failed to construct canonical sync backend: {}", e),
+        })?;
+        backend
+            .initialize(BackendConfig {
+                app_id: config.app_id.clone(),
+                persistence_dir: storage_path.clone(),
+                shared_key: Some(config.shared_key.clone()),
+                transport: TransportConfig::default(),
+                extra: std::collections::HashMap::new(),
+            })
             .await
             .map_err(|e| PeatError::SyncError {
-                msg: format!("Failed to initialize sync backend: {}", e),
-            })
+                msg: format!("Failed to initialize canonical sync backend: {}", e),
+            })?;
+        Ok::<_, PeatError>(backend)
     })?;
 
     let sync_init_ms = phase_start.elapsed().as_millis();
@@ -1997,6 +1898,7 @@ pub(crate) fn create_node_with_identity(
 
     // Clone transport for the cleanup task
     let transport_for_cleanup = Arc::clone(&transport);
+    let sync_backend_for_cleanup = Arc::clone(&sync_backend);
 
     // Log that we're starting the peer event listener
     #[cfg(target_os = "android")]
@@ -2036,9 +1938,18 @@ pub(crate) fn create_node_with_identity(
                         }
                     }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                    // Periodically call peer_count() to trigger cleanup_closed_connections()
-                    // This detects dead connections and emits Disconnected events
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    // The canonical transport owns connection state. Mirror
+                    // authenticated connections into IrohTransport so its
+                    // legacy peer-count, link-state, and callback surfaces
+                    // remain accurate without a second dial or accept loop.
+                    for peer_id in sync_backend_for_cleanup.transport().connected_peers() {
+                        if let Some(connection) =
+                            sync_backend_for_cleanup.transport().get_connection(&peer_id)
+                        {
+                            transport_for_cleanup.track_authenticated_connection(connection);
+                        }
+                    }
                     let count = transport_for_cleanup.peer_count();
                     #[cfg(target_os = "android")]
                     android_log(&format!("Periodic cleanup tick - peer count: {}", count));
@@ -2049,11 +1960,6 @@ pub(crate) fn create_node_with_identity(
         #[cfg(target_os = "android")]
         android_log("Peer event listener task exiting");
     });
-
-    // IMPORTANT (Issue #378): Use the storage_backend from sync_backend, NOT a new
-    // one! Creating a separate AutomergeBackend would cause sync coordinator
-    // state to be split, resulting in data not being received from peers.
-    let storage_backend = sync_backend.storage_backend();
 
     // Create TransportManager for multi-transport coordination (ADR-032, #555)
     // Build TransportManagerConfig from FFI config (PACE policy + collection
@@ -2255,11 +2161,9 @@ pub(crate) fn create_node_with_identity(
     #[cfg(not(target_os = "android"))]
     eprintln!("[Peat TIMING] === TOTAL create_node: {}ms ===", total_ms);
 
-    // Compose `peat_mesh::Node` over the same `AutomergeIrohBackend` the
-    // existing typed surface uses. Both layers see the same underlying
-    // doc store; the Node adds a generic publish/observe surface for
-    // doc-type-agnostic callers (the `ingest*Jni` family, future
-    // per-doc-type typed wrappers).
+    // Compose the public `peat_mesh::Node` document API directly over the
+    // canonical sync backend. Every typed and generic FFI operation now shares
+    // this one document and synchronization lifecycle.
     #[cfg(feature = "sync")]
     let node = {
         use peat_mesh::sync::traits::DataSyncBackend;
@@ -2279,7 +2183,6 @@ pub(crate) fn create_node_with_identity(
 
     let node_arc = Arc::new(PeatNode {
         sync_backend,
-        storage_backend,
         #[cfg(feature = "sync")]
         node,
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
@@ -2384,56 +2287,18 @@ fn now_unix_ms() -> u64 {
 #[cfg(feature = "sync")]
 async fn dial_peer_and_sync(
     iroh_transport: &Arc<IrohTransport>,
-    sync_backend: &Arc<AutomergeIrohBackend>,
-    storage_backend: &Arc<AutomergeBackend>,
+    sync_backend: &Arc<MeshAutomergeBackend>,
     peer: &PeatPeerInfo,
 ) -> bool {
-    let conn_opt = match iroh_transport.connect_peer(peer).await {
-        Ok(c) => c,
-        Err(e) => {
-            // Unconditional `tracing` so iOS/desktop consumers capture the dial
-            // failure (e.g. via OSLog), not just Android's native log.
-            tracing::warn!(error = %e, "dial_peer_and_sync: connect failed");
+    match connect_peer_inner(iroh_transport, sync_backend, peer.clone()).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(error = %error, "dial_peer_and_sync: canonical dial failed");
             #[cfg(target_os = "android")]
-            android_log(&format!("dial_peer_and_sync: connect failed - {}", e));
-            return false;
-        }
-    };
-    // None means the transport already holds a connection to this peer; the
-    // accept path is handling it, so report it up.
-    let conn = match conn_opt {
-        Some(c) => c,
-        None => return true,
-    };
-    let peer_id = conn.remote_id();
-
-    let Some(formation_key) = sync_backend.formation_key() else {
-        // No formation key — emit Connected without handshake (backward compat).
-        iroh_transport.emit_peer_connected(peer_id);
-        return true;
-    };
-
-    // Use the same canonical connector half as `connect_peer_inner`.
-    match peat_mesh::storage::respond_to_formation_auth(&formation_key, &conn).await {
-        Ok(()) => {
-            iroh_transport.emit_peer_connected(peer_id);
-            if let Some(coordinator) = storage_backend.sync_coordinator() {
-                let coord = Arc::clone(coordinator);
-                let sync_peer = peer_id;
-                tokio::spawn(async move {
-                    // Brief delay for the connection to stabilize before sync.
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    let _ = coord.sync_all_documents_with_peer(sync_peer).await;
-                });
-            }
-            true
-        }
-        Err(e) => {
-            conn.close(1u32.into(), b"authentication failed");
-            iroh_transport.disconnect(&peer_id).ok();
-            tracing::warn!(error = %e, "dial_peer_and_sync: handshake failed");
-            #[cfg(target_os = "android")]
-            android_log(&format!("dial_peer_and_sync: handshake failed - {}", e));
+            android_log(&format!(
+                "dial_peer_and_sync: canonical dial failed - {}",
+                error
+            ));
             false
         }
     }
@@ -2448,6 +2313,15 @@ impl PeatNode {
     /// connected iterator (peat#828), but it does answer this per-peer via the
     /// transport manager, which is all the supervisor needs.
     fn peer_connected_any_transport(&self, node_id: &str) -> bool {
+        if self
+            .sync_backend
+            .transport()
+            .connected_peers()
+            .into_iter()
+            .any(|id| id.to_string() == node_id || hex::encode(id.as_bytes()) == node_id)
+        {
+            return true;
+        }
         let mesh_peer = peat_mesh::NodeId::new(node_id.to_string());
         self.transport_manager
             .available_instances_for_peer(&mesh_peer)
@@ -2480,7 +2354,6 @@ impl PeatNode {
 
         let iroh_transport = Arc::clone(&self.iroh_transport);
         let sync_backend = Arc::clone(&self.sync_backend);
-        let storage_backend = Arc::clone(&self.storage_backend);
         let supervisor = Arc::clone(&self.supervisor);
         let roster = Arc::clone(&self.roster);
         let peer = PeatPeerInfo {
@@ -2498,8 +2371,7 @@ impl PeatNode {
             // the cold-start fan-out; `acquire` only errors if the semaphore is
             // closed (shutdown), in which case we just proceed.
             let _permit = dial_permits.acquire_owned().await.ok();
-            let ok =
-                dial_peer_and_sync(&iroh_transport, &sync_backend, &storage_backend, &peer).await;
+            let ok = dial_peer_and_sync(&iroh_transport, &sync_backend, &peer).await;
             if ok {
                 supervisor.mark_connected(&node_id);
                 roster.mark_seen(&node_id, now_unix_ms());
@@ -2870,56 +2742,47 @@ impl PeatNode {
     // Cell Operations
     // -------------------------------------------------------------------------
 
-    /// Get all cells from the sync document
+    /// Get all cells from the canonical mesh document layer.
     pub fn get_cells(&self) -> Result<Vec<CellInfo>, PeatError> {
+        use peat_mesh::sync::types::Query;
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::CELLS);
-
-            let docs = coll
-                .scan()
+            let docs = self
+                .node
+                .query(collections::CELLS, &Query::All)
+                .await
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
-
-            let mut cells = Vec::new();
-            for (id, data) in docs {
-                if let Ok(json) = String::from_utf8(data) {
-                    if let Ok(cell) = parse_cell_json(&id, &json) {
-                        cells.push(cell);
-                    }
-                }
-            }
-            Ok(cells)
+            Ok(docs
+                .into_iter()
+                .filter_map(|doc| {
+                    let id = doc.id.clone()?;
+                    parse_cell_json(&id, &serialize_document_for_get_jni(&doc)).ok()
+                })
+                .collect())
         })
     }
 
-    /// Get a specific cell by ID
+    /// Get a specific cell by ID.
     pub fn get_cell(&self, cell_id: &str) -> Result<Option<CellInfo>, PeatError> {
+        let id = cell_id.to_string();
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::CELLS);
-
-            match coll.get(cell_id) {
-                Ok(Some(data)) => {
-                    let json = String::from_utf8(data).map_err(|e| PeatError::StorageError {
-                        msg: format!("Invalid UTF-8: {}", e),
-                    })?;
-                    let cell = parse_cell_json(cell_id, &json)?;
-                    Ok(Some(cell))
-                }
+            match self.node.get(collections::CELLS, &id).await {
+                Ok(Some(doc)) => Ok(Some(parse_cell_json(
+                    cell_id,
+                    &serialize_document_for_get_jni(&doc),
+                )?)),
                 Ok(None) => Ok(None),
                 Err(e) => Err(PeatError::StorageError { msg: e.to_string() }),
             }
         })
     }
 
-    /// Store a cell
+    /// Store a cell through the canonical mesh document layer.
     pub fn put_cell(&self, cell: CellInfo) -> Result<(), PeatError> {
         let json = serialize_cell_json(&cell)?;
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::CELLS);
-            coll.upsert(&cell.id, json.into_bytes())
-                .map_err(|e| PeatError::StorageError { msg: e.to_string() })
+            publish_document_into_node_with_id(&self.node, collections::CELLS, &json, &cell.id)
+                .await?;
+            Ok(())
         })
     }
 
@@ -3006,36 +2869,32 @@ impl PeatNode {
     // Node Operations
     // -------------------------------------------------------------------------
 
-    /// Get all nodes from the sync document
+    /// Get all nodes from the canonical mesh document layer.
     pub fn get_nodes(&self) -> Result<Vec<NodeInfo>, PeatError> {
+        use peat_mesh::sync::types::Query;
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::NODES);
-
-            let docs = coll
-                .scan()
+            let docs = self
+                .node
+                .query(collections::NODES, &Query::All)
+                .await
                 .map_err(|e| PeatError::StorageError { msg: e.to_string() })?;
-
-            let mut nodes = Vec::new();
-            for (id, data) in docs {
-                if let Ok(json) = String::from_utf8(data) {
-                    if let Ok(node) = parse_node_json(&id, &json) {
-                        nodes.push(node);
-                    }
-                }
-            }
-            Ok(nodes)
+            Ok(docs
+                .into_iter()
+                .filter_map(|doc| {
+                    let id = doc.id.clone()?;
+                    parse_node_json(&id, &serialize_document_for_get_jni(&doc)).ok()
+                })
+                .collect())
         })
     }
 
-    /// Store a node
+    /// Store a node through the canonical mesh document layer.
     pub fn put_node(&self, node: NodeInfo) -> Result<(), PeatError> {
         let json = serialize_node_json(&node)?;
         self.runtime.block_on(async {
-            let backend = &self.storage_backend;
-            let coll = backend.collection(collections::NODES);
-            coll.upsert(&node.id, json.into_bytes())
-                .map_err(|e| PeatError::StorageError { msg: e.to_string() })
+            publish_document_into_node_with_id(&self.node, collections::NODES, &json, &node.id)
+                .await?;
+            Ok(())
         })
     }
 }
@@ -4112,6 +3971,25 @@ mod tests {
                 "both peers must report the authenticated connection"
             );
 
+            assert!(
+                node_a
+                    .sync_backend
+                    .transport()
+                    .connected_peers()
+                    .iter()
+                    .any(|peer| hex::encode(peer.as_bytes()) == node_b_id),
+                "node_a canonical transport must retain node_b"
+            );
+            assert!(
+                node_b
+                    .sync_backend
+                    .transport()
+                    .connected_peers()
+                    .iter()
+                    .any(|peer| hex::encode(peer.as_bytes()) == node_a_id),
+                "node_b canonical transport must retain node_a"
+            );
+
             node_a
                 .put_document("ffi-handshake", "doc-1", r#"{"value":1}"#)
                 .expect("put source document");
@@ -4120,12 +3998,13 @@ mod tests {
                 .expect("sync source document");
 
             let document_converged = (0..120).any(|_| {
-                if node_b
+                let document = node_b
                     .get_document("ffi-handshake", "doc-1")
                     .expect("read destination document")
-                    .as_deref()
-                    == Some(r#"{"value":1}"#)
-                {
+                    .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+                if document.as_ref().is_some_and(|value| {
+                    value["id"] == "doc-1" && value["value"] == serde_json::json!(1)
+                }) {
                     true
                 } else {
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -4145,12 +4024,13 @@ mod tests {
                 .expect("sync reverse source document");
 
             let reverse_document_converged = (0..120).any(|_| {
-                if node_a
+                let document = node_a
                     .get_document("ffi-handshake", "doc-2")
                     .expect("read reverse destination document")
-                    .as_deref()
-                    == Some(r#"{"value":2}"#)
-                {
+                    .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+                if document.as_ref().is_some_and(|value| {
+                    value["id"] == "doc-2" && value["value"] == serde_json::json!(2)
+                }) {
                     true
                 } else {
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -5904,14 +5784,11 @@ mod tests {
         }
     }
 
-    /// Wrapped-vs-flat document-shape parsing (peat#978). Docs published
-    /// through the node layer arrive wrapped as `{id, fields:{..},
-    /// updated_at}`; legacy `storage_backend` writes are flat.
-    /// `parse_node/cell_json` must read both shapes identically —
-    /// the contract `LITE_BRIDGE_COLLECTIONS` now depends on for
-    /// nodes/cells to round-trip over BLE. The lite-bridge E2E
-    /// test uses the flat `demo` shape, so it exercised only the
-    /// fallback-to-root branch; these lock in the wrapped-`fields` branch.
+    /// Wrapped-vs-flat document-shape parsing (peat#978). Documents published
+    /// through the canonical node layer arrive wrapped as
+    /// `{id, fields:{..}, updated_at}`. The parser also accepts flat legacy
+    /// JSON for callers restoring pre-migration data.
+    /// The tests below lock in both representations.
     mod doc_shape_parse_tests {
         use super::*;
 
@@ -6370,9 +6247,9 @@ mod tests {
                     .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64,
             });
 
-            // Write to the tracks collection on the sim node
-            let sim_backend = &sim.storage_backend;
-            let tracks_coll = sim_backend.collection("tracks");
+            // Write a legacy raw-store fixture without retaining a production
+            // legacy backend path.
+            let tracks_coll = sim.sync_backend.store().collection("tracks");
             tracks_coll
                 .upsert("red-track-1", track_json.to_string().into_bytes())
                 .expect("sim upsert track");
@@ -6380,8 +6257,8 @@ mod tests {
             // 3. Wait for doc sync (give Iroh a moment to propagate)
             std::thread::sleep(std::time::Duration::from_secs(2));
 
-            // 4. Tablet reads the tracks collection
-            let tablet_tracks = tablet_clone.storage_backend.collection("tracks");
+            // Read the raw fixture through the shared canonical store.
+            let tablet_tracks = tablet_clone.sync_backend.store().collection("tracks");
             let track_doc = tablet_tracks.scan().expect("tablet scan tracks");
 
             // The track may or may not have synced in 2s — this is the
@@ -6795,6 +6672,95 @@ mod tests {
         }
 
         #[test]
+        fn canonical_backend_syncs_typed_nodes_both_directions() {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let config = |path: &std::path::Path| NodeConfig {
+                app_id: "typed-node-sync-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: path.to_str().unwrap().to_string(),
+                transport: None,
+            };
+            let node_a = create_node(config(dir_a.path())).expect("create node A");
+            let node_b = create_node(config(dir_b.path())).expect("create node B");
+            node_a.start_sync().expect("start node A");
+            node_b.start_sync().expect("start node B");
+
+            let mut from_a = fixture();
+            from_a.id = "android-before-connect".to_string();
+            let mut from_b = fixture();
+            from_b.id = "desktop-before-connect".to_string();
+            node_a.put_node(from_a.clone()).expect("write node A");
+            node_b.put_node(from_b.clone()).expect("write node B");
+
+            node_a
+                .connect_peer(PeerInfo {
+                    name: "node-b".to_string(),
+                    node_id: node_b.node_id(),
+                    addresses: vec![node_b.endpoint_socket_addr().expect("node B bound socket")],
+                    relay_url: None,
+                })
+                .expect("connect canonical peers");
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                node_a.request_sync().expect("request node A sync");
+                node_b.request_sync().expect("request node B sync");
+                let a_has_b = node_a
+                    .get_nodes()
+                    .expect("read node A")
+                    .iter()
+                    .any(|node| node.id == from_b.id);
+                let b_has_a = node_b
+                    .get_nodes()
+                    .expect("read node B")
+                    .iter()
+                    .any(|node| node.id == from_a.id);
+                if a_has_b && b_has_a {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "pre-connect typed node documents did not converge"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            from_a.id = "android-after-connect".to_string();
+            from_b.id = "desktop-after-connect".to_string();
+            node_a.put_node(from_a.clone()).expect("update node A");
+            node_b.put_node(from_b.clone()).expect("update node B");
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                node_a.request_sync().expect("request node A sync");
+                node_b.request_sync().expect("request node B sync");
+                let a_has_b = node_a
+                    .get_nodes()
+                    .expect("read node A")
+                    .iter()
+                    .any(|node| node.id == from_b.id);
+                let b_has_a = node_b
+                    .get_nodes()
+                    .expect("read node B")
+                    .iter()
+                    .any(|node| node.id == from_a.id);
+                if a_has_b && b_has_a {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "post-connect typed node documents did not converge"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            node_a.stop_sync().expect("stop node A");
+            node_b.stop_sync().expect("stop node B");
+        }
+
+        #[test]
         fn publish_json_extracts_proto_fields() {
             let json = r#"{
                 "id": "ANDROID-abc123",
@@ -7160,10 +7126,8 @@ mod tests {
         /// Test writes a fake old-shape entry directly through the
         /// untyped Collection surface, then calls `get_tracks` and
         /// asserts (a) it doesn't error, (b) the legacy entry is
-        /// invisible. `put_track` itself can't be used here because
-        /// PR #836 migrated it to `Node::publish` (correctly), so
-        /// reaching the old shape requires going through
-        /// `storage_backend.collection().upsert(...)` directly.
+        /// invisible. Production write APIs no longer expose this shape, so
+        /// the fixture reaches the canonical backend's raw store directly.
         #[test]
         fn pre_fix_flat_json_entries_are_silently_dropped_not_crashed() {
             let fx = ingest_position_test_node();
@@ -7187,12 +7151,9 @@ mod tests {
             .to_string()
             .into_bytes();
 
-            // `pn.storage_backend` is `Arc<AutomergeBackend>` from
-            // `peat_protocol::storage`; its `StorageBackend::collection`
-            // returns the untyped `Arc<dyn Collection>` whose
-            // `upsert(doc_id, Vec<u8>)` is the pre-#836 write path the
-            // bug originally lived in.
-            let coll = pn.storage_backend.collection(collections::TRACKS);
+            // Reach the old raw byte shape through the canonical backend's
+            // underlying store; production APIs no longer expose this path.
+            let coll = pn.sync_backend.store().collection(collections::TRACKS);
             coll.upsert("legacy-track-DEAD0001", legacy)
                 .expect("legacy upsert must succeed");
 
@@ -8051,12 +8012,8 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getDocumentJni(
     let runtime = Arc::clone(&node_owner.runtime);
     std::mem::forget(node_owner);
 
-    // Read through the same `peat_mesh::Node` document layer that
-    // `publishDocumentJni` writes to. The older raw-bytes
-    // `PeatNode::get_document` reads from a different storage path
-    // (`storage_backend.collection(...)`) and won't see docs that
-    // arrived via the document layer's publish or that sync replicas
-    // applied as Automerge ops. peat-mesh#138 M4 / peat#879 QA.
+    // Read through the same canonical document layer used by every FFI write
+    // and by inbound Automerge sync.
     let result = runtime.block_on(mesh_node.get(&collection_str, &doc_id_str));
     match result {
         Ok(Some(doc)) => {
@@ -8817,7 +8774,17 @@ async fn publish_document_into_node(
     collection: &str,
     json: &str,
 ) -> anyhow::Result<String> {
-    publish_document_into_node_with_origin(node, collection, json, None).await
+    publish_document_into_node_inner(node, collection, json, None, None).await
+}
+
+#[cfg(feature = "sync")]
+async fn publish_document_into_node_with_id(
+    node: &peat_mesh::Node,
+    collection: &str,
+    json: &str,
+    document_id: &str,
+) -> anyhow::Result<String> {
+    publish_document_into_node_inner(node, collection, json, Some(document_id), None).await
 }
 
 /// Origin-aware sibling of [`publish_document_into_node`], backing
@@ -8836,6 +8803,17 @@ async fn publish_document_into_node_with_origin(
     json: &str,
     origin: Option<String>,
 ) -> anyhow::Result<String> {
+    publish_document_into_node_inner(node, collection, json, None, origin).await
+}
+
+#[cfg(feature = "sync")]
+async fn publish_document_into_node_inner(
+    node: &peat_mesh::Node,
+    collection: &str,
+    json: &str,
+    document_id: Option<&str>,
+    origin: Option<String>,
+) -> anyhow::Result<String> {
     use peat_mesh::sync::types::Document;
     use serde_json::Value;
 
@@ -8852,9 +8830,11 @@ async fn publish_document_into_node_with_origin(
         }
     };
 
-    let id = obj.remove("id").and_then(|v| match v {
-        Value::String(s) => Some(s),
-        _ => None,
+    let id = document_id.map(str::to_owned).or_else(|| {
+        obj.remove("id").and_then(|v| match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        })
     });
 
     let fields = obj.into_iter().collect();
@@ -9938,17 +9918,10 @@ impl PeatNode {
         Ok(Some(id.to_string()))
     }
 
-    /// Publish a JSON document through the **node layer** — the same path the
-    /// Android `publishDocumentJni` uses — so the write reaches the ADR-059
-    /// fan-out and is emitted over the bridged transports (BLE/Wi-Fi). The
-    /// `id` field in the JSON, when present, becomes the document id
-    /// (returned).
-    ///
-    /// Use this instead of `put_document` when the write must propagate to
-    /// peers via the bridged radios: `put_document`/`put_node` write straight
-    /// to `storage_backend`, which the fan-out does not observe, so those never
-    /// emit a BLE frame. Needed by the iOS bridge (which drives the poll API
-    /// from Dart and has no JNI `publishDocumentJni`).
+    /// Publish a JSON document through the canonical node layer so the write
+    /// reaches the ADR-059 fan-out and every bridged transport. This remains as
+    /// the value-returning variant of [`PeatNode::put_document`] for Dart and
+    /// Swift callers that need the generated document ID.
     #[cfg(feature = "sync")]
     pub fn publish_document(&self, collection: String, json: String) -> Result<String, PeatError> {
         self.runtime
