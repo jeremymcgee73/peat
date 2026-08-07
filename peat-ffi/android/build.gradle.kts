@@ -46,7 +46,11 @@ group = "com.defenseunicorns"
 // 0.1.6 (was 0.1.5): adds the network-change lifecycle notification and
 // stale authenticated-path recovery after interface changes. Existing APIs
 // remain source-compatible. Ships peat-ffi 0.2.14. See peat#1057.
-version = "0.1.6"
+//
+// 0.1.7 (was 0.1.6): decodes canonical nested and sidecar-compatible Track
+// documents without changing the published FFI surface. Ships peat-ffi
+// 0.2.15. See peat#1067 / peat#1068; publication is tracked through peat#1069.
+version = "0.1.7"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"

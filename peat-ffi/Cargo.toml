@@ -94,7 +94,12 @@ name = "peat-ffi"
 # before waking reconnect work; peat-mesh rc.60 replaces stale authenticated
 # paths after interface recovery. Existing methods and discovery defaults are
 # unchanged. See peat#1057.
-version = "0.2.14"
+#
+# 0.2.15 (was 0.2.14): backward-compatible Track decoding for canonical
+# nested position/source documents and sidecar-compatible scalar fields.
+# Source timestamps remain explicitly unavailable when producers omit them;
+# no UniFFI or JNI signatures changed. See peat#1067 / peat#1068.
+version = "0.2.15"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
