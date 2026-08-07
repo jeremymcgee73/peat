@@ -3398,6 +3398,56 @@ fn track_from_document(
     parse_track_json(id, &json)
 }
 
+fn first_json_f64(value: &serde_json::Value, pointers: &[&str]) -> Option<f64> {
+    pointers
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_f64))
+}
+
+fn source_timestamp_ms(value: &serde_json::Value) -> Option<i64> {
+    if let Some(timestamp) = value.as_str() {
+        return chrono::DateTime::parse_from_rfc3339(timestamp)
+            .ok()
+            .map(|parsed| parsed.timestamp_millis());
+    }
+
+    let seconds = value.get("seconds")?.as_i64()?;
+    let nanos = value
+        .get("nanos")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
+}
+
+fn track_attributes(value: &serde_json::Value) -> HashMap<String, String> {
+    let object = value
+        .get("attributes")
+        .and_then(serde_json::Value::as_object);
+    let encoded = value
+        .get("attributes_json")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|json| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json).ok()
+        });
+
+    object
+        .cloned()
+        .or(encoded)
+        .map(|attributes| {
+            attributes
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string());
+                    (key, value)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_track_json(id: &str, json: &str) -> Result<TrackInfo, PeatError> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| PeatError::InvalidInput {
         msg: format!("Invalid JSON: {}", e),
@@ -3405,25 +3455,50 @@ fn parse_track_json(id: &str, json: &str) -> Result<TrackInfo, PeatError> {
 
     Ok(TrackInfo {
         id: id.to_string(),
-        source_node: v["source_node"].as_str().unwrap_or("unknown").to_string(),
-        lat: v["lat"].as_f64().unwrap_or(0.0),
-        lon: v["lon"].as_f64().unwrap_or(0.0),
-        altitude: v["altitude"].as_f64().unwrap_or(0.0),
-        cep: v["cep"].as_f64().unwrap_or(0.0),
-        heading: v["heading"].as_f64(),
-        speed: v["speed"].as_f64(),
+        source_node: v["source_node"]
+            .as_str()
+            .or_else(|| {
+                v.pointer("/source/node_id")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .unwrap_or("unknown")
+            .to_string(),
+        lat: first_json_f64(&v, &["/lat", "/latitude", "/position/latitude"]).unwrap_or(0.0),
+        lon: first_json_f64(&v, &["/lon", "/longitude", "/position/longitude"]).unwrap_or(0.0),
+        altitude: first_json_f64(&v, &["/altitude", "/altitude_m", "/position/altitude"])
+            .unwrap_or(0.0),
+        cep: first_json_f64(&v, &["/cep", "/cep_m", "/position/cep_m"]).unwrap_or(0.0),
+        heading: first_json_f64(
+            &v,
+            &[
+                "/heading",
+                "/heading_deg",
+                "/velocity/bearing",
+                "/kinematics/heading",
+            ],
+        ),
+        speed: first_json_f64(
+            &v,
+            &[
+                "/speed",
+                "/speed_mps",
+                "/velocity/speed_mps",
+                "/kinematics/velocity",
+            ],
+        ),
         classification: v["classification"].as_str().unwrap_or("a-u-G").to_string(),
         confidence: v["confidence"].as_f64().unwrap_or(0.5),
-        created_at: v["created_at"].as_i64().unwrap_or(0),
-        last_update: v["last_update"].as_i64().unwrap_or(0),
-        attributes: v["attributes"]
-            .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        created_at: v["created_at"]
+            .as_i64()
+            .or_else(|| v.get("first_seen").and_then(source_timestamp_ms))
+            .or_else(|| v.get("first_seen_ts").and_then(source_timestamp_ms))
+            .unwrap_or(0),
+        last_update: v["last_update"]
+            .as_i64()
+            .or_else(|| v.get("last_seen").and_then(source_timestamp_ms))
+            .or_else(|| v.get("last_seen_ts").and_then(source_timestamp_ms))
+            .unwrap_or(0),
+        attributes: track_attributes(&v),
     })
 }
 
@@ -3550,6 +3625,96 @@ mod tests {
         let version = peat_version();
         assert!(!version.is_empty());
         assert!(version.contains('.'));
+    }
+
+    mod track_document_compatibility_tests {
+        use super::*;
+
+        #[test]
+        fn decodes_canonical_track_document() {
+            let json = r#"{
+                "track_id": "track-sanitized",
+                "classification": "a-n-A-C-F",
+                "confidence": 0.91,
+                "position": {
+                    "latitude": 12.345678,
+                    "longitude": -98.765432,
+                    "altitude": 1234.5,
+                    "cep_m": 15.0
+                },
+                "velocity": {
+                    "bearing": 271.25,
+                    "speed_mps": 82.5
+                },
+                "source": {
+                    "node_id": "node-sanitized",
+                    "sensor_id": "sensor-sanitized",
+                    "model_version": "1.0",
+                    "source_type": 1
+                },
+                "attributes_json": "{\"category\":\"air\"}",
+                "first_seen": {"seconds": 1767323000, "nanos": 123000000},
+                "last_seen": {"seconds": 1767323045, "nanos": 678000000}
+            }"#;
+
+            let track = parse_track_json("tracks:track-sanitized", json).expect("parse");
+
+            assert_eq!(track.source_node, "node-sanitized");
+            assert_eq!(track.lat, 12.345678);
+            assert_eq!(track.lon, -98.765432);
+            assert_eq!(track.altitude, 1234.5);
+            assert_eq!(track.cep, 15.0);
+            assert_eq!(track.heading, Some(271.25));
+            assert_eq!(track.speed, Some(82.5));
+            assert_eq!(track.created_at, 1_767_323_000_123);
+            assert_eq!(track.last_update, 1_767_323_045_678);
+            assert_eq!(
+                track.attributes.get("category").map(String::as_str),
+                Some("air")
+            );
+        }
+
+        #[test]
+        fn decodes_hosted_sidecar_track_document() {
+            let json = r#"{
+                "id": "track-sanitized",
+                "source_node": "node-sanitized",
+                "latitude": 12.345678,
+                "longitude": -98.765432,
+                "altitude_m": 1234.5,
+                "cep_m": 15.0,
+                "heading_deg": 271.25,
+                "speed_mps": 82.5,
+                "classification": "a-n-A-C-F",
+                "confidence": 0.91,
+                "last_seen_ts": "2026-01-02T03:04:05.678Z"
+            }"#;
+
+            let track = parse_track_json("tracks:track-sanitized", json).expect("parse");
+
+            assert_eq!(track.source_node, "node-sanitized");
+            assert_eq!(track.lat, 12.345678);
+            assert_eq!(track.lon, -98.765432);
+            assert_eq!(track.altitude, 1234.5);
+            assert_eq!(track.cep, 15.0);
+            assert_eq!(track.heading, Some(271.25));
+            assert_eq!(track.speed, Some(82.5));
+            assert_eq!(track.last_update, 1_767_323_045_678);
+        }
+
+        #[test]
+        fn sidecar_track_without_source_time_keeps_time_unavailable() {
+            let json = r#"{
+                "source_node": "node-sanitized",
+                "latitude": 12.345678,
+                "longitude": -98.765432
+            }"#;
+
+            let track = parse_track_json("tracks:track-sanitized", json).expect("parse");
+
+            assert_eq!(track.created_at, 0);
+            assert_eq!(track.last_update, 0);
+        }
     }
 
     /// `create_node` must honor `TransportConfigFFI.enable_n0_relay` in BOTH
@@ -6941,6 +7106,95 @@ mod tests {
             .expect("create_node");
 
             TrackFixture { node, _tmp: tmp }
+        }
+
+        fn document_from_json(id: &str, json: &str) -> peat_mesh::sync::types::Document {
+            let value: serde_json::Value = serde_json::from_str(json).expect("fixture json");
+            let fields = value
+                .as_object()
+                .expect("fixture must be an object")
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            peat_mesh::sync::types::Document {
+                id: Some(id.to_string()),
+                fields,
+                updated_at: std::time::SystemTime::now(),
+            }
+        }
+
+        /// Surface-tier coverage for peat#1067: hosted documents enter through
+        /// the public Document API and leave through the exported `get_tracks`
+        /// method. This exercises `Node::publish` -> `Node::query` ->
+        /// `track_from_document` -> `parse_track_json`, including the adapter
+        /// that parser-only tests intentionally bypass.
+        #[test]
+        fn hosted_document_shapes_decode_through_get_tracks() {
+            let fx = ingest_position_test_node();
+            let pn = &fx.node;
+            let canonical = document_from_json(
+                "canonical-sanitized",
+                r#"{
+                    "track_id": "canonical-sanitized",
+                    "classification": "a-n-A-C-F",
+                    "confidence": 0.91,
+                    "position": {
+                        "latitude": 12.345678,
+                        "longitude": -98.765432,
+                        "altitude": 1234.5,
+                        "cep_m": 15.0
+                    },
+                    "velocity": {"bearing": 271.25, "speed_mps": 82.5},
+                    "source": {"node_id": "canonical-node-sanitized"},
+                    "last_seen": {"seconds": 1767323045, "nanos": 678000000}
+                }"#,
+            );
+            let sidecar = document_from_json(
+                "sidecar-sanitized",
+                r#"{
+                    "id": "sidecar-sanitized",
+                    "source_node": "sidecar-node-sanitized",
+                    "latitude": 23.456789,
+                    "longitude": -87.654321,
+                    "altitude_m": 2345.6,
+                    "cep_m": 25.0,
+                    "heading_deg": 182.5,
+                    "speed_mps": 92.5,
+                    "classification": "a-n-A-C-F",
+                    "confidence": 0.81,
+                    "last_seen_ts": "2026-01-02T03:04:05.678Z"
+                }"#,
+            );
+
+            pn.runtime.block_on(async {
+                pn.node
+                    .publish(collections::TRACKS, canonical)
+                    .await
+                    .expect("publish canonical");
+                pn.node
+                    .publish(collections::TRACKS, sidecar)
+                    .await
+                    .expect("publish sidecar");
+            });
+
+            let tracks = pn.get_tracks().expect("get_tracks");
+            let canonical = tracks
+                .iter()
+                .find(|track| track.id == "canonical-sanitized")
+                .expect("canonical track");
+            assert_eq!(canonical.source_node, "canonical-node-sanitized");
+            assert_eq!(canonical.lat, 12.345678);
+            assert_eq!(canonical.heading, Some(271.25));
+            assert_eq!(canonical.last_update, 1_767_323_045_678);
+
+            let sidecar = tracks
+                .iter()
+                .find(|track| track.id == "sidecar-sanitized")
+                .expect("sidecar track");
+            assert_eq!(sidecar.source_node, "sidecar-node-sanitized");
+            assert_eq!(sidecar.lat, 23.456789);
+            assert_eq!(sidecar.heading, Some(182.5));
+            assert_eq!(sidecar.last_update, 1_767_323_045_678);
         }
 
         /// Sanity check the **flat-JSON** path: `put_track` →
