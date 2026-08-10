@@ -414,6 +414,9 @@ impl BuiltinRegistry {
         r.register(descriptors::track());
         r.register(descriptors::hierarchical_command());
         r.register(descriptors::marker());
+        r.register(descriptors::geochat());
+        r.register(descriptors::overlay_revision());
+        r.register(descriptors::attachment_offer());
         r
     }
 }
@@ -440,6 +443,534 @@ impl TypeRegistry for BuiltinRegistry {
 /// without `Box<dyn Fn>` overhead.
 mod descriptors {
     use super::*;
+
+    const MAX_ID_LEN: usize = 128;
+    const MAX_RECIPIENTS: usize = 64;
+    const MAX_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+    const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+    fn object<'a>(
+        value: &'a Value,
+        name: &str,
+    ) -> ValidationResult<&'a serde_json::Map<String, Value>> {
+        value
+            .as_object()
+            .ok_or_else(|| ValidationError::InvalidValue(format!("{name} must be a JSON object")))
+    }
+
+    fn exact_keys(
+        obj: &serde_json::Map<String, Value>,
+        required: &[&str],
+        optional: &[&str],
+    ) -> ValidationResult<()> {
+        for field in required {
+            if !obj.contains_key(*field) {
+                return Err(ValidationError::MissingField((*field).to_string()));
+            }
+        }
+        for field in obj.keys() {
+            if !required.contains(&field.as_str()) && !optional.contains(&field.as_str()) {
+                return Err(ValidationError::InvalidValue(format!(
+                    "unknown field {field}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn bounded_string<'a>(
+        obj: &'a serde_json::Map<String, Value>,
+        field: &str,
+        max: usize,
+    ) -> ValidationResult<&'a str> {
+        let value = obj
+            .get(field)
+            .ok_or_else(|| ValidationError::MissingField(field.to_string()))?
+            .as_str()
+            .ok_or_else(|| ValidationError::InvalidValue(format!("{field} must be a string")))?;
+        if value.is_empty() || value.len() > max {
+            return Err(ValidationError::ConstraintViolation(format!(
+                "{field} length must be between 1 and {max} bytes"
+            )));
+        }
+        Ok(value)
+    }
+
+    fn optional_bounded_string(
+        obj: &serde_json::Map<String, Value>,
+        field: &str,
+        max: usize,
+    ) -> ValidationResult<()> {
+        if obj.contains_key(field) {
+            bounded_string(obj, field, max)?;
+        }
+        Ok(())
+    }
+
+    fn unsigned(obj: &serde_json::Map<String, Value>, field: &str) -> ValidationResult<u64> {
+        obj.get(field)
+            .ok_or_else(|| ValidationError::MissingField(field.to_string()))?
+            .as_u64()
+            .ok_or_else(|| {
+                ValidationError::InvalidValue(format!("{field} must be an unsigned integer"))
+            })
+    }
+
+    fn bounded_window(
+        obj: &serde_json::Map<String, Value>,
+        start_field: &str,
+        end_field: &str,
+    ) -> ValidationResult<()> {
+        let start = unsigned(obj, start_field)?;
+        let end = unsigned(obj, end_field)?;
+        if start == 0 || end <= start || end - start > MAX_RETENTION_MS {
+            return Err(ValidationError::ConstraintViolation(format!(
+                "{end_field} must be after {start_field} within 30 days"
+            )));
+        }
+        Ok(())
+    }
+
+    fn audience(value: &Value) -> ValidationResult<()> {
+        let obj = object(value, "audience")?;
+        exact_keys(obj, &["kind"], &["recipients", "group_id"])?;
+        let kind = bounded_string(obj, "kind", 16)?;
+        let recipients = match obj.get("recipients") {
+            None => Vec::new(),
+            Some(Value::Array(values)) if values.len() <= MAX_RECIPIENTS => {
+                let mut result = Vec::with_capacity(values.len());
+                for value in values {
+                    let recipient = value.as_str().ok_or_else(|| {
+                        ValidationError::InvalidValue(
+                            "audience recipients must be strings".to_string(),
+                        )
+                    })?;
+                    if recipient.is_empty()
+                        || recipient.len() > MAX_ID_LEN
+                        || result.contains(&recipient)
+                    {
+                        return Err(ValidationError::ConstraintViolation(
+                            "audience recipients must be unique bounded identities".to_string(),
+                        ));
+                    }
+                    result.push(recipient);
+                }
+                result
+            }
+            Some(Value::Array(_)) => {
+                return Err(ValidationError::ConstraintViolation(format!(
+                    "audience supports at most {MAX_RECIPIENTS} recipients"
+                )))
+            }
+            Some(_) => {
+                return Err(ValidationError::InvalidValue(
+                    "audience recipients must be an array".to_string(),
+                ))
+            }
+        };
+        match kind {
+            "direct" if recipients.len() == 1 && !obj.contains_key("group_id") => Ok(()),
+            "group" if !recipients.is_empty() => {
+                bounded_string(obj, "group_id", MAX_ID_LEN)?;
+                Ok(())
+            }
+            "broadcast" if recipients.is_empty() && !obj.contains_key("group_id") => Ok(()),
+            "direct" | "group" | "broadcast" => Err(ValidationError::ConstraintViolation(
+                "audience fields do not match the declared kind".to_string(),
+            )),
+            _ => Err(ValidationError::InvalidValue(
+                "audience kind must be direct, group, or broadcast".to_string(),
+            )),
+        }
+    }
+
+    fn coordinate(value: &Value) -> ValidationResult<()> {
+        let obj = object(value, "coordinate")?;
+        exact_keys(obj, &["latitude", "longitude"], &["altitude_m"])?;
+        let number = |field: &str| {
+            obj.get(field)
+                .and_then(Value::as_f64)
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| ValidationError::InvalidValue(format!("{field} must be finite")))
+        };
+        let latitude = number("latitude")?;
+        let longitude = number("longitude")?;
+        if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
+            return Err(ValidationError::ConstraintViolation(
+                "coordinate is outside latitude/longitude bounds".to_string(),
+            ));
+        }
+        if obj.contains_key("altitude_m") {
+            number("altitude_m")?;
+        }
+        Ok(())
+    }
+
+    fn geometry(value: &Value) -> ValidationResult<()> {
+        let obj = object(value, "geometry")?;
+        let kind = bounded_string(obj, "kind", 16)?;
+        match kind {
+            "point" => {
+                exact_keys(obj, &["kind", "point"], &[])?;
+                coordinate(&obj["point"])
+            }
+            "line" | "polygon" | "route" => {
+                exact_keys(obj, &["kind", "points"], &[])?;
+                let points = obj["points"].as_array().ok_or_else(|| {
+                    ValidationError::InvalidValue("geometry points must be an array".to_string())
+                })?;
+                let minimum = if kind == "polygon" { 3 } else { 2 };
+                if points.len() < minimum || points.len() > 4_096 {
+                    return Err(ValidationError::ConstraintViolation(format!(
+                        "{kind} must contain {minimum} to 4096 points"
+                    )));
+                }
+                for point in points {
+                    coordinate(point)?;
+                }
+                Ok(())
+            }
+            "circle" => {
+                exact_keys(obj, &["kind", "center", "radius_m"], &[])?;
+                coordinate(&obj["center"])?;
+                let radius = obj["radius_m"]
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .ok_or_else(|| {
+                        ValidationError::InvalidValue("radius_m must be finite".to_string())
+                    })?;
+                if radius <= 0.0 || radius > 10_000_000.0 {
+                    return Err(ValidationError::ConstraintViolation(
+                        "radius_m must be greater than zero and at most 10000000".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            _ => Err(ValidationError::InvalidValue(
+                "geometry kind must be point, line, polygon, circle, or route".to_string(),
+            )),
+        }
+    }
+
+    fn color(value: &Value, field: &str) -> ValidationResult<()> {
+        let color = value
+            .as_str()
+            .ok_or_else(|| ValidationError::InvalidValue(format!("{field} must be a string")))?;
+        let digits = color.strip_prefix('#').unwrap_or("");
+        if !matches!(digits.len(), 6 | 8) || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(ValidationError::InvalidValue(format!(
+                "{field} must be #RRGGBB or #AARRGGBB"
+            )));
+        }
+        Ok(())
+    }
+
+    fn visual(value: &Value) -> ValidationResult<()> {
+        let obj = object(value, "visual")?;
+        exact_keys(
+            obj,
+            &[],
+            &[
+                "title",
+                "color",
+                "icon_type",
+                "stroke_width",
+                "fill_color",
+                "remarks",
+                "visible",
+            ],
+        )?;
+        optional_bounded_string(obj, "title", 256)?;
+        optional_bounded_string(obj, "icon_type", 128)?;
+        optional_bounded_string(obj, "remarks", 4_096)?;
+        for field in ["color", "fill_color"] {
+            if let Some(value) = obj.get(field) {
+                color(value, field)?;
+            }
+        }
+        if let Some(value) = obj.get("stroke_width") {
+            let width = value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| {
+                    ValidationError::InvalidValue("stroke_width must be finite".to_string())
+                })?;
+            if !(0.0..=100.0).contains(&width) {
+                return Err(ValidationError::ConstraintViolation(
+                    "stroke_width must be between 0 and 100".to_string(),
+                ));
+            }
+        }
+        if obj.get("visible").is_some_and(|value| !value.is_boolean()) {
+            return Err(ValidationError::InvalidValue(
+                "visible must be boolean".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn sha256(value: &Value, field: &str) -> ValidationResult<()> {
+        let hash = value
+            .as_str()
+            .ok_or_else(|| ValidationError::InvalidValue(format!("{field} must be a string")))?;
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(ValidationError::InvalidValue(format!(
+                "{field} must contain 64 hexadecimal SHA-256 characters"
+            )));
+        }
+        Ok(())
+    }
+
+    fn media_type(obj: &serde_json::Map<String, Value>) -> ValidationResult<()> {
+        let value = bounded_string(obj, "media_type", 127)?;
+        if !value.contains('/')
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        {
+            return Err(ValidationError::InvalidValue(
+                "media_type must be a bounded type/subtype token".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn file_metadata(value: &Value, include_name: bool) -> ValidationResult<u64> {
+        let obj = object(value, "file metadata")?;
+        if include_name {
+            exact_keys(
+                obj,
+                &["name", "media_type", "size_bytes", "sha256", "blob_ref"],
+                &[],
+            )?;
+            let name = bounded_string(obj, "name", 255)?;
+            if matches!(name, "." | "..") || name.contains(['/', '\\', '\0']) {
+                return Err(ValidationError::InvalidValue(
+                    "name must be a safe basename".to_string(),
+                ));
+            }
+        } else {
+            exact_keys(
+                obj,
+                &["media_type", "size_bytes", "sha256", "blob_ref"],
+                &[],
+            )?;
+        }
+        media_type(obj)?;
+        let size = unsigned(obj, "size_bytes")?;
+        if size == 0 || size > MAX_FILE_BYTES {
+            return Err(ValidationError::ConstraintViolation(format!(
+                "size_bytes must be between 1 and {MAX_FILE_BYTES}"
+            )));
+        }
+        sha256(&obj["sha256"], "sha256")?;
+        bounded_string(obj, "blob_ref", 512)?;
+        Ok(size)
+    }
+
+    /// Interoperable operator-to-operator text message contract.
+    pub fn geochat() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let obj = object(value, "geochat document")?;
+            exact_keys(
+                obj,
+                &[
+                    "message_id",
+                    "sender_id",
+                    "audience",
+                    "sent_at_ms",
+                    "expires_at_ms",
+                    "body",
+                    "delivery_state",
+                ],
+                &["thread_id", "reply_to_id"],
+            )?;
+            bounded_string(obj, "message_id", MAX_ID_LEN)?;
+            bounded_string(obj, "sender_id", MAX_ID_LEN)?;
+            audience(&obj["audience"])?;
+            bounded_window(obj, "sent_at_ms", "expires_at_ms")?;
+            bounded_string(obj, "body", 8_192)?;
+            optional_bounded_string(obj, "thread_id", MAX_ID_LEN)?;
+            optional_bounded_string(obj, "reply_to_id", MAX_ID_LEN)?;
+            match bounded_string(obj, "delivery_state", 16)? {
+                "queued" | "sent" | "delivered" | "failed" | "expired" => Ok(()),
+                _ => Err(ValidationError::InvalidValue(
+                    "delivery_state is not recognized".to_string(),
+                )),
+            }
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.collaboration.geochat.v1"),
+            name: "GeoChat".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("collaboration-geochat".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: default_proto3_zero,
+            fields: vec![
+                FieldDescriptor::new("message_id", "Message ID", FieldFormat::Text),
+                FieldDescriptor::new("sender_id", "Sender", FieldFormat::Text),
+                FieldDescriptor::new("audience", "Audience", FieldFormat::JsonString),
+                FieldDescriptor::new("sent_at_ms", "Sent", FieldFormat::Timestamp),
+                FieldDescriptor::new("expires_at_ms", "Expires", FieldFormat::Timestamp),
+                FieldDescriptor::new("body", "Body", FieldFormat::Text),
+                FieldDescriptor::new("thread_id", "Thread", FieldFormat::Text),
+                FieldDescriptor::new("reply_to_id", "Reply To", FieldFormat::Text),
+                FieldDescriptor::new("delivery_state", "Delivery State", FieldFormat::Text),
+            ],
+        }
+    }
+
+    /// Complete collaborative geospatial state revision or tombstone.
+    pub fn overlay_revision() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let obj = object(value, "overlay revision")?;
+            exact_keys(
+                obj,
+                &[
+                    "overlay_id",
+                    "revision_id",
+                    "revision_seq",
+                    "actor_id",
+                    "owner_id",
+                    "audience",
+                    "source_time_ms",
+                    "deleted",
+                ],
+                &["geometry", "visual"],
+            )?;
+            for field in ["overlay_id", "revision_id", "actor_id", "owner_id"] {
+                bounded_string(obj, field, MAX_ID_LEN)?;
+            }
+            if unsigned(obj, "revision_seq")? == 0 || unsigned(obj, "source_time_ms")? == 0 {
+                return Err(ValidationError::ConstraintViolation(
+                    "revision_seq and source_time_ms must be positive".to_string(),
+                ));
+            }
+            audience(&obj["audience"])?;
+            let deleted = obj["deleted"].as_bool().ok_or_else(|| {
+                ValidationError::InvalidValue("deleted must be boolean".to_string())
+            })?;
+            match (deleted, obj.get("geometry"), obj.get("visual")) {
+                (false, Some(geometry_value), Some(visual_value)) => {
+                    geometry(geometry_value)?;
+                    visual(visual_value)
+                }
+                (true, None, None) => Ok(()),
+                _ => Err(ValidationError::ConstraintViolation(
+                    "live revisions require complete geometry and visual state; tombstones omit both".to_string(),
+                )),
+            }
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.collaboration.overlay.revision.v1"),
+            name: "Overlay Revision".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("collaboration-overlay-revisions".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: default_proto3_zero,
+            fields: vec![
+                FieldDescriptor::new("overlay_id", "Overlay ID", FieldFormat::Text),
+                FieldDescriptor::new("revision_id", "Revision ID", FieldFormat::Text),
+                FieldDescriptor::new(
+                    "revision_seq",
+                    "Revision",
+                    FieldFormat::Number { unit: None },
+                ),
+                FieldDescriptor::new("actor_id", "Actor", FieldFormat::Text),
+                FieldDescriptor::new("owner_id", "Owner", FieldFormat::Text),
+                FieldDescriptor::new("audience", "Audience", FieldFormat::JsonString),
+                FieldDescriptor::new("source_time_ms", "Source Time", FieldFormat::Timestamp),
+                FieldDescriptor::new("deleted", "Deleted", FieldFormat::Boolean),
+                FieldDescriptor::new("geometry", "Geometry", FieldFormat::JsonString),
+                FieldDescriptor::new("visual", "Visual", FieldFormat::JsonString),
+            ],
+        }
+    }
+
+    /// Metadata-first offer for a separately transferred photo or file.
+    pub fn attachment_offer() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let obj = object(value, "attachment offer")?;
+            exact_keys(
+                obj,
+                &[
+                    "offer_id",
+                    "sender_id",
+                    "audience",
+                    "created_at_ms",
+                    "expires_at_ms",
+                    "content_kind",
+                    "relation",
+                    "file",
+                ],
+                &["thumbnail"],
+            )?;
+            bounded_string(obj, "offer_id", MAX_ID_LEN)?;
+            bounded_string(obj, "sender_id", MAX_ID_LEN)?;
+            audience(&obj["audience"])?;
+            bounded_window(obj, "created_at_ms", "expires_at_ms")?;
+            let content_kind = bounded_string(obj, "content_kind", 16)?;
+            if !matches!(content_kind, "photo" | "file") {
+                return Err(ValidationError::InvalidValue(
+                    "content_kind must be photo or file".to_string(),
+                ));
+            }
+            let relation = object(&obj["relation"], "relation")?;
+            exact_keys(relation, &["kind"], &["id"])?;
+            match bounded_string(relation, "kind", 16)? {
+                "none" if !relation.contains_key("id") => {}
+                "chat" | "overlay" => {
+                    bounded_string(relation, "id", MAX_ID_LEN)?;
+                }
+                _ => {
+                    return Err(ValidationError::InvalidValue(
+                        "relation kind and id are inconsistent".to_string(),
+                    ))
+                }
+            }
+            let file_size = file_metadata(&obj["file"], true)?;
+            match (content_kind, obj.get("thumbnail")) {
+                ("photo", Some(thumbnail)) => {
+                    let thumbnail_size = file_metadata(thumbnail, false)?;
+                    if thumbnail_size >= file_size {
+                        return Err(ValidationError::ConstraintViolation(
+                            "thumbnail must be smaller than the full photo".to_string(),
+                        ));
+                    }
+                }
+                ("photo", None) => {
+                    return Err(ValidationError::MissingField("thumbnail".to_string()))
+                }
+                ("file", None) => {}
+                ("file", Some(_)) => {
+                    return Err(ValidationError::ConstraintViolation(
+                        "arbitrary files do not carry photo thumbnails".to_string(),
+                    ))
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.collaboration.attachment.offer.v1"),
+            name: "Attachment Offer".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("collaboration-attachment-offers".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: default_proto3_zero,
+            fields: vec![
+                FieldDescriptor::new("offer_id", "Offer ID", FieldFormat::Text),
+                FieldDescriptor::new("sender_id", "Sender", FieldFormat::Text),
+                FieldDescriptor::new("audience", "Audience", FieldFormat::JsonString),
+                FieldDescriptor::new("created_at_ms", "Created", FieldFormat::Timestamp),
+                FieldDescriptor::new("expires_at_ms", "Expires", FieldFormat::Timestamp),
+                FieldDescriptor::new("content_kind", "Content Kind", FieldFormat::Text),
+                FieldDescriptor::new("relation", "Relation", FieldFormat::JsonString),
+                FieldDescriptor::new("file", "File", FieldFormat::BlobRef),
+                FieldDescriptor::new("thumbnail", "Thumbnail", FieldFormat::BlobRef),
+            ],
+        }
+    }
 
     /// `peat.capability.v1.Capability`.
     pub fn capability() -> TypeDescriptor {
@@ -1105,7 +1636,10 @@ mod tests {
         assert!(ids.contains(&"peat.track.v1.Track"));
         assert!(ids.contains(&"peat.command.v1.HierarchicalCommand"));
         assert!(ids.contains(&"peat.marker.v1.Marker"));
-        assert_eq!(ids.len(), 8);
+        assert!(ids.contains(&"peat.collaboration.geochat.v1"));
+        assert!(ids.contains(&"peat.collaboration.overlay.revision.v1"));
+        assert!(ids.contains(&"peat.collaboration.attachment.offer.v1"));
+        assert_eq!(ids.len(), 11);
     }
 
     /// Build a JSON object matching the Capability proto3 shape.

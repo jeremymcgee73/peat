@@ -6,6 +6,8 @@ pub mod capabilities;
 pub mod traits;
 
 // Blob storage trait abstraction (ADR-025)
+#[cfg(feature = "automerge-backend")]
+pub mod application_delivery;
 pub mod blob_document_integration;
 pub mod blob_traits;
 pub mod file_distribution;
@@ -107,6 +109,12 @@ pub use capabilities::{
 pub use traits::{Collection, DocumentPredicate, StorageBackend};
 
 // Blob storage (ADR-025)
+#[cfg(feature = "automerge-backend")]
+pub use application_delivery::{
+    ApplicationDeliveryManager, ApplicationDeliveryProtocol, ApplicationDocumentStore,
+    DeliveryAcknowledgement, DeliveryAudience, DeliveryEvent, DeliveryOperation, DeliveryPriority,
+    DeliveryRequest, DeliveryStatus, RecipientEvidence, RegistryValidator,
+};
 pub use blob_document_integration::{
     BlobDocumentIntegration, BlobReference, BlobReferenceMetadata, ModelProvenance,
     ModelRegistryDocument, ModelVariantBlob,

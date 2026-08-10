@@ -298,7 +298,13 @@ repository = "https://github.com/defenseunicorns/peat"
 # the canonical `AutomergeBackend` around an already-bound Iroh endpoint and
 # Automerge store, preserving endpoint discovery and authenticated connection
 # ownership for peat-ffi.
-peat-mesh = { version = ">=0.9.0-rc.64, <0.9.1", default-features = false }
+#
+# Temporary source-build override approved for peat#1066 on 2026-08-10:
+# peat-mesh#383 and #389 are merged but not yet published. Pin the verified
+# squash commit containing both so facade development and CI are reproducible
+# without a mutable branch or local path. Return to an exact crates.io release
+# after this source exception ships.
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "3d2985e5c974ff4124d55d6bbc652c9a61ae8d9c", version = ">=0.9.0-rc.64, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`

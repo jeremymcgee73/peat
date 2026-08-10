@@ -229,6 +229,11 @@ mod roster;
 #[cfg(feature = "sync")]
 mod supervisor;
 
+#[cfg(feature = "sync")]
+mod application_delivery;
+#[cfg(feature = "sync")]
+pub use application_delivery::*;
+
 /// Get the Peat library version
 #[uniffi::export]
 pub fn peat_version() -> String {
@@ -690,6 +695,129 @@ pub struct DocumentChange {
     /// Where the change came from — local edit vs. remote peer sync. Lets a
     /// consumer notify on remote changes without alerting on its own edits.
     pub origin: ChangeOrigin,
+}
+
+/// Immutable application document returned by the bounded node-layer read API.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ApplicationDocument {
+    /// Stable document identifier within the queried collection.
+    pub id: String,
+    /// Canonical JSON object containing the document fields (the id is separate).
+    pub json_data: String,
+}
+
+/// One bounded, deterministically ordered page of application documents.
+#[cfg(feature = "sync")]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ApplicationDocumentPage {
+    /// Documents ordered by stable identifier.
+    pub documents: Vec<ApplicationDocument>,
+    /// Opaque continuation token, or `None` when this page is complete.
+    pub next_cursor: Option<String>,
+}
+
+#[cfg(feature = "sync")]
+const MAX_APPLICATION_COLLECTION_LEN: usize = 128;
+#[cfg(feature = "sync")]
+const MAX_APPLICATION_DOCUMENT_ID_LEN: usize = 256;
+#[cfg(feature = "sync")]
+const MAX_APPLICATION_QUERY_LIMIT: u32 = 100;
+#[cfg(feature = "sync")]
+const MAX_APPLICATION_DOCUMENT_BYTES: usize = 1024 * 1024;
+#[cfg(feature = "sync")]
+const MAX_APPLICATION_PAGE_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(feature = "sync")]
+const MAX_APPLICATION_CURSOR_LEN: usize = 1024;
+
+#[cfg(feature = "sync")]
+fn validate_application_key(kind: &str, value: &str, max_len: usize) -> Result<(), PeatError> {
+    if value.is_empty() || value.len() > max_len {
+        return Err(PeatError::InvalidInput {
+            msg: format!("{kind} must be 1..={max_len} bytes"),
+        });
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(PeatError::InvalidInput {
+            msg: format!("{kind} contains unsupported characters"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sync")]
+fn application_cursor(collection: &str, last_id: &str) -> String {
+    format!("v1.{}.{}", hex::encode(collection), hex::encode(last_id))
+}
+
+#[cfg(feature = "sync")]
+fn parse_application_cursor(collection: &str, cursor: &str) -> Result<String, PeatError> {
+    if cursor.is_empty() || cursor.len() > MAX_APPLICATION_CURSOR_LEN {
+        return Err(PeatError::InvalidInput {
+            msg: "cursor has an invalid length".to_string(),
+        });
+    }
+    let mut parts = cursor.split('.');
+    let (Some(version), Some(encoded_collection), Some(encoded_id), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(PeatError::InvalidInput {
+            msg: "cursor has an invalid shape".to_string(),
+        });
+    };
+    if version != "v1" {
+        return Err(PeatError::InvalidInput {
+            msg: "cursor version is unsupported".to_string(),
+        });
+    }
+    let cursor_collection = hex::decode(encoded_collection)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(|| PeatError::InvalidInput {
+            msg: "cursor collection is malformed".to_string(),
+        })?;
+    if cursor_collection != collection {
+        return Err(PeatError::InvalidInput {
+            msg: "cursor belongs to a different collection".to_string(),
+        });
+    }
+    let last_id = hex::decode(encoded_id)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(|| PeatError::InvalidInput {
+            msg: "cursor document id is malformed".to_string(),
+        })?;
+    validate_application_key(
+        "cursor document id",
+        &last_id,
+        MAX_APPLICATION_DOCUMENT_ID_LEN,
+    )?;
+    Ok(last_id)
+}
+
+#[cfg(feature = "sync")]
+fn application_document_from_mesh(
+    document: peat_mesh::sync::Document,
+) -> Result<ApplicationDocument, PeatError> {
+    let id = document.id.ok_or_else(|| PeatError::StorageError {
+        msg: "node-layer document is missing its stable id".to_string(),
+    })?;
+    validate_application_key("stored document id", &id, MAX_APPLICATION_DOCUMENT_ID_LEN)?;
+    let fields: serde_json::Map<String, serde_json::Value> = document.fields.into_iter().collect();
+    let json_data = serde_json::to_string(&serde_json::Value::Object(fields)).map_err(|error| {
+        PeatError::EncodingError {
+            msg: format!("application document serialization failed: {error}"),
+        }
+    })?;
+    if json_data.len() > MAX_APPLICATION_DOCUMENT_BYTES {
+        return Err(PeatError::InvalidInput {
+            msg: format!("application document exceeds {MAX_APPLICATION_DOCUMENT_BYTES} bytes"),
+        });
+    }
+    Ok(ApplicationDocument { id, json_data })
 }
 
 /// Build the FFI [`DocumentChange`] from peat-mesh's origin-tagged `DocChange`.
@@ -1371,6 +1499,96 @@ impl PeatNode {
         })
     }
 
+    /// Read one synchronized application document through the canonical node
+    /// layer. Inputs and returned payloads are bounded for safe FFI use.
+    pub fn node_get_application_document(
+        &self,
+        collection: &str,
+        doc_id: &str,
+    ) -> Result<Option<ApplicationDocument>, PeatError> {
+        validate_application_key("collection", collection, MAX_APPLICATION_COLLECTION_LEN)?;
+        validate_application_key("document id", doc_id, MAX_APPLICATION_DOCUMENT_ID_LEN)?;
+
+        self.runtime.block_on(async {
+            self.node
+                .get(collection, &doc_id.to_string())
+                .await
+                .map_err(|error| PeatError::StorageError {
+                    msg: error.to_string(),
+                })?
+                .map(application_document_from_mesh)
+                .transpose()
+        })
+    }
+
+    /// Query a bounded page of synchronized application documents.
+    ///
+    /// Results are sorted by stable document id. The opaque cursor records the
+    /// exact collection and last returned id, so it cannot be reused across
+    /// collections. Notifications remain wake signals; consumers can restart a
+    /// scan from `None` whenever they need an authoritative replay.
+    pub fn node_query_application_documents(
+        &self,
+        collection: &str,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<ApplicationDocumentPage, PeatError> {
+        validate_application_key("collection", collection, MAX_APPLICATION_COLLECTION_LEN)?;
+        if !(1..=MAX_APPLICATION_QUERY_LIMIT).contains(&limit) {
+            return Err(PeatError::InvalidInput {
+                msg: format!("limit must be 1..={MAX_APPLICATION_QUERY_LIMIT} documents"),
+            });
+        }
+        let after = cursor
+            .as_deref()
+            .map(|value| parse_application_cursor(collection, value))
+            .transpose()?;
+
+        let mut documents = self
+            .runtime
+            .block_on(self.node.query(collection, &peat_mesh::sync::Query::All))
+            .map_err(|error| PeatError::StorageError {
+                msg: error.to_string(),
+            })?
+            .into_iter()
+            .map(application_document_from_mesh)
+            .collect::<Result<Vec<_>, _>>()?;
+        documents.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+        if let Some(after) = after.as_deref() {
+            documents.retain(|document| document.id.as_str() > after);
+        }
+
+        let has_more = documents.len() > limit as usize;
+        documents.truncate(limit as usize);
+        let page_bytes = documents.iter().try_fold(0usize, |total, document| {
+            total
+                .checked_add(document.id.len())
+                .and_then(|value| value.checked_add(document.json_data.len()))
+                .ok_or_else(|| PeatError::InvalidInput {
+                    msg: "application document page size overflow".to_string(),
+                })
+        })?;
+        if page_bytes > MAX_APPLICATION_PAGE_BYTES {
+            return Err(PeatError::InvalidInput {
+                msg: format!(
+                    "application document page exceeds {MAX_APPLICATION_PAGE_BYTES} bytes"
+                ),
+            });
+        }
+        let next_cursor = if has_more {
+            documents
+                .last()
+                .map(|document| application_cursor(collection, &document.id))
+        } else {
+            None
+        };
+
+        Ok(ApplicationDocumentPage {
+            documents,
+            next_cursor,
+        })
+    }
+
     /// Retrieve a canonical mesh document as JSON.
     pub fn get_document(
         &self,
@@ -1396,7 +1614,11 @@ impl PeatNode {
             .map_err(|e| PeatError::StorageError { msg: e.to_string() })
     }
 
-    /// List all document IDs in a collection.
+    /// List all storage keys in a collection.
+    ///
+    /// Compatibility-only, unbounded inventory surface. It is unsuitable for
+    /// synchronized application catch-up; use
+    /// [`Self::node_query_application_documents`] for bounded node-layer reads.
     pub fn list_documents(&self, collection: &str) -> Result<Vec<String>, PeatError> {
         let prefix = format!("{}:", collection);
         self.sync_backend
@@ -1880,6 +2102,8 @@ pub(crate) fn create_node_with_identity(
             })?;
         Ok::<_, PeatError>(backend)
     })?;
+
+    application_delivery::install_builtin_validator(&sync_backend)?;
 
     let sync_init_ms = phase_start.elapsed().as_millis();
     #[cfg(target_os = "android")]
