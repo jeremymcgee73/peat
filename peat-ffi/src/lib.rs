@@ -7150,6 +7150,62 @@ mod tests {
         }
 
         #[test]
+        fn canonical_backend_auto_dials_a_discovered_peer() {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let config = |path: &std::path::Path| NodeConfig {
+                app_id: "mdns-auto-dial-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: path.to_str().unwrap().to_string(),
+                transport: None,
+            };
+            let node_a = create_node(config(dir_a.path())).expect("create node A");
+            let node_b = create_node(config(dir_b.path())).expect("create node B");
+            node_a.start_sync().expect("start node A");
+            node_b.start_sync().expect("start node B");
+
+            let a_is_initiator = node_a.iroh_transport.endpoint_id().as_bytes()
+                < node_b.iroh_transport.endpoint_id().as_bytes();
+            let (initiator, responder) = if a_is_initiator {
+                (&node_a, &node_b)
+            } else {
+                (&node_b, &node_a)
+            };
+            let discovered = peat_mesh::discovery::PeerInfo::new(
+                responder.node_id(),
+                vec![responder
+                    .endpoint_socket_addr()
+                    .expect("responder socket")
+                    .parse()
+                    .expect("valid responder socket")],
+            );
+            let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+            initiator.runtime.spawn(run_peat_mdns_auto_dial(
+                events_rx,
+                Arc::clone(&initiator.iroh_transport),
+                Arc::clone(&initiator.sync_backend),
+            ));
+            events_tx
+                .blocking_send(peat_mesh::discovery::DiscoveryEvent::PeerFound(discovered))
+                .expect("send discovered peer");
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while initiator.peer_count() == 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "mDNS-discovered peer was not dialed and authenticated"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            assert_eq!(initiator.peer_count(), 1);
+            assert_eq!(initiator.sync_stats().unwrap().connected_peers, 1);
+            node_a.stop_sync().expect("stop node A");
+            node_b.stop_sync().expect("stop node B");
+        }
+
+        #[test]
         fn publish_json_extracts_proto_fields() {
             let json = r#"{
                 "id": "ANDROID-abc123",
