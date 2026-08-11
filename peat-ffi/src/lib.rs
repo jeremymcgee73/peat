@@ -1139,6 +1139,138 @@ async fn connect_peer_inner(
     Ok(())
 }
 
+/// Consume the peat-controlled `_peat._udp` browse stream and turn discovered
+/// peers into authenticated canonical-backend connections.
+///
+/// `MeshAutomergeBackend::with_iroh_parts` shares the endpoint and store, but it
+/// does not own the [`IrohTransport`] wrapper's single-consumer browse receiver.
+/// The former peat-protocol backend consumed this stream inside its discovery
+/// implementation; after the canonical-backend migration, leaving it untaken
+/// meant Android could resolve peers without ever dialing them.
+///
+/// Every received discovery event is actionable. Local-link discovery can be
+/// asymmetric across platforms, so endpoint ordering cannot safely delegate
+/// initiation to a peer that may never observe this node. The canonical
+/// backend de-duplicates established peers, while the remembered-peer tick
+/// repairs dropped connections. Failed peers are attempted at most once per
+/// tick interval so repeated mDNS updates cannot create a dial storm.
+#[cfg(feature = "sync")]
+async fn dial_mdns_peer(
+    iroh_transport: &IrohTransport,
+    sync_backend: &MeshAutomergeBackend,
+    peer: PeatPeerInfo,
+) -> Result<bool, PeatError> {
+    let peer_id = peer
+        .endpoint_id()
+        .map_err(|error| PeatError::InvalidInput {
+            msg: format!("mDNS peer endpoint identifier is invalid: {error}"),
+        })?;
+    if sync_backend
+        .transport()
+        .connected_peers()
+        .contains(&peer_id)
+    {
+        return Ok(false);
+    }
+
+    connect_peer_inner(iroh_transport, sync_backend, peer).await?;
+    Ok(true)
+}
+
+#[cfg(feature = "sync")]
+async fn run_peat_mdns_auto_dial(
+    mut events: tokio::sync::mpsc::Receiver<peat_mesh::discovery::DiscoveryEvent>,
+    iroh_transport: Arc<IrohTransport>,
+    sync_backend: Arc<MeshAutomergeBackend>,
+) {
+    use std::collections::{HashMap, HashSet};
+
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+    tracing::info!("starting authenticated peat mDNS auto-dial handler");
+    #[cfg(target_os = "android")]
+    android_log("mDNS auto-dial handler started");
+    let mut known: HashMap<peat_mesh::network::EndpointId, PeatPeerInfo> = HashMap::new();
+    let mut last_attempt: HashMap<peat_mesh::network::EndpointId, std::time::Instant> =
+        HashMap::new();
+    let mut tick = tokio::time::interval(RETRY_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        let candidates: Vec<(peat_mesh::network::EndpointId, PeatPeerInfo)> = tokio::select! {
+            event = events.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
+                let discovered = match event {
+                    peat_mesh::discovery::DiscoveryEvent::PeerFound(peer)
+                    | peat_mesh::discovery::DiscoveryEvent::PeerUpdated(peer) => peer,
+                    peat_mesh::discovery::DiscoveryEvent::PeerLost(node_id) => {
+                        if let Ok(bytes) = hex::decode(node_id) {
+                            if let Ok(bytes) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                                if let Ok(endpoint_id) =
+                                    peat_mesh::network::EndpointId::from_bytes(&bytes)
+                                {
+                                    known.remove(&endpoint_id);
+                                    last_attempt.remove(&endpoint_id);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                };
+                let peer: PeatPeerInfo = discovered.into();
+                let Ok(endpoint_id) = peer.endpoint_id() else {
+                    tracing::debug!("ignoring mDNS peer with an invalid endpoint identifier");
+                    continue;
+                };
+                known.insert(endpoint_id, peer.clone());
+                vec![(endpoint_id, peer)]
+            }
+            _ = tick.tick() => {
+                let connected: HashSet<_> =
+                    sync_backend.transport().connected_peers().into_iter().collect();
+                known
+                    .iter()
+                    .filter(|(endpoint_id, _)| !connected.contains(*endpoint_id))
+                    .map(|(endpoint_id, peer)| (*endpoint_id, peer.clone()))
+                    .collect()
+            }
+        };
+
+        let now = std::time::Instant::now();
+        for (endpoint_id, peer) in candidates {
+            if sync_backend
+                .transport()
+                .connected_peers()
+                .contains(&endpoint_id)
+            {
+                continue;
+            }
+            if last_attempt
+                .get(&endpoint_id)
+                .is_some_and(|attempt| now.duration_since(*attempt) < RETRY_INTERVAL)
+            {
+                continue;
+            }
+            last_attempt.insert(endpoint_id, now);
+            match dial_mdns_peer(&iroh_transport, &sync_backend, peer).await {
+                Ok(true) => {
+                    tracing::info!("authenticated peat mDNS peer connection established");
+                    #[cfg(target_os = "android")]
+                    android_log("mDNS auto-dial authenticated connection established");
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    tracing::warn!("authenticated peat mDNS peer dial failed");
+                    #[cfg(target_os = "android")]
+                    android_log("mDNS auto-dial authenticated connection failed");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(feature = "sync")]
 #[uniffi::export]
 impl PeatNode {
@@ -2104,6 +2236,18 @@ pub(crate) fn create_node_with_identity(
     })?;
 
     application_delivery::install_builtin_validator(&sync_backend)?;
+
+    // The canonical mesh backend owns authentication and sync, while the FFI
+    // transport owns the Android-capable peat mDNS browse receiver. Compose
+    // those two owner surfaces here so discovery actively establishes the
+    // authenticated connection instead of stopping at address resolution.
+    if let Some(events) = transport.peat_mdns_events() {
+        runtime.spawn(run_peat_mdns_auto_dial(
+            events,
+            Arc::clone(&transport),
+            Arc::clone(&sync_backend),
+        ));
+    }
 
     let sync_init_ms = phase_start.elapsed().as_millis();
     #[cfg(target_os = "android")]
@@ -7145,6 +7289,100 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
+            node_a.stop_sync().expect("stop node A");
+            node_b.stop_sync().expect("stop node B");
+        }
+
+        #[test]
+        fn canonical_backend_authenticates_an_elected_mdns_dial() {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let config = |path: &std::path::Path| NodeConfig {
+                app_id: "mdns-auto-dial-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: path.to_str().unwrap().to_string(),
+                transport: None,
+            };
+            let node_a = create_node(config(dir_a.path())).expect("create node A");
+            let node_b = create_node(config(dir_b.path())).expect("create node B");
+            node_a.start_sync().expect("start node A");
+            node_b.start_sync().expect("start node B");
+
+            let a_is_initiator = node_a.iroh_transport.endpoint_id().as_bytes()
+                < node_b.iroh_transport.endpoint_id().as_bytes();
+            let (initiator, responder) = if a_is_initiator {
+                (&node_a, &node_b)
+            } else {
+                (&node_b, &node_a)
+            };
+            let peer = PeatPeerInfo {
+                name: "discovered-peer".to_string(),
+                node_id: responder.node_id(),
+                addresses: vec![responder.endpoint_socket_addr().expect("responder socket")],
+                relay_url: None,
+            };
+            let dialed = initiator
+                .runtime
+                .block_on(dial_mdns_peer(
+                    &initiator.iroh_transport,
+                    &initiator.sync_backend,
+                    peer,
+                ))
+                .expect("authenticate discovered peer");
+
+            assert!(dialed, "the elected endpoint must initiate the mDNS dial");
+            assert_eq!(initiator.peer_count(), 1);
+            assert_eq!(initiator.sync_stats().unwrap().connected_peers, 1);
+            node_a.stop_sync().expect("stop node A");
+            node_b.stop_sync().expect("stop node B");
+        }
+
+        #[test]
+        fn canonical_backend_dials_when_only_non_elected_peer_discovers() {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let config = |path: &std::path::Path| NodeConfig {
+                app_id: "mdns-one-way-discovery-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: path.to_str().unwrap().to_string(),
+                transport: None,
+            };
+            let node_a = create_node(config(dir_a.path())).expect("create node A");
+            let node_b = create_node(config(dir_b.path())).expect("create node B");
+            node_a.start_sync().expect("start node A");
+            node_b.start_sync().expect("start node B");
+
+            let a_would_win_election = node_a.iroh_transport.endpoint_id().as_bytes()
+                < node_b.iroh_transport.endpoint_id().as_bytes();
+            let (discoverer, advertised_peer) = if a_would_win_election {
+                (&node_b, &node_a)
+            } else {
+                (&node_a, &node_b)
+            };
+            let peer = PeatPeerInfo {
+                name: "one-way-discovered-peer".to_string(),
+                node_id: advertised_peer.node_id(),
+                addresses: vec![advertised_peer
+                    .endpoint_socket_addr()
+                    .expect("advertised peer socket")],
+                relay_url: None,
+            };
+            let dialed = discoverer
+                .runtime
+                .block_on(dial_mdns_peer(
+                    &discoverer.iroh_transport,
+                    &discoverer.sync_backend,
+                    peer,
+                ))
+                .expect("authenticate one-way discovered peer");
+
+            assert!(
+                dialed,
+                "a discovery event must be actionable even when the remote endpoint would win a symmetric election"
+            );
+            assert_eq!(discoverer.peer_count(), 1);
             node_a.stop_sync().expect("stop node A");
             node_b.stop_sync().expect("stop node B");
         }
