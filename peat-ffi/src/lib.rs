@@ -1148,11 +1148,14 @@ async fn connect_peer_inner(
 /// implementation; after the canonical-backend migration, leaving it untaken
 /// meant Android could resolve peers without ever dialing them.
 ///
-/// Stable endpoint ordering elects one initiator, while the remembered-peer
-/// tick repairs dropped connections. Failed peers are attempted at most once
-/// per tick interval so repeated mDNS updates cannot create a dial storm.
+/// Every received discovery event is actionable. Local-link discovery can be
+/// asymmetric across platforms, so endpoint ordering cannot safely delegate
+/// initiation to a peer that may never observe this node. The canonical
+/// backend de-duplicates established peers, while the remembered-peer tick
+/// repairs dropped connections. Failed peers are attempted at most once per
+/// tick interval so repeated mDNS updates cannot create a dial storm.
 #[cfg(feature = "sync")]
-async fn dial_mdns_peer_if_elected(
+async fn dial_mdns_peer(
     iroh_transport: &IrohTransport,
     sync_backend: &MeshAutomergeBackend,
     peer: PeatPeerInfo,
@@ -1162,11 +1165,10 @@ async fn dial_mdns_peer_if_elected(
         .map_err(|error| PeatError::InvalidInput {
             msg: format!("mDNS peer endpoint identifier is invalid: {error}"),
         })?;
-    if iroh_transport.endpoint_id().as_bytes() >= peer_id.as_bytes()
-        || sync_backend
-            .transport()
-            .connected_peers()
-            .contains(&peer_id)
+    if sync_backend
+        .transport()
+        .connected_peers()
+        .contains(&peer_id)
     {
         return Ok(false);
     }
@@ -1188,7 +1190,6 @@ async fn run_peat_mdns_auto_dial(
     tracing::info!("starting authenticated peat mDNS auto-dial handler");
     #[cfg(target_os = "android")]
     android_log("mDNS auto-dial handler started");
-    let local_endpoint_id = iroh_transport.endpoint_id();
     let mut known: HashMap<peat_mesh::network::EndpointId, PeatPeerInfo> = HashMap::new();
     let mut last_attempt: HashMap<peat_mesh::network::EndpointId, std::time::Instant> =
         HashMap::new();
@@ -1223,9 +1224,6 @@ async fn run_peat_mdns_auto_dial(
                     tracing::debug!("ignoring mDNS peer with an invalid endpoint identifier");
                     continue;
                 };
-                if local_endpoint_id.as_bytes() >= endpoint_id.as_bytes() {
-                    continue;
-                }
                 known.insert(endpoint_id, peer.clone());
                 vec![(endpoint_id, peer)]
             }
@@ -1256,7 +1254,7 @@ async fn run_peat_mdns_auto_dial(
                 continue;
             }
             last_attempt.insert(endpoint_id, now);
-            match dial_mdns_peer_if_elected(&iroh_transport, &sync_backend, peer).await {
+            match dial_mdns_peer(&iroh_transport, &sync_backend, peer).await {
                 Ok(true) => {
                     tracing::info!("authenticated peat mDNS peer connection established");
                     #[cfg(target_os = "android")]
@@ -7326,7 +7324,7 @@ mod tests {
             };
             let dialed = initiator
                 .runtime
-                .block_on(dial_mdns_peer_if_elected(
+                .block_on(dial_mdns_peer(
                     &initiator.iroh_transport,
                     &initiator.sync_backend,
                     peer,
@@ -7373,7 +7371,7 @@ mod tests {
             };
             let dialed = discoverer
                 .runtime
-                .block_on(dial_mdns_peer_if_elected(
+                .block_on(dial_mdns_peer(
                     &discoverer.iroh_transport,
                     &discoverer.sync_backend,
                     peer,
