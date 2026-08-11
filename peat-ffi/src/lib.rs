@@ -1185,6 +1185,7 @@ async fn run_peat_mdns_auto_dial(
 
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+    tracing::info!("starting authenticated peat mDNS auto-dial handler");
     let local_endpoint_id = iroh_transport.endpoint_id();
     let mut known: HashMap<peat_mesh::network::EndpointId, PeatPeerInfo> = HashMap::new();
     let mut last_attempt: HashMap<peat_mesh::network::EndpointId, std::time::Instant> =
@@ -1253,10 +1254,10 @@ async fn run_peat_mdns_auto_dial(
                 continue;
             }
             last_attempt.insert(endpoint_id, now);
-            if let Err(error) =
-                dial_mdns_peer_if_elected(&iroh_transport, &sync_backend, peer).await
-            {
-                tracing::debug!(error = %error, "authenticated mDNS peer dial failed");
+            match dial_mdns_peer_if_elected(&iroh_transport, &sync_backend, peer).await {
+                Ok(true) => tracing::info!("authenticated peat mDNS peer connection established"),
+                Ok(false) => {}
+                Err(_) => tracing::warn!("authenticated peat mDNS peer dial failed"),
             }
         }
     }
