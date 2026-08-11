@@ -7341,6 +7341,55 @@ mod tests {
         }
 
         #[test]
+        fn canonical_backend_dials_when_only_non_elected_peer_discovers() {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let config = |path: &std::path::Path| NodeConfig {
+                app_id: "mdns-one-way-discovery-test".to_string(),
+                shared_key: "dGVzdC1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0".to_string(),
+                bind_address: Some("127.0.0.1:0".to_string()),
+                storage_path: path.to_str().unwrap().to_string(),
+                transport: None,
+            };
+            let node_a = create_node(config(dir_a.path())).expect("create node A");
+            let node_b = create_node(config(dir_b.path())).expect("create node B");
+            node_a.start_sync().expect("start node A");
+            node_b.start_sync().expect("start node B");
+
+            let a_would_win_election = node_a.iroh_transport.endpoint_id().as_bytes()
+                < node_b.iroh_transport.endpoint_id().as_bytes();
+            let (discoverer, advertised_peer) = if a_would_win_election {
+                (&node_b, &node_a)
+            } else {
+                (&node_a, &node_b)
+            };
+            let peer = PeatPeerInfo {
+                name: "one-way-discovered-peer".to_string(),
+                node_id: advertised_peer.node_id(),
+                addresses: vec![advertised_peer
+                    .endpoint_socket_addr()
+                    .expect("advertised peer socket")],
+                relay_url: None,
+            };
+            let dialed = discoverer
+                .runtime
+                .block_on(dial_mdns_peer_if_elected(
+                    &discoverer.iroh_transport,
+                    &discoverer.sync_backend,
+                    peer,
+                ))
+                .expect("authenticate one-way discovered peer");
+
+            assert!(
+                dialed,
+                "a discovery event must be actionable even when the remote endpoint would win a symmetric election"
+            );
+            assert_eq!(discoverer.peer_count(), 1);
+            node_a.stop_sync().expect("stop node A");
+            node_b.stop_sync().expect("stop node B");
+        }
+
+        #[test]
         fn publish_json_extracts_proto_fields() {
             let json = r#"{
                 "id": "ANDROID-abc123",
