@@ -92,6 +92,26 @@ pub struct BlePosition {
     pub accuracy: Option<f32>,
 }
 
+/// Largest translator-frame payload (including the 2-byte `[marker, code]`
+/// header) this codec will put on the BLE wire.
+///
+/// This is a TRANSPORT limit, not a design preference. A GATT server may notify
+/// at most `ATT_MTU - 3` bytes, and the Android stack TRUNCATES anything larger
+/// instead of failing — the peer then receives a corrupt prefix that will not
+/// decode, indistinguishable from a peer that sent nothing at all.
+///
+/// peat-btle now requests the BLE 5.0 maximum MTU (517) on every connection and
+/// refuses to emit a notification larger than the negotiated budget, so the
+/// realistic floor is a peer that negotiates 185 — the previous request value,
+/// which peers running older builds still answer with. 180 stays safely inside
+/// that while leaving room for the framing header.
+///
+/// Do NOT raise this to the 517-derived maximum: a mesh mixes builds, and the
+/// budget has to hold for the least capable peer on the link. Carrying payloads
+/// beyond any single MTU needs chunking (peat-btle has
+/// `chunk_data`/`ChunkReassembler`, not yet used by the translator-frame path).
+pub const MAX_TRANSLATOR_PAYLOAD_BYTES: usize = 480;
+
 /// Wire-format version of the `tracks` frame extension.
 ///
 /// `1` means the extension fields correspond to `peat.track.v1.Track`
@@ -157,6 +177,14 @@ pub struct BleTrackExtension {
     pub vertical_speed_mps: Option<f32>,
     /// `Track.attributes_json` — free-form JSON object, passed through.
     pub attributes_json: Option<String>,
+    /// Operator-visible callsign. Appended after `attributes_json` per the
+    /// append-only contract, NOT placed beside the other identity fields where
+    /// it would read better — postcard decodes positionally, so reordering
+    /// silently corrupts every frame from an older sender.
+    pub callsign: Option<String>,
+    /// Source observation time, ms since epoch. Without it the receiver stamps
+    /// its own receive time, making a relayed or delayed track look current.
+    pub timestamp_ms: Option<u64>,
 }
 
 /// BLE health status (mirrors peat_btle::HealthStatus on the wire).
@@ -428,6 +456,74 @@ impl BleTranslator {
         })
     }
 
+    /// Build a `tracks` payload that fits the BLE transport budget, degrading
+    /// the extension rather than emitting a frame the radio cannot carry.
+    ///
+    /// # Why this exists — measured, not theoretical
+    ///
+    /// Appending the extension unconditionally grew real ADS-B track frames from
+    /// 14 bytes to 528–678, and the Android Bluetooth stack answered with
+    /// `attp_build_value_cmd: attribute value too long, to be truncated to 20`
+    /// about once a second. Truncated frames are undecodable, so this made BLE
+    /// track transport WORSE than before the extension existed.
+    ///
+    /// The GATT notification path carries `ATT_MTU(23) - 3 = 20` bytes unless a
+    /// larger MTU is negotiated, and peat-btle negotiates only on the CLIENT
+    /// (write) side — `GattCallbackProxy` calls `requestMtu`, nothing does so for
+    /// the server/notify path. One encoded frame goes to both, so the budget is
+    /// the smaller of the two.
+    ///
+    /// A `[0xB6, code]` header plus a full `BlePosition` (lat, lon, Some(alt),
+    /// Some(cep)) is exactly 20 bytes — the ceiling, with nothing left over. So
+    /// at the current budget the extension is essentially never emitted and
+    /// behaviour matches the pre-extension wire, which is the correct default:
+    /// a receiver missing the extension falls back to the connection-derived
+    /// peripheral_id, whereas a truncated frame is simply lost.
+    ///
+    /// Raising `MAX_TRANSLATOR_PAYLOAD_BYTES` REQUIRES negotiating MTU on the
+    /// notify path first. Carrying rich tracks (ADS-B and friends) needs
+    /// chunking — peat-btle already has `chunk_data`/`ChunkReassembler` for
+    /// peat-lite frames, but the translator-frame path does not use it.
+    fn frame_track_within_budget(&self, position: Vec<u8>, value: &Value) -> Vec<u8> {
+        let full = self.track_to_extension(value);
+
+        // Degradation ladder, most-valuable-last: identity (`track_id`) is what
+        // frees the receiver from connection-derived identity, so it survives
+        // longest. `attributes_json` is the largest field by far and the first
+        // to go.
+        let candidates = [
+            full.clone(),
+            BleTrackExtension {
+                attributes_json: None,
+                ..full.clone()
+            },
+            BleTrackExtension {
+                version: full.version,
+                track_id: full.track_id.clone(),
+                ..Default::default()
+            },
+        ];
+
+        for extension in candidates {
+            if let Some(encoded) = postcard_encode(&extension) {
+                // +2 for the [marker, collection_code] header the caller prepends.
+                if position.len() + encoded.len() + 2 <= MAX_TRANSLATOR_PAYLOAD_BYTES {
+                    let mut payload = position;
+                    payload.extend_from_slice(&encoded);
+                    return payload;
+                }
+            }
+        }
+
+        // Nothing fits: emit the legacy bare-position frame. Lossy but
+        // DELIVERABLE, and every receiver still decodes it via the
+        // peripheral_id fallback.
+        tracing::debug!(
+            "ble: tracks extension omitted, over {MAX_TRANSLATOR_PAYLOAD_BYTES}-byte budget"
+        );
+        position
+    }
+
     /// Extract the `peat.track.v1.Track` extension fields from a track document.
     ///
     /// Always returns a struct: the extension is unconditionally appended to
@@ -466,6 +562,10 @@ impl BleTranslator {
                 .get("attributes")
                 .filter(|v| v.is_object())
                 .and_then(|v| serde_json::to_string(v).ok()),
+            callsign: string_field(&["callsign"]),
+            timestamp_ms: first_track_f64(track, &["last_update", "timestamp", "created_at"])
+                .filter(|v| *v > 0.0)
+                .map(|v| v as u64),
         }
     }
 
@@ -950,9 +1050,8 @@ impl Translator for BleTranslator {
             //
             // This must match `peat_btle::translator`'s encode byte-for-byte:
             // peat-btle decodes what this encodes.
-            let mut payload = postcard_encode(&self.track_to_position(&value)?)?;
-            payload.extend_from_slice(&postcard_encode(&self.track_to_extension(&value))?);
-            Some(payload)
+            let position = postcard_encode(&self.track_to_position(&value)?)?;
+            Some(self.frame_track_within_budget(position, &value))
         } else if collection == self.nodes_collection() {
             postcard_encode(&self.node_to_peripheral(&value)?)
         } else if collection == self.alerts_collection() {
@@ -1044,6 +1143,18 @@ impl Translator for BleTranslator {
             // projection's defaults rather than appearing as null, and kinematics
             // stay ABSENT when unsent — a track with no heading must never read
             // as "heading 0", due north.
+            // Callsign and source timestamp are part of the minimum viable track:
+            // without them a marker renders unlabelled and stamped with receive
+            // time rather than observation time.
+            if let Some(ext) = extension.as_ref() {
+                if let Some(cs) = ext.callsign.as_deref().filter(|s| !s.is_empty()) {
+                    track["callsign"] = Value::String(cs.to_string());
+                }
+                if let Some(ts) = ext.timestamp_ms.filter(|v| *v > 0) {
+                    track["last_update"] = json!(ts);
+                    track["timestamp"] = json!(ts);
+                }
+            }
             if let Some(ext) = extension.as_ref() {
                 if let Some(v) = ext.source_node.as_deref().filter(|s| !s.is_empty()) {
                     track["source_node"] = Value::String(v.to_string());
@@ -1809,6 +1920,64 @@ mod tests {
     /// watch) and breaks decoding. Lock the byte layout at the
     /// type-system level by asserting the postcard-encoded length of
     /// a known-shape peripheral matches the wire expectation.
+    /// A frame must never exceed the transport budget, however rich the track.
+    ///
+    /// Regression pin for a measured on-device failure: appending the extension
+    /// unconditionally grew real ADS-B track frames to 528-678 bytes, and the
+    /// Bluetooth stack truncated every one of them to 20
+    /// (`attp_build_value_cmd: attribute value too long`). Truncated frames are
+    /// undecodable, so this made BLE track transport worse than having no
+    /// extension at all.
+    #[tokio::test]
+    async fn a_rich_track_never_exceeds_the_transport_budget() {
+        let t = test_translator();
+
+        // Shaped like the ADS-B tracks that actually broke this: long id, long
+        // source node, and a fat attributes object.
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("id".to_string(), serde_json::json!("adsb-ad99fc"));
+        fields.insert("lat".to_string(), serde_json::json!(35.9215));
+        fields.insert("lon".to_string(), serde_json::json!(-86.85397));
+        fields.insert("hae".to_string(), serde_json::json!(10668.0));
+        fields.insert("cep".to_string(), serde_json::json!(25.0));
+        fields.insert("heading".to_string(), serde_json::json!(271.5));
+        fields.insert("speed".to_string(), serde_json::json!(231.4));
+        fields.insert("source_node".to_string(), serde_json::json!("a".repeat(64)));
+        fields.insert(
+            "attributes".to_string(),
+            serde_json::json!({
+                "icao": "AD99FC", "flight": "DAL447", "squawk": "1200",
+                "category": "A3", "registration": "N123DL",
+                "notes": "x".repeat(300),
+            }),
+        );
+        let doc = MeshDocument {
+            id: Some("adsb-ad99fc".to_string()),
+            fields,
+            updated_at: SystemTime::now(),
+        };
+
+        let ctx = TranslationContext::outbound().with_collection(t.tracks_collection());
+        let framed = t.encode_outbound(&doc, &ctx).await.expect("encode");
+
+        // `encode_outbound` returns the UNFRAMED payload; peat-btle's
+        // `publishTranslatorPayload` prepends `[marker, collection_code]` before
+        // transmitting, so on-air size is payload + 2.
+        assert!(
+            framed.len() + 2 <= MAX_TRANSLATOR_PAYLOAD_BYTES,
+            "on-air frame is {} bytes, over the {MAX_TRANSLATOR_PAYLOAD_BYTES}-byte transport \
+             budget — the radio truncates and the frame is LOST, not merely degraded",
+            framed.len() + 2,
+        );
+
+        // Degraded, but still a decodable position. Losing the extension costs
+        // wire-supplied identity (receivers fall back to peripheral_id); losing
+        // the whole frame costs the position itself.
+        let pos: BlePosition = postcard::from_bytes(&framed).expect("position still decodes");
+        assert!((pos.latitude - 35.9215).abs() < 1e-3);
+        assert!((pos.longitude + 86.85397).abs() < 1e-3);
+    }
+
     /// Golden wire bytes for a `tracks` frame.
     ///
     /// THREE separate implementations encode or decode this frame — this crate
@@ -1844,11 +2013,12 @@ mod tests {
             .join(" ");
 
         // BlePosition (18 bytes): lat f32 | lon f32 | Some(alt f32) | Some(cep f32)
-        // BleTrackExtension (22): version=1 | Some("ble-8B4DA899") | 7x None
+        // BleTrackExtension (24): version=1 | Some("ble-8B4DA899") | 9x None
+        // (callsign + timestamp_ms appended; two absent Options = two bytes)
         assert_eq!(
             hex,
             "9E AF 0F 42 3C B5 AD C2 01 00 00 31 43 01 00 00 40 40 \
-             01 01 0C 62 6C 65 2D 38 42 34 44 41 38 39 39 00 00 00 00 00 00 00"
+             01 01 0C 62 6C 65 2D 38 42 34 44 41 38 39 39 00 00 00 00 00 00 00 00 00"
                 .replace("\\\n             ", ""),
             "tracks wire format changed"
         );
