@@ -92,6 +92,73 @@ pub struct BlePosition {
     pub accuracy: Option<f32>,
 }
 
+/// Wire-format version of the `tracks` frame extension.
+///
+/// `1` means the extension fields correspond to `peat.track.v1.Track`
+/// (peat-schema `proto/track.proto`, `package peat.track.v1`).
+///
+/// # The append-only contract
+///
+/// postcard is NON-self-describing: fields decode positionally, in declaration
+/// order, with no tags. So a new schema version may ONLY append fields — never
+/// reorder, retype, or remove one. Given that, a v1 decoder stays correct
+/// against a v2 sender: it reads the v1 prefix and ignores the rest, because
+/// `postcard::from_bytes` discards trailing bytes. That is why `version` is a
+/// range-checked `u16` rather than an exhaustively-matched enum.
+///
+/// A change that cannot honour append-only must claim a NEW collection code
+/// instead of bumping this field.
+pub const TRACK_SCHEMA_VERSION_V1: u16 = 1;
+
+/// The `peat.track.v1.Track` fields a BLE `tracks` frame carries beyond bare
+/// position, postcard-appended after [`BlePosition`].
+///
+/// # This struct is duplicated on purpose, and MUST stay byte-identical
+///
+/// `peat_btle::translator::BleTrackExtension` is the same wire type. peat-btle
+/// decodes inbound BLE frames while this crate encodes outbound ones, so the
+/// two are the opposite ends of one wire contract and any divergence in field
+/// order, type, or count silently corrupts every track.
+///
+/// The duplication is pre-existing — [`BlePosition`] and friends are already
+/// mirrored here rather than imported, because peat-protocol does not depend on
+/// peat-btle. Keep the two definitions in lockstep; a shared crate would be
+/// better and is worth doing, but is a larger refactor than this change.
+///
+/// # Why it exists
+///
+/// A `tracks` frame used to be a bare `BlePosition`. The tracked entity's
+/// identity was not on the wire; the receiver derived the doc id from the BLE
+/// connection. That meant a receiver which could not resolve the sender dropped
+/// the position while every surrounding operation reported success, and one
+/// sender could only ever express ONE track — relaying observed entities
+/// (ADS-B contacts, sensor detections) was structurally impossible.
+///
+/// `track_id` fixes both by separating *who sent this* from *what this is
+/// about*. `attributes_json` is the extensibility hatch, carried verbatim.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BleTrackExtension {
+    /// Wire-format version. MUST stay first. See [`TRACK_SCHEMA_VERSION_V1`].
+    pub version: u16,
+    /// `Track.track_id` — identity of the tracked ENTITY, not of the sender.
+    /// When present the receiver needs no connection-derived identity at all.
+    pub track_id: Option<String>,
+    /// `TrackSource.node_id` — which node produced this track.
+    pub source_node: Option<String>,
+    /// `Track.classification` — CoT-style type for the tracked entity.
+    pub classification: Option<String>,
+    /// `Track.confidence`, 0.0–1.0.
+    pub confidence: Option<f32>,
+    /// `common.v1.Kinematics` bearing, degrees true (0–360).
+    pub bearing: Option<f32>,
+    /// `common.v1.Kinematics` ground speed, m/s.
+    pub speed_mps: Option<f32>,
+    /// `common.v1.Kinematics` vertical speed, m/s (positive = ascending).
+    pub vertical_speed_mps: Option<f32>,
+    /// `Track.attributes_json` — free-form JSON object, passed through.
+    pub attributes_json: Option<String>,
+}
+
 /// BLE health status (mirrors peat_btle::HealthStatus on the wire).
 ///
 /// **This struct is postcard-encoded onto the BLE radio** by
@@ -345,15 +412,61 @@ impl BleTranslator {
     ///
     /// Returns None if the document doesn't have required position fields.
     pub fn track_to_position(&self, track: &Value) -> Option<BlePosition> {
-        let lat = track.get("lat")?.as_f64()? as f32;
-        let lon = track.get("lon")?.as_f64()? as f32;
+        let lat = first_track_f64(track, &["lat", "latitude"])? as f32;
+        let lon = first_track_f64(track, &["lon", "longitude"])? as f32;
 
+        // Altitude is spelled `hae` in documents this codec projects and
+        // `altitude` in documents peat-ffi's `serialize_track_json` produces —
+        // which is also the only spelling its `parse_track_json` reads back.
+        // Reading one spelling silently dropped altitude from every track the
+        // FFI layer published over BLE.
         Some(BlePosition {
             latitude: lat,
             longitude: lon,
-            altitude: track.get("hae").and_then(|v| v.as_f64()).map(|a| a as f32),
-            accuracy: track.get("cep").and_then(|v| v.as_f64()).map(|a| a as f32),
+            altitude: first_track_f64(track, &["hae", "altitude"]).map(|a| a as f32),
+            accuracy: first_track_f64(track, &["cep", "cep_m"]).map(|a| a as f32),
         })
+    }
+
+    /// Extract the `peat.track.v1.Track` extension fields from a track document.
+    ///
+    /// Always returns a struct: the extension is unconditionally appended to
+    /// every outbound `tracks` frame, because its `version` field is what tells
+    /// a receiver which schema the tail follows. Individual fields stay `None`
+    /// when the document does not carry them.
+    ///
+    /// Must stay behaviourally identical to
+    /// `peat_btle::translator::BleTranslator::track_to_extension`.
+    pub fn track_to_extension(&self, track: &Value) -> BleTrackExtension {
+        let string_field = |keys: &[&str]| -> Option<String> {
+            keys.iter().find_map(|key| {
+                track
+                    .get(*key)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
+        };
+        let f32_field =
+            |keys: &[&str]| -> Option<f32> { first_track_f64(track, keys).map(|v| v as f32) };
+
+        BleTrackExtension {
+            version: TRACK_SCHEMA_VERSION_V1,
+            // `id` IS the track id in this document shape. Putting it on the
+            // wire is what frees the receiver from deriving identity out of the
+            // BLE connection.
+            track_id: string_field(&["id", "track_id"]),
+            source_node: string_field(&["source_node", "source_platform"]),
+            classification: string_field(&["classification"]),
+            confidence: f32_field(&["confidence"]),
+            bearing: f32_field(&["heading", "bearing"]),
+            speed_mps: f32_field(&["speed", "speed_mps"]),
+            vertical_speed_mps: f32_field(&["vertical_speed", "vertical_speed_mps"]),
+            attributes_json: track
+                .get("attributes")
+                .filter(|v| v.is_object())
+                .and_then(|v| serde_json::to_string(v).ok()),
+        }
     }
 
     // =========================================================================
@@ -830,7 +943,16 @@ impl Translator for BleTranslator {
         // but read from `self.config.*_collection` so operators can
         // rename them without breaking the translator.
         let bytes = if collection == self.tracks_collection() {
-            postcard_encode(&self.track_to_position(&value)?)
+            // BlePosition bytes ++ BleTrackExtension bytes (peat.track.v1.Track
+            // fields). The prefix stays byte-identical to a pre-extension frame,
+            // so receivers built before the extension decode the position and
+            // ignore the tail — `postcard::from_bytes` discards trailing bytes.
+            //
+            // This must match `peat_btle::translator`'s encode byte-for-byte:
+            // peat-btle decodes what this encodes.
+            let mut payload = postcard_encode(&self.track_to_position(&value)?)?;
+            payload.extend_from_slice(&postcard_encode(&self.track_to_extension(&value))?);
+            Some(payload)
         } else if collection == self.nodes_collection() {
             postcard_encode(&self.node_to_peripheral(&value)?)
         } else if collection == self.alerts_collection() {
@@ -869,18 +991,89 @@ impl Translator for BleTranslator {
         let mesh_id = ctx.cell_id.as_deref();
 
         let value = if collection == self.tracks_collection() {
-            let pos: BlePosition =
-                postcard::from_bytes(bytes).context("ble: decode BlePosition (tracks)")?;
-            // Inbound peripheral_id is in the typed struct's wire form
-            // for tracks via the source field; we use a default of 0
-            // when not available — the inbound bridge can override
-            // via ctx.local_wire_id when it knows.
-            let peripheral_id = ctx
-                .local_wire_id
-                .as_deref()
-                .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-                .unwrap_or(0);
-            self.position_to_track_in_cell(&pos, peripheral_id, callsign, mesh_id)
+            // Two-step, tolerant decode. `take_from_bytes` returns the
+            // unconsumed remainder rather than demanding the whole slice, so one
+            // decoder reads every frame generation:
+            //   - pre-extension sender: remainder empty
+            //   - v1 sender:            remainder is the BleTrackExtension
+            //   - future sender:        v1 prefix decodes, unknown tail ignored
+            let (pos, rest): (BlePosition, &[u8]) =
+                postcard::take_from_bytes(bytes).context("ble: decode BlePosition (tracks)")?;
+            let extension: Option<BleTrackExtension> = if rest.is_empty() {
+                None
+            } else {
+                Some(postcard::from_bytes(rest).context("ble: decode BleTrackExtension (tracks)")?)
+            };
+
+            // A track keys on the tracked ENTITY. `track_id` on the wire gives
+            // that directly, so a v1 frame needs no connection-derived identity.
+            //
+            // The `unwrap_or(0)` this replaces was a real hazard: it collapsed
+            // every sender the bridge could not resolve onto a single phantom
+            // `ble-00000000` track, silently merging unrelated peers. peat-btle
+            // refuses that case outright; matching it here keeps the two ends of
+            // the wire contract behaving the same way.
+            let wire_track_id = extension
+                .as_ref()
+                .and_then(|e| e.track_id.as_deref())
+                .filter(|id| !id.is_empty());
+
+            let mut track = match wire_track_id {
+                Some(id) => {
+                    let mut t = self.position_to_track_in_cell(&pos, 0, callsign, mesh_id);
+                    t["id"] = Value::String(id.to_string());
+                    t
+                }
+                None => {
+                    let peripheral_id = ctx
+                        .local_wire_id
+                        .as_deref()
+                        .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "ble: decode tracks requires either a `track_id` in the \
+                                 frame's BleTrackExtension or ctx.local_wire_id (hex u32 \
+                                 peripheral_id) stamped from the BLE connection identity"
+                            )
+                        })?;
+                    self.position_to_track_in_cell(&pos, peripheral_id, callsign, mesh_id)
+                }
+            };
+
+            // Overlay what the sender actually sent. Absent fields keep the
+            // projection's defaults rather than appearing as null, and kinematics
+            // stay ABSENT when unsent — a track with no heading must never read
+            // as "heading 0", due north.
+            if let Some(ext) = extension.as_ref() {
+                if let Some(v) = ext.source_node.as_deref().filter(|s| !s.is_empty()) {
+                    track["source_node"] = Value::String(v.to_string());
+                    track["source_platform"] = Value::String(v.to_string());
+                }
+                if let Some(v) = ext.classification.as_deref().filter(|s| !s.is_empty()) {
+                    track["classification"] = Value::String(v.to_string());
+                }
+                if let Some(v) = ext.confidence {
+                    track["confidence"] = json!(v as f64);
+                }
+                if let Some(v) = ext.bearing {
+                    track["heading"] = json!(v as f64);
+                }
+                if let Some(v) = ext.speed_mps {
+                    track["speed"] = json!(v as f64);
+                }
+                if let Some(v) = ext.vertical_speed_mps {
+                    track["vertical_speed"] = json!(v as f64);
+                }
+                // Only splice a JSON object. Anything else would let a malformed
+                // sender reshape the consumer's document.
+                if let Some(attrs) = ext.attributes_json.as_deref().filter(|s| !s.is_empty()) {
+                    match serde_json::from_str::<Value>(attrs) {
+                        Ok(v) if v.is_object() => track["attributes"] = v,
+                        _ => tracing::warn!("ble: dropping non-object attributes_json on track"),
+                    }
+                }
+            }
+            track
         } else if collection == self.nodes_collection() {
             let per: BlePeripheral =
                 postcard::from_bytes(bytes).context("ble: decode BlePeripheral (nodes)")?;
@@ -978,6 +1171,18 @@ fn coerce_metric_to_i64(v: Option<&Value>) -> Option<i64> {
 /// (vanishingly rare with serde-derived structs, but we don't surface
 /// errors out of `encode_outbound` — the trait's `Option` return is
 /// the contract). Logs at warn level for codec-side telemetry.
+/// First numeric value found under any of `keys`, in order.
+///
+/// Track documents reach this codec from two producers that spell the same
+/// concept differently — this codec's own projection (`hae`) and peat-ffi's
+/// `serialize_track_json` (`altitude`). Alias lists let one reader handle both
+/// without either producer changing. Mirrors the helper of the same name in
+/// `peat_btle::translator`.
+fn first_track_f64(track: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| track.get(*key).and_then(Value::as_f64))
+}
+
 fn postcard_encode<T: Serialize>(value: &T) -> Option<Vec<u8>> {
     match postcard::to_allocvec(value) {
         Ok(b) => Some(b),
@@ -1604,6 +1809,57 @@ mod tests {
     /// watch) and breaks decoding. Lock the byte layout at the
     /// type-system level by asserting the postcard-encoded length of
     /// a known-shape peripheral matches the wire expectation.
+    /// Golden wire bytes for a `tracks` frame.
+    ///
+    /// THREE separate implementations encode or decode this frame — this crate
+    /// (outbound, via the translator peat-ffi registers), `peat_btle::translator`
+    /// (inbound, in the Android AAR), and `peat_mesh::transport::btle_translator`
+    /// (the Translator bridge for non-peat-ffi consumers). None depends on the
+    /// others, deliberately, so nothing short of a byte-level pin can catch them
+    /// drifting apart — and a drift here does not fail a build, it silently
+    /// corrupts every track on the wire. The identical assertion lives in
+    /// peat-btle's `tests/track_v1_schema.rs`.
+    ///
+    /// If this fails, the wire format changed. Do NOT re-baseline the literal
+    /// unless every implementation changed together AND the append-only contract
+    /// documented on `TRACK_SCHEMA_VERSION_V1` still holds.
+    #[test]
+    fn tracks_frame_golden_wire_bytes() {
+        let t = test_translator();
+        let track = serde_json::json!({
+            "id": "ble-8B4DA899",
+            "lat": 35.921_5_f64,
+            "lon": -86.853_97_f64,
+            "hae": 177.0_f64,
+            "cep": 3.0_f64,
+        });
+
+        let mut payload = postcard_encode(&t.track_to_position(&track).unwrap()).unwrap();
+        payload.extend_from_slice(&postcard_encode(&t.track_to_extension(&track)).unwrap());
+
+        let hex: String = payload
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // BlePosition (18 bytes): lat f32 | lon f32 | Some(alt f32) | Some(cep f32)
+        // BleTrackExtension (22): version=1 | Some("ble-8B4DA899") | 7x None
+        assert_eq!(
+            hex,
+            "9E AF 0F 42 3C B5 AD C2 01 00 00 31 43 01 00 00 40 40 \
+             01 01 0C 62 6C 65 2D 38 42 34 44 41 38 39 39 00 00 00 00 00 00 00"
+                .replace("\\\n             ", ""),
+            "tracks wire format changed"
+        );
+
+        // The first 18 bytes MUST remain a standalone-decodable BlePosition, or
+        // receivers built before the extension stop reading new frames.
+        let legacy: BlePosition = postcard::from_bytes(&payload).expect("prefix decodes alone");
+        assert!((legacy.latitude - 35.921_5).abs() < 1e-3);
+        assert!((legacy.longitude + 86.853_97).abs() < 1e-3);
+    }
+
     #[test]
     fn ble_health_status_postcard_byte_layout_is_stable() {
         let p = BlePeripheral {
