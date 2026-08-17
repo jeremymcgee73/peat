@@ -276,6 +276,33 @@ pub struct BleCannedMessage {
     pub sequence: u32,
     /// ACK tracking: acker_node_id -> ack_timestamp (OR-set CRDT)
     pub acks: HashMap<u32, u64>,
+    // --- APPEND-ONLY free-text extension (peat.chat over canned_messages) ---
+    //
+    // postcard is NOT self-describing: fields decode positionally, so these MUST stay appended
+    // and MUST never be reordered or removed. `from_bytes` ignores trailing bytes, so an older
+    // reader still decodes the canned portion of a newer frame; a newer reader sees `None` for a
+    // shorter frame. That is the same append-only contract `BleTrackExtension` follows.
+    //
+    // Free-text human chat has no home in peat-schema (`ChatProduct` is LLM prompt/response), and
+    // `canned_messages` is the only carried collection that already models addressing
+    // (`target_node`, None = broadcast) plus an ack OR-set. Chat therefore rides here rather than
+    // in a private collection the BLE translator would silently decline.
+    /// Free-text message body. `None` for a genuine canned code.
+    pub body: Option<String>,
+    /// Operator-visible sender callsign, so a peer renders a name and not a hex id.
+    pub sender_callsign: Option<String>,
+    /// Full 64-hex sender node id. AUTHORITATIVE identity: `source_node` above is a u32 and can
+    /// only ever be a routing hint (32 bits cannot address a 256-bit id - ~1% birthday collision
+    /// by ~9300 nodes).
+    pub sender_node_id: Option<String>,
+    /// Comma-separated full 64-hex recipient ids. Empty/None means broadcast. Scopes RENDERING,
+    /// not confidentiality: every peer receives the document.
+    pub recipients_csv: Option<String>,
+    /// Conversation/thread id so a group thread stays coherent across peers.
+    pub conversation_id: Option<String>,
+    /// Sender's stable message id, so one message is one document on every receiver.
+    /// APPENDED LAST - never reorder; postcard decodes positionally.
+    pub message_id: Option<String>,
 }
 
 /// Map a peat-lite CannedMessage code to its human-readable name.
@@ -891,6 +918,43 @@ impl BleTranslator {
             doc["cell_id"] = json!(cell_id);
         }
 
+        // Free-text extension, emitted only when the sender supplied it. A genuine canned message
+        // produces exactly the document it always did.
+        //
+        // The document id is REPLACED by the sender's message id when one is present: the
+        // `canned-{source}-{timestamp}` form collides for two messages a peer sends inside the
+        // same millisecond, and chat is append-only so each message must be its own document.
+        if let Some(body) = message.body.as_deref().filter(|s| !s.is_empty()) {
+            doc["body"] = json!(body);
+            // Preserve the SENDER's message id. The `canned-{source}-{timestamp}` form is derived
+            // locally, so the same message becomes a different document on every receiver - it
+            // rendered twice on a device that got it over both BLE and QUIC, and two messages sent
+            // inside one millisecond would collide. Chat is append-only: one message, one id.
+            if let Some(mid) = message.message_id.as_deref().filter(|s| !s.is_empty()) {
+                doc["id"] = json!(mid);
+            }
+            if let Some(cs) = message.sender_callsign.as_deref().filter(|s| !s.is_empty()) {
+                doc["sender_callsign"] = json!(cs);
+            }
+            if let Some(sender) = message.sender_node_id.as_deref().filter(|s| !s.is_empty()) {
+                doc["sender_node_id"] = json!(sender);
+                // Authoritative identity wins over the u32 routing hint for consumers that key on
+                // the full node id (the ATAK plugin renders and filters on it).
+                doc["source_node"] = json!(sender);
+            }
+            if let Some(csv) = message.recipients_csv.as_deref().filter(|s| !s.is_empty()) {
+                doc["recipients"] =
+                    json!(csv.split(',').filter(|s| !s.is_empty()).collect::<Vec<_>>());
+                doc["audience"] = json!("addressed");
+            } else {
+                doc["recipients"] = json!(Vec::<String>::new());
+                doc["audience"] = json!("broadcast");
+            }
+            if let Some(convo) = message.conversation_id.as_deref().filter(|s| !s.is_empty()) {
+                doc["conversation_id"] = json!(convo);
+            }
+        }
+
         doc
     }
 
@@ -929,6 +993,13 @@ impl BleTranslator {
             })
             .unwrap_or_default();
 
+        let string_field = |key: &str| -> Option<String> {
+            doc.get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+
         Some(BleCannedMessage {
             message_code,
             message_name: message_name_from_code(message_code).to_string(),
@@ -937,6 +1008,24 @@ impl BleTranslator {
             timestamp,
             sequence,
             acks,
+            // Free-text extension. A genuine canned message leaves all of these None and encodes
+            // to the same bytes it always did.
+            body: string_field("body"),
+            sender_callsign: string_field("sender_callsign"),
+            sender_node_id: string_field("sender_node_id"),
+            recipients_csv: doc
+                .get("recipients")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .filter(|s| !s.is_empty())
+                .or_else(|| string_field("recipients_csv")),
+            conversation_id: string_field("conversation_id"),
+            message_id: string_field("id"),
         })
     }
 
