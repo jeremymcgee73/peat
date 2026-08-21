@@ -366,9 +366,10 @@ class PeatJniSurfaceTest {
     }
 
     /**
-     * peat#978 surface gate: the three JNI entry points added for the
+     * peat#978 / peat#1082 surface gate: the JNI entry points added for the
      * BLE doc-sync fix — `clearGlobalNodeHandleJni`, `ingestInboundFrameJni`,
-     * `ingestInboundLiteFrameJni` — must be REGISTERED (RegisterNatives) so
+     * `ingestInboundLiteFrameJni`, and the outbound-frame subscription — must
+     * be REGISTERED (RegisterNatives) so
      * the AAR's matching `external fun` declarations resolve. A missing
      * registration surfaces here as `UnsatisfiedLinkError` at AAR-test time,
      * not as a downstream consumer link failure.
@@ -378,6 +379,8 @@ class PeatJniSurfaceTest {
      *  - `ingestInbound{,Lite}FrameJni(0, ..)` returns null via the handle-0
      *    guard — confirming String/ByteArray marshalling + the early return
      *    (a null `Arc::from_raw(0)` would otherwise be UB).
+     *  - `subscribeOutboundFramesJni(0, ..)` returns false and unsubscribe is
+     *    an idempotent no-op, proving the canonical listener descriptor links.
      */
     @Test
     fun bleIngestAndClearGlobalHandle_registered_andGuardHandleZero() {
@@ -393,6 +396,16 @@ class PeatJniSurfaceTest {
             "ingestInboundLiteFrameJni(handle=0) must return null via the handle-0 guard",
             PeatJni.ingestInboundLiteFrameJni(0L, "demo", frame),
         )
+
+        val listener = OutboundFrameListener { _, _, _ ->
+            throw AssertionError("handle-0 subscription must never invoke the listener")
+        }
+        assertEquals(
+            "subscribeOutboundFramesJni(handle=0) must return false",
+            false,
+            PeatJni.subscribeOutboundFramesJni(0L, listener),
+        )
+        PeatJni.unsubscribeOutboundFramesJni(0L)
     }
 
     /**
@@ -405,10 +418,9 @@ class PeatJniSurfaceTest {
      * Coverage spans the entire PeatJni surface (lifecycle, peer
      * state, sync, generic doc I/O, typed-collection accessors,
      * blob transfer, BLE state, and the test-only fault injector).
-     * Methods that take consumer-supplied listener interfaces
-     * (subscribeDocumentChangesJni / subscribeOutboundFramesJni
-     * and their unsubscribe pairs) are declared outside this object
-     * per the doc-comment in PeatJni.kt and don't appear here.
+     * Document-change subscription remains outside the canonical class until
+     * its listener is packaged. Outbound-frame subscription is canonical and
+     * therefore appears here.
      *
      * The test body is a no-op; the value is in the references.
      */
@@ -451,6 +463,8 @@ class PeatJniSurfaceTest {
             ::peatJniRefIngestPosition,
             ::peatJniRefIngestInboundFrame,
             ::peatJniRefIngestInboundLiteFrame,
+            ::peatJniRefSubscribeOutboundFrames,
+            ::peatJniRefUnsubscribeOutboundFrames,
             // Blob transfer
             ::peatJniRefEnableBlobTransfer,
             ::peatJniRefBlobAddPeer,
@@ -467,10 +481,10 @@ class PeatJniSurfaceTest {
             // Test-only fault injection
             ::peatJniRefForceStoreError,
         )
-        // 40 PeatJni methods total. If this number changes, the
+        // 42 PeatJni methods total. If this number changes, the
         // count below must change too — and the new method needs
         // its own peatJniRef* shim added above.
-        assertEquals(40, refs.size)
+        assertEquals(42, refs.size)
     }
 
     // -- Reference shims --------------------------------------------------
@@ -554,6 +568,12 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefIngestInboundLiteFrame(h: Long, c: String, b: ByteArray): String? =
         PeatJni.ingestInboundLiteFrameJni(h, c, b)
+    @Suppress("unused")
+    private fun peatJniRefSubscribeOutboundFrames(h: Long, l: OutboundFrameListener): Boolean =
+        PeatJni.subscribeOutboundFramesJni(h, l)
+    @Suppress("unused")
+    private fun peatJniRefUnsubscribeOutboundFrames(h: Long) =
+        PeatJni.unsubscribeOutboundFramesJni(h)
 
     // Blob transfer
     @Suppress("unused")
