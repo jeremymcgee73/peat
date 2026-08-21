@@ -93,7 +93,10 @@ jobs:
           CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}
           AR: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         run: |
-          cargo build -p peat-ffi --release --target ${{ matrix.target }}
+          cargo build -p peat-ffi --release \
+            --no-default-features \
+            --features sync,bluetooth,lite-bridge \
+            --target ${{ matrix.target }}
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
