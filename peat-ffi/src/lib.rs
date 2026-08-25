@@ -11458,8 +11458,20 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
                 as *mut c_void,
         },
-        // Document-change subscribe/unsubscribe remain intentionally omitted:
-        // their listener is not yet a canonical class in the Android AAR.
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "subscribeDocumentChangesJni".into(),
+            sig: "(JLcom/defenseunicorns/peat/DocumentChangeListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "unsubscribeDocumentChangesJni".into(),
+            sig: "()V".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni
+                as *mut c_void,
+        },
         // Blob transfer (ADR-060)
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -12090,6 +12102,20 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     name: "unsubscribeOutboundFramesJni".into(),
                     sig: "(J)V".into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "subscribeDocumentChangesJni".into(),
+                    sig: "(JLcom/defenseunicorns/peat/DocumentChangeListener;)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "unsubscribeDocumentChangesJni".into(),
+                    sig: "()V".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni
                         as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]

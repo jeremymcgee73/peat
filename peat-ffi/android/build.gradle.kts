@@ -50,7 +50,12 @@ group = "com.defenseunicorns"
 // 0.1.7 (was 0.1.6): decodes canonical nested and sidecar-compatible Track
 // documents without changing the published FFI surface. Ships peat-ffi
 // 0.2.15. See peat#1067 / peat#1068; publication is tracked through peat#1069.
-version = "0.1.7"
+//
+// 0.1.8 (was 0.1.7): additive Android callback APIs. Packages the canonical
+// OutboundFrameListener and DocumentChangeListener contracts and registers
+// their direct-JNI subscribe/unsubscribe methods so plugin-host consumers can
+// send transport frames and receive synchronized documents without polling.
+version = "0.1.8"
 
 android {
     namespace = "com.defenseunicorns.peat.ffi"
