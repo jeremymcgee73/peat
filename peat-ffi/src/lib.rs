@@ -4314,6 +4314,34 @@ mod tests {
             }
         }
 
+        /// The direct-JNI callback is an application-observer surface, not a
+        /// sync-out trigger. It must therefore receive remote-origin writes;
+        /// subscribing to the legacy local-only channel would silently drop
+        /// every document delivered by a peer.
+        #[test]
+        fn jni_document_change_receiver_includes_remote_writes() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+            let mut receiver = subscribe_document_changes_for_jni(&node.store);
+
+            node.store
+                .put_with_origin(
+                    "test:remote-doc",
+                    &automerge::Automerge::new(),
+                    _PeatMeshChangeOrigin::Remote("peerhex".to_string()),
+                )
+                .expect("put remote-origin document");
+
+            let key = node
+                .runtime
+                .block_on(async {
+                    tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv()).await
+                })
+                .expect("remote observer notification timeout")
+                .expect("remote observer channel closed");
+            assert_eq!(key, "test:remote-doc");
+        }
+
         /// Surface-tier round-trip for `roster_upsert`, which takes a
         /// `RosterEntry` *by argument* — the encode direction the
         /// `roster_remember` round-trip (a `PeerInfo` arg) never exercises.
@@ -10107,7 +10135,11 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
     std::mem::forget(node);
 
     runtime.spawn(async move {
-        let mut rx = store.subscribe_to_changes();
+        // Consumer callbacks must observe both local writes and documents
+        // applied from peers. The legacy change channel is intentionally
+        // local-only to prevent sync echo; the observer channel is the
+        // persisted, all-origin notification surface.
+        let mut rx = subscribe_document_changes_for_jni(&store);
         while DOCUMENT_SUBSCRIPTION_ACTIVE.load(Ordering::SeqCst) {
             tokio::select! {
                 result = rx.recv() => {
@@ -10143,6 +10175,13 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
     });
 
     1 // JNI_TRUE
+}
+
+#[cfg(feature = "sync")]
+fn subscribe_document_changes_for_jni(
+    store: &AutomergeStore,
+) -> tokio::sync::broadcast::Receiver<String> {
+    store.subscribe_to_observer_changes()
 }
 
 /// JNI: Unsubscribe from document change notifications
