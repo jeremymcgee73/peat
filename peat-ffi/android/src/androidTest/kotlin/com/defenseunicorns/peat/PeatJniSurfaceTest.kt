@@ -3,6 +3,9 @@ package com.defenseunicorns.peat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -59,6 +62,11 @@ class PeatJniSurfaceTest {
 
     @After
     fun teardown() {
+        try {
+            PeatJni.unsubscribeDocumentChangesJni()
+        } catch (t: Throwable) {
+            // Best-effort cleanup; don't mask test failures.
+        }
         handles.forEach { handle ->
             try {
                 PeatJni.freeNodeJni(handle)
@@ -409,6 +417,71 @@ class PeatJniSurfaceTest {
     }
 
     /**
+     * Locks the direct-JNI document notification contract into the AAR. This
+     * proves both RegisterNatives descriptors resolve and that a committed
+     * local document reaches the packaged listener on Rust's runtime thread.
+     */
+    @Test
+    fun documentChangeSubscription_registered_andDeliversCommittedKey() {
+        val invalidListener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    fail("handle-0 subscription must not deliver document changes")
+                }
+
+                override fun onError(message: String) {
+                    fail("handle-0 subscription must not deliver errors: $message")
+                }
+            }
+        assertEquals(
+            "subscribeDocumentChangesJni(handle=0) must return false",
+            false,
+            PeatJni.subscribeDocumentChangesJni(0L, invalidListener),
+        )
+        PeatJni.unsubscribeDocumentChangesJni()
+
+        val handle = createNode("document-change")
+        assertTrue("startSyncJni must succeed", PeatJni.startSyncJni(handle))
+        val delivered = CountDownLatch(1)
+        val receivedKey = AtomicReference<Pair<String, String>>()
+        val callbackError = AtomicReference<String>()
+        val listener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    receivedKey.set(collection to docId)
+                    delivered.countDown()
+                }
+
+                override fun onError(message: String) {
+                    callbackError.set(message)
+                    delivered.countDown()
+                }
+            }
+        assertTrue(
+            "valid node must accept document-change subscription",
+            PeatJni.subscribeDocumentChangesJni(handle, listener),
+        )
+
+        val collection = "surface-documents"
+        val documentId = "callback-proof"
+        assertEquals(
+            documentId,
+            PeatJni.publishDocumentJni(
+                handle,
+                collection,
+                """{"id":"$documentId","value":"proof"}""",
+            ),
+        )
+        assertTrue(
+            "document-change callback was not delivered within 5 seconds; error=${callbackError.get()}",
+            delivered.await(5, TimeUnit.SECONDS),
+        )
+        assertNull("document-change callback reported an error", callbackError.get())
+        assertEquals(collection to documentId, receivedKey.get())
+        PeatJni.unsubscribeDocumentChangesJni()
+    }
+
+    /**
      * peat#886 sanity check: the canonical PeatJni.kt shipped in
      * the AAR exposes every method this test suite — and any
      * consumer — calls. If a future refactor renames or removes
@@ -418,9 +491,8 @@ class PeatJniSurfaceTest {
      * Coverage spans the entire PeatJni surface (lifecycle, peer
      * state, sync, generic doc I/O, typed-collection accessors,
      * blob transfer, BLE state, and the test-only fault injector).
-     * Document-change subscription remains outside the canonical class until
-     * its listener is packaged. Outbound-frame subscription is canonical and
-     * therefore appears here.
+     * Both document-change and outbound-frame subscriptions are canonical and
+     * therefore appear here.
      *
      * The test body is a no-op; the value is in the references.
      */
@@ -452,6 +524,8 @@ class PeatJniSurfaceTest {
             ::peatJniRefPublishDocument,
             ::peatJniRefPublishDocumentWithOrigin,
             ::peatJniRefGetDocument,
+            ::peatJniRefSubscribeDocumentChanges,
+            ::peatJniRefUnsubscribeDocumentChanges,
             // Typed collection accessors
             ::peatJniRefGetCells,
             ::peatJniRefGetTracks,
@@ -481,10 +555,10 @@ class PeatJniSurfaceTest {
             // Test-only fault injection
             ::peatJniRefForceStoreError,
         )
-        // 42 PeatJni methods total. If this number changes, the
+        // 44 PeatJni methods total. If this number changes, the
         // count below must change too — and the new method needs
         // its own peatJniRef* shim added above.
-        assertEquals(42, refs.size)
+        assertEquals(44, refs.size)
     }
 
     // -- Reference shims --------------------------------------------------
@@ -541,6 +615,12 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefGetDocument(h: Long, c: String, d: String): String? =
         PeatJni.getDocumentJni(h, c, d)
+    @Suppress("unused")
+    private fun peatJniRefSubscribeDocumentChanges(h: Long, l: DocumentChangeListener): Boolean =
+        PeatJni.subscribeDocumentChangesJni(h, l)
+    @Suppress("unused")
+    private fun peatJniRefUnsubscribeDocumentChanges() =
+        PeatJni.unsubscribeDocumentChangesJni()
 
     // Typed collection accessors
     @Suppress("unused")
