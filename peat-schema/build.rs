@@ -27,20 +27,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Configure prost to generate Rust code from .proto files
     let mut config = prost_build::Config::new();
+    config
+        .file_descriptor_set_path("proto/peat-schema-descriptor.bin")
+        .skip_protoc_run();
 
     // Enable derive for common traits
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
 
-    // Enable proto3 optional fields
-    config.protoc_arg("--experimental_allow_proto3_optional");
-
-    // Generate code
+    // Generate code from the checked-in descriptor set. Consumers do not need
+    // a system protoc executable; maintainers regenerate the descriptor when a
+    // source proto changes.
     config.compile_protos(&proto_files, &["proto/"])?;
 
     // Tell cargo to recompile if any proto file changes
     for file in &proto_files {
         println!("cargo:rerun-if-changed={}", file);
     }
+    println!("cargo:rerun-if-changed=proto/peat-schema-descriptor.bin");
 
     Ok(())
 }

@@ -257,19 +257,21 @@ The ontology defines:
 ### Requirements
 
 - Rust 1.70+
-- Protocol Buffer compiler (`protoc`)
 
-Install `protoc`:
+Building the Rust crate does not require a system `protoc`; `build.rs` consumes
+the checked-in `proto/peat-schema-descriptor.bin` descriptor set.
+
+### Updating Schemas
+
+Maintainers changing a `.proto` source file must regenerate the descriptor set
+with `protoc` before committing:
 
 ```bash
-# macOS
-brew install protobuf
-
-# Ubuntu/Debian
-apt-get install protobuf-compiler
-
-# From source
-# See https://github.com/protocolbuffers/protobuf/releases
+protoc --proto_path=proto \
+  --include_imports \
+  --include_source_info \
+  --descriptor_set_out=proto/peat-schema-descriptor.bin \
+  proto/*.proto
 ```
 
 ### Build
@@ -278,7 +280,8 @@ apt-get install protobuf-compiler
 cargo build
 ```
 
-The build script (`build.rs`) automatically generates Rust code from `.proto` files using `prost`.
+The build script (`build.rs`) generates Rust code from the checked-in descriptor
+set using `prost`.
 
 ### Test
 
