@@ -14,6 +14,13 @@ Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`,
 
 ## [Unreleased]
 
+### Fixed
+
+- Upgrade `h2` to `0.4.16` and `lru` to `0.18.2` to remediate
+  `RUSTSEC-2026-0258` and `RUSTSEC-2026-0253`, and return `peat-mesh` to the
+  published `0.9.0-rc.65` crates.io release after its temporary Git pin
+  ([#1087](https://github.com/defenseunicorns/peat/issues/1087)).
+
 ## [0.9.0-rc.33] - 2026-08-04
 
 ### Added

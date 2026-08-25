@@ -555,7 +555,7 @@ end = "2027-03-26"
 
 [[trusted.crc32fast]]
 criteria = "safe-to-deploy"
-user-id = 1546 # Sam Rijs (srijs)
+user-id = 1546 # Sam (srijs)
 start = "2019-03-05"
 end = "2027-03-26"
 

@@ -13,6 +13,10 @@ audited_as = "0.2.12"
 version = "0.2.14"
 audited_as = "0.2.12"
 
+[[unpublished.peat-ffi]]
+version = "0.2.15"
+audited_as = "0.2.14"
+
 [[unpublished.peat-protocol]]
 version = "0.9.0-rc.22"
 audited_as = "0.9.0-rc.21"
@@ -544,7 +548,7 @@ version = "1.5.0"
 when = "2025-07-13"
 user-id = 1546
 user-login = "srijs"
-user-name = "Sam Rijs"
+user-name = "Sam"
 
 [[publisher.criterion]]
 version = "0.5.1"
@@ -1058,8 +1062,8 @@ user-login = "str4d"
 user-name = "Jack Grigg"
 
 [[publisher.h2]]
-version = "0.4.13"
-when = "2026-01-05"
+version = "0.4.16"
+when = "2026-08-17"
 user-id = 359
 user-login = "seanmonstar"
 user-name = "Sean McArthur"
@@ -1505,15 +1509,8 @@ user-login = "Darksonn"
 user-name = "Alice Ryhl"
 
 [[publisher.lru]]
-version = "0.16.3"
-when = "2026-01-07"
-user-id = 4747
-user-login = "jeromefroe"
-user-name = "Jerome Froelich"
-
-[[publisher.lru]]
-version = "0.18.0"
-when = "2026-04-27"
+version = "0.18.2"
+when = "2026-08-03"
 user-id = 4747
 user-login = "jeromefroe"
 user-name = "Jerome Froelich"
@@ -1882,8 +1879,8 @@ user-login = "dtolnay"
 user-name = "David Tolnay"
 
 [[publisher.peat]]
-version = "0.9.0-rc.32"
-when = "2026-08-03"
+version = "0.9.0-rc.33"
+when = "2026-08-04"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1896,8 +1893,8 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-ffi]]
-version = "0.2.12"
-when = "2026-07-18"
+version = "0.2.14"
+when = "2026-08-04"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
@@ -1910,22 +1907,22 @@ user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-mesh]]
-version = "0.9.0-rc.60"
-when = "2026-08-04"
+version = "0.9.0-rc.65"
+when = "2026-08-25"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-protocol]]
-version = "0.9.0-rc.32"
-when = "2026-08-03"
+version = "0.9.0-rc.33"
+when = "2026-08-04"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"
 
 [[publisher.peat-schema]]
-version = "0.9.0-rc.32"
-when = "2026-08-03"
+version = "0.9.0-rc.33"
+when = "2026-08-04"
 user-id = 184815
 user-login = "kitplummer"
 user-name = "Kit Plummer"

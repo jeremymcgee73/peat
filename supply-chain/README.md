@@ -16,19 +16,6 @@ Each release of a first-party workspace crate that has been published gets an ex
 
 **Operational workflow.** When the workspace cuts a new rc release (e.g. `0.9.0-rc.11`), three new exemption stanzas must land in `config.toml` — one for each first-party crate. Forgetting this is the most common CI failure on docs-only PRs that didn't intend to touch supply-chain. The peat#870 docs branch hit exactly this when main bumped to rc.10 without matching exemptions.
 
-### Temporary first-party Git dependency policy
-
-Peat#1066 temporarily enables `[policy.peat-mesh] audit-as-crates-io = false`
-while the workspace consumes the merged peat-mesh application-delivery source,
-including the bounded received-document query from peat-mesh#389, at exact commit
-`3d2985e5c974ff4124d55d6bbc652c9a61ae8d9c`. This is a reproducible Git pin,
-not a mutable branch or local-path dependency. Remove the policy and source pin
-after the prerequisite is published and the workspace returns to crates.io.
-
-Normal crates.io versions remain covered by the `[[trusted.peat-mesh]]` and
-`[[trusted.peat-btle]]` publisher-trust entries in `audits.toml`; do not retain
-the Git policy after the source-build exception ends.
-
 ### Third-party `[[exemptions.*]]` entries
 
 The non-first-party exemptions (cc, cesu8, crypto-common, der, plist, etc.) are crates that haven't been audited by any of the imported audit sources (bytecode-alliance, google, isrg, mozilla) at the versions we currently consume. Each one represents a "this version slipped in unaudited; explicitly trusting it for now" admission. `cargo vet prune` may suggest removing entries that are no longer needed; that's safe to run after an Cargo.lock update.
