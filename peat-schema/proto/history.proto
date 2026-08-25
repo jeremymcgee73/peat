@@ -1,0 +1,241 @@
+// Collection history, reconstructibility, and durability contract (ADR-076)
+// Version: 0.1.0
+
+syntax = "proto3";
+
+package peat.history.v1;
+
+import "common.proto";
+
+// Complete policy declaration for one writable collection.
+message CollectionHistoryPolicy {
+  // Canonical collection name.
+  string collection = 1;
+
+  // How peers exchange state. This does not imply local retention.
+  SynchronizationPolicy synchronization = 2;
+
+  // How the backing CRDT causal graph may be retained or replaced.
+  CausalRetentionPolicy causal_retention = 3;
+
+  // Application-level reconstruction requirement.
+  HistoryRequirement history_requirement = 4;
+
+  // Required for bounded or complete reconstructibility.
+  optional HistorySourceReference history_source = 5;
+
+  // Required for bounded or complete reconstructibility.
+  optional SegmentPolicy segment_policy = 6;
+
+  // Persistence acknowledgement required before local removal.
+  DurabilityPolicy durability = 7;
+
+  // Behavior when the declared history or durability budget cannot be met.
+  OverBudgetBehavior over_budget_behavior = 8;
+
+  // Behavior for writes that target an epoch after it has closed.
+  StaleWriterBehavior stale_writer_behavior = 9;
+
+  // Behavior when retained-expired history returns from a stale replica.
+  ResurrectionBehavior resurrection_behavior = 10;
+}
+
+// Collection synchronization behavior.
+message SynchronizationPolicy {
+  SynchronizationMode mode = 1;
+
+  // Required only for SYNCHRONIZATION_MODE_WINDOWED.
+  optional uint64 window_seconds = 2;
+}
+
+enum SynchronizationMode {
+  // Conservative compatibility value: preserve and synchronize causal history.
+  SYNCHRONIZATION_MODE_UNSPECIFIED = 0;
+  SYNCHRONIZATION_MODE_FULL_HISTORY = 1;
+  SYNCHRONIZATION_MODE_LATEST_ONLY = 2;
+  SYNCHRONIZATION_MODE_WINDOWED = 3;
+}
+
+// CRDT causal-graph retention policy, independent of domain history.
+message CausalRetentionPolicy {
+  CausalRetentionMode mode = 1;
+}
+
+enum CausalRetentionMode {
+  // Conservative compatibility value: retain the complete causal graph.
+  CAUSAL_RETENTION_MODE_UNSPECIFIED = 0;
+  CAUSAL_RETENTION_MODE_COMPLETE = 1;
+  CAUSAL_RETENTION_MODE_UNTIL_DURABLE_CHECKPOINT = 2;
+  CAUSAL_RETENTION_MODE_CURRENT_STATE = 3;
+}
+
+// Application-level reconstruction requirement.
+enum HistoryRequirement {
+  // No application-level claim. Used while migrating legacy configuration.
+  HISTORY_REQUIREMENT_UNSPECIFIED = 0;
+  HISTORY_REQUIREMENT_CURRENT_STATE_ONLY = 1;
+  HISTORY_REQUIREMENT_BOUNDED_RECONSTRUCTIBLE = 2;
+  HISTORY_REQUIREMENT_COMPLETE_RECONSTRUCTIBLE = 3;
+}
+
+// Generic relation from a current projection to its history stream.
+message HistorySourceReference {
+  // Collection containing immutable history segments.
+  string collection = 1;
+
+  // Stable stream identity used to discover segments for this projection.
+  string source_id = 2;
+
+  // Optional collection containing reconstruction checkpoints.
+  optional string checkpoint_collection = 3;
+
+  // Optional collection containing segment descriptors/catalog entries.
+  optional string catalog_collection = 4;
+}
+
+// Finite history-segment rotation and retention limits.
+message SegmentPolicy {
+  // Rotate when any configured positive limit is reached.
+  uint64 max_age_seconds = 1;
+  uint64 max_events = 2;
+  uint64 max_bytes = 3;
+  uint64 max_revisions = 4;
+
+  // Required and positive for bounded history. Absent for complete history.
+  optional uint64 retention_seconds = 5;
+}
+
+// Persistence target for sealed history segments.
+message DurabilityPolicy {
+  DurabilityTarget target = 1;
+
+  // Number of acknowledged durable copies. LOCAL and ARCHIVE use 1;
+  // REPLICATED requires at least 2.
+  uint32 minimum_copies = 2;
+}
+
+enum DurabilityTarget {
+  // Conservative compatibility value: no local removal is authorized.
+  DURABILITY_TARGET_UNSPECIFIED = 0;
+  DURABILITY_TARGET_LOCAL = 1;
+  DURABILITY_TARGET_REPLICATED = 2;
+  DURABILITY_TARGET_ARCHIVE = 3;
+}
+
+enum OverBudgetBehavior {
+  OVER_BUDGET_BEHAVIOR_UNSPECIFIED = 0;
+  OVER_BUDGET_BEHAVIOR_RETAIN_LOCAL = 1;
+  OVER_BUDGET_BEHAVIOR_BACKPRESSURE = 2;
+  OVER_BUDGET_BEHAVIOR_REJECT = 3;
+}
+
+enum StaleWriterBehavior {
+  // Conservative compatibility value: reject writes to an unknown epoch.
+  STALE_WRITER_BEHAVIOR_UNSPECIFIED = 0;
+  STALE_WRITER_BEHAVIOR_REJECT_WITH_ACTIVE_EPOCH = 1;
+}
+
+enum ResurrectionBehavior {
+  // Conservative compatibility value: quarantine returned history.
+  RESURRECTION_BEHAVIOR_UNSPECIFIED = 0;
+  RESURRECTION_BEHAVIOR_REJECT = 1;
+  RESURRECTION_BEHAVIOR_QUARANTINE = 2;
+  RESURRECTION_BEHAVIOR_REMOVE_AGAIN = 3;
+}
+
+// Effective declaration and its enforcement state.
+message EffectiveCollectionHistoryPolicy {
+  CollectionHistoryPolicy policy = 1;
+  PolicySource source = 2;
+  EnforcementState enforcement_state = 3;
+  optional string detail = 4;
+}
+
+enum PolicySource {
+  POLICY_SOURCE_UNSPECIFIED = 0;
+  POLICY_SOURCE_EXPLICIT = 1;
+  POLICY_SOURCE_ECOSYSTEM_DEFAULT = 2;
+  POLICY_SOURCE_MIGRATED = 3;
+}
+
+enum EnforcementState {
+  ENFORCEMENT_STATE_UNSPECIFIED = 0;
+  ENFORCEMENT_STATE_PENDING = 1;
+  ENFORCEMENT_STATE_ENFORCED = 2;
+  ENFORCEMENT_STATE_BLOCKED = 3;
+}
+
+// Acknowledgement progress toward a declared durability target.
+message DurabilityProgress {
+  DurabilityTarget target = 1;
+  uint32 required_copies = 2;
+  uint32 acknowledged_copies = 3;
+  bool target_met = 4;
+}
+
+// Immutable identity and coverage metadata for a history segment.
+message HistorySegmentDescriptor {
+  string collection = 1;
+  string source_id = 2;
+
+  // Stable epoch used to fence stale writers after rotation or checkpointing.
+  string epoch_id = 3;
+  string segment_id = 4;
+
+  // Inclusive source-local sequence range covered by this segment.
+  uint64 sequence_start = 5;
+  uint64 sequence_end = 6;
+
+  optional peat.common.v1.Timestamp starts_at = 7;
+  optional peat.common.v1.Timestamp ends_at = 8;
+  optional string predecessor_segment_id = 9;
+
+  // SHA-256 of the immutable sealed representation. Absent while active.
+  optional bytes content_sha256 = 10;
+
+  // Optional reconstruction checkpoint that precedes this segment.
+  optional string checkpoint_id = 11;
+
+  // Encoding/media type of the exact sealed payload bytes covered by
+  // content_sha256. Absent while active.
+  optional string content_encoding = 12;
+}
+
+// Observable lifecycle of one immutable history segment.
+message HistorySegmentStatus {
+  HistorySegmentDescriptor segment = 1;
+  SegmentLifecycle lifecycle = 2;
+  DurabilityProgress durability = 3;
+  bool retention_eligible = 4;
+  peat.common.v1.Timestamp evaluated_at = 5;
+  optional peat.common.v1.Timestamp retention_not_before = 6;
+  optional string detail = 7;
+}
+
+enum SegmentLifecycle {
+  SEGMENT_LIFECYCLE_UNSPECIFIED = 0;
+  SEGMENT_LIFECYCLE_ACTIVE = 1;
+  SEGMENT_LIFECYCLE_SEALED = 2;
+  SEGMENT_LIFECYCLE_DURABLY_ACKNOWLEDGED = 3;
+  SEGMENT_LIFECYCLE_RETENTION_ELIGIBLE = 4;
+  SEGMENT_LIFECYCLE_REMOVED = 5;
+}
+
+// Observable state used to fence stale writers across epoch rotation.
+message HistoryEpochStatus {
+  string collection = 1;
+  string source_id = 2;
+  string epoch_id = 3;
+  EpochLifecycle lifecycle = 4;
+
+  // Required for a closed epoch so rejected writers can migrate explicitly.
+  optional string successor_epoch_id = 5;
+  optional string closing_checkpoint_id = 6;
+  uint64 next_segment_sequence = 7;
+}
+
+enum EpochLifecycle {
+  EPOCH_LIFECYCLE_UNSPECIFIED = 0;
+  EPOCH_LIFECYCLE_ACTIVE = 1;
+  EPOCH_LIFECYCLE_CLOSED = 2;
+}

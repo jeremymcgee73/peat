@@ -31,6 +31,7 @@
 //! - **`effector.v1`**: Effector specifications (weapons, countermeasures, safety, authorization)
 //! - **`product.v1`**: AI/ML products (images, classifications, summaries, chat, embeddings)
 //! - **`tasking.v1`**: AI/ML tasking (detection tasks, filters, product delivery configuration)
+//! - **`history.v1`**: Collection history, reconstructibility, and durability policy
 //!
 //! ## Three-Tier Hierarchy
 //!
@@ -186,6 +187,13 @@ pub mod registry {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
+pub mod history {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/peat.history.v1.rs"));
+    }
+}
+
 /// Validation utilities for schema types
 pub mod validation;
 
@@ -208,6 +216,7 @@ mod tests {
         // This test ensures code generation worked correctly
         use capability::v1::CapabilityType;
         use common::v1::Position;
+        use history::v1::HistoryRequirement;
         use node::v1::Phase;
 
         // Create instances to verify types are accessible
@@ -219,6 +228,7 @@ mod tests {
 
         let _cap_type = CapabilityType::Sensor;
         let _phase = Phase::Discovery;
+        let _history_requirement = HistoryRequirement::BoundedReconstructible;
 
         // If we got here, all packages are accessible
         assert_eq!(CapabilityType::Sensor as i32, 1);

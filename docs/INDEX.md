@@ -39,7 +39,7 @@
 3. [**patents/**](patents/) - Patent strategy and technical disclosures
 
 **Key Technical Documents**:
-- [Architecture Decision Records](adr/) - 16 ADRs documenting all major technical decisions
+- [Architecture Decision Records](adr/) - selected foundational and current architecture decisions
 - [TESTING_STRATEGY.md](TESTING_STRATEGY.md) - Quality assurance approach
 - [DEVELOPMENT.md](../DEVELOPMENT.md) - Development guide and code quality practices
 
@@ -53,7 +53,8 @@
 
 ## Architecture Decision Records (ADRs)
 
-ADRs document significant architectural decisions and their rationale.
+ADRs document significant architectural decisions and their rationale. This is
+a selected index; the complete record is the [`docs/adr/`](adr/) directory.
 
 | ADR | Title | Date | Status |
 |-----|-------|------|--------|
@@ -66,6 +67,11 @@ ADRs document significant architectural decisions and their rationale.
 | [014](adr/014-distributed-coordination-primitives.md) | Distributed Coordination Primitives | 2024-12-15 | Accepted |
 | [015](adr/015-experimental-validation-hierarchical-aggregation.md) | Experimental Validation - Hierarchical Aggregation | 2024-12-20 | Accepted |
 | [016](adr/016-ttl-and-data-lifecycle-abstraction.md) | TTL and Data Lifecycle Abstraction | 2025-01-10 | Accepted |
+| [019](adr/019-qos-and-data-prioritization.md) | Quality of Service and Data Prioritization | 2025-11-16 | Proposed |
+| [021](adr/021-document-oriented-architecture.md) | Document-Oriented Architecture | 2025-11-20 | Accepted |
+| [034](adr/034-record-deletion-tombstone-management.md) | Record Deletion and Tombstone Management | 2026-01-04 | Accepted |
+| [074](adr/074-schema-single-source-of-truth.md) | Schema Single Source of Truth | 2026-07-06 | Proposed |
+| [076](adr/076-reconstructible-collection-history-contract.md) | Reconstructible Collection History Contract | 2026-08-24 | Proposed |
 
 **Summary**: [ARCHITECTURE-DECISION-SUMMARY.md](ARCHITECTURE-DECISION-SUMMARY.md)
 
@@ -136,7 +142,7 @@ Comprehensive testing strategy and implementation guides.
 - **Architecture**: ARCHITECTURE.md, ADRs, ARCHITECTURE-DECISION-SUMMARY.md
 - **Protocol Specs**: spec/001-transport.md through spec/005-security.md
 - **Validation**: VALIDATION_RESULTS.md, ADR-015
-- **Data Lifecycle & TTL**: ADR-016, TTL_AND_DATA_LIFECYCLE_DESIGN.md
+- **Data Lifecycle, History & TTL**: ADR-016, ADR-034, ADR-076, TTL_AND_DATA_LIFECYCLE_DESIGN.md
 - **Human-Machine Teaming**: ADR-004
 - **Testing**: TESTING_STRATEGY.md
 - **Simulation**: NETWORK_SIMULATOR_EVALUATION.md

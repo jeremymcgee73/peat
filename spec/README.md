@@ -1,10 +1,10 @@
 # Peat Protocol Specification
 
-This directory contains the **normative specification** for the Peat Protocol.
+This directory contains the current concept draft and proposed wire schemas for the Peat Protocol.
 
 ## Purpose
 
-The contents of this directory define the **standard**—the protocol that any compliant implementation MUST follow. This specification is designed to be:
+The contents of this directory are being developed toward an implementation-independent standard. The proposed specification is designed to be:
 
 1. **Implementation-agnostic**: Any language or platform can implement Peat using these specifications
 2. **Testable**: Clear requirements enable conformance testing
@@ -15,7 +15,8 @@ The contents of this directory define the **standard**—the protocol that any c
 ```
 spec/
 ├── README.md                           # This file
-├── draft-peat-protocol-00.md           # Main protocol specification (RFC-style)
+├── peat-protocol-concept-draft.md      # Internal concept draft
+├── Makefile                            # Reproducible PDF build
 ├── proto/                              # Normative Protocol Buffer definitions
 │   └── cap/
 │       └── v1/
@@ -36,8 +37,8 @@ spec/
 
 | Content | Location | Status |
 |---------|----------|--------|
-| Protocol specification | `spec/` | **Normative** - defines REQUIRED behavior |
-| Protocol Buffer schemas | `spec/proto/` | **Normative** - wire format definition |
+| Protocol concept draft | `spec/peat-protocol-concept-draft.md` | **Preliminary** - proposed behavior for review |
+| Protocol Buffer schemas | `spec/proto/` | **Preliminary** - proposed wire format |
 | Reference implementation | `reference/` | **Informative** - one valid implementation |
 | Architecture decisions | `docs/adr/` | **Informative** - design rationale |
 
@@ -71,9 +72,9 @@ This specification uses keywords as defined in [RFC 2119](https://tools.ietf.org
 
 This licensing ensures anyone can implement the Peat Protocol without legal barriers while maintaining attribution for the specification work.
 
-## Standards Track
+## Standards Development Path
 
-This specification is being developed with the goal of submission to:
+Subject to team approval, this specification may be developed for submission to:
 
 1. **IETF** - Internet-Draft for broader internet/networking community adoption
 2. **NATO** - STANAG proposal for defense interoperability (complements STANAG 4586, 7023)
@@ -83,7 +84,8 @@ This specification is being developed with the goal of submission to:
 
 | Document | Purpose |
 |----------|---------|
-| [draft-peat-protocol-00.md](draft-peat-protocol-00.md) | Main protocol specification |
+| [peat-protocol-concept-draft.md](peat-protocol-concept-draft.md) | Internal protocol concept draft |
+| [ADR-076](../docs/adr/076-reconstructible-collection-history-contract.md) | Collection history, reconstructibility, and durability rationale |
 | [proto/README.md](proto/README.md) | Schema documentation |
 | [../governance/CHARTER.md](../governance/CHARTER.md) | Project governance |
 | [../governance/CONTRIBUTING.md](../governance/CONTRIBUTING.md) | Contribution guidelines |

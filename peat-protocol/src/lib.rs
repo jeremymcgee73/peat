@@ -87,6 +87,7 @@ pub mod event; // Event routing and aggregation (ADR-027)
 pub mod ffi; // FFI bindings for native consumers (Issue #258)
 pub mod geohash; // Vendored geohash algorithm (supply chain audit)
 pub mod hierarchy;
+pub mod history; // Collection history and reconstructibility contract (ADR-076)
 pub mod mesh_integration;
 pub mod models;
 pub mod network;

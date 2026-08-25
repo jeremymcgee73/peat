@@ -99,7 +99,8 @@ Specification content lives in `/spec/`:
 
 ```
 spec/
-├── draft-peat-protocol-00.md   # Main specification
+├── peat-protocol-concept-draft.md # Internal concept draft
+├── Makefile                       # Reproducible PDF build
 ├── proto/                       # Protocol Buffer definitions
 │   └── cap/v1/*.proto
 └── README.md
