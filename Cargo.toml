@@ -40,7 +40,7 @@ members = [
 # New `examples/*` Rust crates: add to `members` if they share this
 # workspace's toolchain/lockfile, or to `exclude` if they need their own
 # (e.g. embedded ESP32 via xtensa-esp-none-elf).
-exclude = ["examples/m5stack-core2-peat"]
+exclude = ["examples/m5stack-core2-peat", "vendor/netwatch"]
 
 # ADR-059 Amendment 4 Slice 4.d — RESOLVED on 2026-05-12.
 #
@@ -301,9 +301,11 @@ repository = "https://github.com/defenseunicorns/peat"
 #
 # Floor bumped to rc.65 (2026-08-24) — peat-mesh#383 and #389 add durable
 # application delivery and bounded received-document queries, while
-# peat-mesh#392 upgrades lru to remediate RUSTSEC-2026-0253. The temporary
-# exact Git pin used before publication is removed; resolution is crates.io.
-peat-mesh = { version = ">=0.9.0-rc.65, <0.9.1", default-features = false }
+# peat-mesh#392 upgrades lru to remediate RUSTSEC-2026-0253. This stacked
+# change temporarily pins the contributor fork containing explicit platform IP
+# bindings; switch the URL to upstream after the peat-mesh change merges, then
+# return to crates.io after the source exception ships.
+peat-mesh = { git = "https://github.com/jeremymcgee73/peat-mesh", rev = "ea7fd889d1a054e28f6ff242b0e8d130d3fcf686", version = ">=0.9.0-rc.65, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
@@ -340,3 +342,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Testing
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+
+# Temporary vendored fork of netwatch 0.19.1. It adds one generic,
+# fail-closed pre-bind hook so platform adapters can associate only
+# Iroh-owned UDP sockets with an OS-managed network. Remove this override
+# when the hook is available in a released upstream netwatch crate.
+[patch.crates-io]
+netwatch = { path = "vendor/netwatch" }

@@ -121,6 +121,32 @@ object PeatJni {
         bindAddress: String?,
     ): Long
 
+    /**
+     * Create a node whose Iroh UDP sockets are bound to explicit Android
+     * Networks. The JSON is validated natively and has no process-default
+     * fallback. Hosted relay DNS/TCP remains disabled on this surface.
+     */
+    @JvmStatic external fun createNodeWithIpBindingsJni(
+        appId: String,
+        sharedKey: String,
+        nodeId: String?,
+        storagePath: String,
+        enableBle: Boolean,
+        blePowerProfile: String?,
+        ipBindingsJson: String,
+    ): Long
+
+    @JvmStatic external fun notifyNetworkChangeJni(handle: Long): Boolean
+
+    @JvmStatic external fun submitApplicationRelayJni(
+        handle: Long,
+        targetNodeId: String,
+        operationId: String,
+        documentId: String,
+        bodyJson: String,
+        expiresAtMs: Long,
+    ): String
+
     @JvmStatic external fun getGlobalNodeHandleJni(): Long
 
     /// Release the owning reference [createNodeJni]/`create_node` stashed in the

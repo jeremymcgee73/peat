@@ -297,6 +297,9 @@ mod roster;
 mod supervisor;
 
 #[cfg(feature = "sync")]
+mod ip_bindings;
+
+#[cfg(feature = "sync")]
 mod application_delivery;
 #[cfg(feature = "sync")]
 pub use application_delivery::*;
@@ -1142,6 +1145,10 @@ pub struct PeatNode {
     /// lite-bridge.
     #[cfg(feature = "sync")]
     crdt_kv: crdt_kv::CrdtKvDocs,
+    /// Keeps the exclusive per-socket platform binding policy installed for
+    /// exactly this node's lifetime. `None` for ordinary host routing.
+    #[allow(dead_code)]
+    selected_ip_bind_hook: Option<netwatch::UdpSocketBindHookGuard>,
 }
 
 /// Shared connect → formation-handshake → sync-trigger pipeline backing both
@@ -2013,6 +2020,15 @@ pub(crate) fn create_node_with_identity(
     config: NodeConfig,
     node_id_override: Option<String>,
 ) -> Result<Arc<PeatNode>, PeatError> {
+    create_node_with_identity_and_ip_bindings(config, node_id_override, None)
+}
+
+#[cfg(feature = "sync")]
+fn create_node_with_identity_and_ip_bindings(
+    config: NodeConfig,
+    node_id_override: Option<String>,
+    selected_ip_bindings: Option<ip_bindings::PreparedIpBindings>,
+) -> Result<Arc<PeatNode>, PeatError> {
     use std::time::Instant;
     let total_start = Instant::now();
 
@@ -2150,6 +2166,9 @@ pub(crate) fn create_node_with_identity(
         .map(|t| t.enable_n0_relay)
         .unwrap_or(false);
 
+    let explicit_ip_bindings = selected_ip_bindings
+        .as_ref()
+        .map(|prepared| prepared.specs.clone());
     let (store, transport, store_ms, transport_ms) = runtime.block_on(async {
         let store_start = Instant::now();
         let transport_start = Instant::now();
@@ -2181,8 +2200,18 @@ pub(crate) fn create_node_with_identity(
         // on `_peat` with a concrete address (works on Android). Otherwise fall
         // back to the legacy per-device seed identity.
         let transport_future = async {
-            let result = match formation_secret.as_deref() {
-                Some(secret) => {
+            let result = match (formation_secret.as_deref(), explicit_ip_bindings.as_deref()) {
+                (Some(secret), Some(bindings)) => {
+                    IrohTransport::from_formation_with_discovery_at_ip_bindings(
+                        secret,
+                        &iroh_node_id,
+                        &config.app_id,
+                        bindings,
+                        enable_n0_relay,
+                    )
+                    .await
+                }
+                (Some(secret), None) => {
                     IrohTransport::from_formation_with_discovery_at_addr(
                         secret,
                         &iroh_node_id,
@@ -2192,7 +2221,7 @@ pub(crate) fn create_node_with_identity(
                     )
                     .await
                 }
-                None => {
+                (None, None) => {
                     IrohTransport::from_seed_with_discovery_at_addr(
                         &seed,
                         bind_addr,
@@ -2200,6 +2229,9 @@ pub(crate) fn create_node_with_identity(
                     )
                     .await
                 }
+                (None, Some(_)) => Err(anyhow::anyhow!(
+                    "explicit IP bindings require a valid base64 formation key"
+                )),
             };
             (result, transport_start.elapsed().as_millis())
         };
@@ -2652,6 +2684,7 @@ pub(crate) fn create_node_with_identity(
         outbound_fanout: std::sync::Mutex::new(None),
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         relay_seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+        selected_ip_bind_hook: selected_ip_bindings.map(|prepared| prepared.hook_guard),
     });
 
     // Publish an OWNING reference to the JNI-visible global so a Kotlin bridge
@@ -8650,6 +8683,186 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     }
 }
 
+/// JNI: create one node over explicit Android-selected IP networks.
+///
+/// `ipBindingsJson` is a bounded array of numeric local addresses, CIDR
+/// prefixes, Android `Network.getNetworkHandle()` values, and default-route
+/// flags. The native socket owner marks each Iroh UDP socket before bind and
+/// on every rebind. Any missing/invalid mapping fails node creation; this path
+/// never falls back to the process default network.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    app_id: JString,
+    shared_key: JString,
+    node_id: JString,
+    storage_path: JString,
+    enable_ble: jboolean,
+    ble_power_profile: JString,
+    ip_bindings_json: JString,
+) -> i64 {
+    let app_id: String = match env.get_string(&app_id) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let shared_key: String = match env.get_string(&shared_key) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let storage_path: String = match env.get_string(&storage_path) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let ip_bindings_json: String = match env.get_string(&ip_bindings_json) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let node_id = env.get_string(&node_id).ok().and_then(|value| {
+        let value: String = value.into();
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    });
+    let power_profile = env.get_string(&ble_power_profile).ok().and_then(|value| {
+        let value: String = value.into();
+        (!value.is_empty()).then_some(value)
+    });
+
+    let selected_ip_bindings = match ip_bindings::prepare(&ip_bindings_json) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "createNodeWithIpBindingsJni rejected bindings: {error:?}"
+            ));
+            return 0;
+        }
+    };
+
+    let transport = if enable_ble != 0 {
+        Some(TransportConfigFFI {
+            enable_ble: true,
+            ble_mesh_id: None,
+            ble_power_profile: power_profile,
+            transport_preference: None,
+            collection_routes_json: None,
+            // Hosted relay TCP/DNS is not covered by the selected-network UDP
+            // seam. Keep it disabled rather than leaking onto another path.
+            enable_n0_relay: false,
+        })
+    } else {
+        None
+    };
+    let config = NodeConfig {
+        app_id,
+        shared_key,
+        bind_address: None,
+        storage_path,
+        transport,
+    };
+
+    match create_node_with_identity_and_ip_bindings(config, node_id, Some(selected_ip_bindings)) {
+        Ok(node) => {
+            #[cfg(target_os = "android")]
+            IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
+            set_global_node_handle(&node);
+            Arc::into_raw(node) as i64
+        }
+        Err(error) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("createNodeWithIpBindingsJni failed: {error:?}"));
+            0
+        }
+    }
+}
+
+/// Notify Iroh that capabilities or reachability changed without changing any
+/// process-wide Android route.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    node.notify_network_change();
+    std::mem::forget(node);
+    1
+}
+
+/// Submit one strictly bounded generic application-relay document to a single
+/// authenticated PEAT endpoint. Payload semantics remain with the consumer;
+/// the built-in relay schema validates routing, expiry, hop, digest, and size
+/// fields before the durable delivery manager accepts it.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    target_node_id: JString,
+    operation_id: JString,
+    document_id: JString,
+    body_json: JString,
+    expires_at_ms: i64,
+) -> jstring {
+    let result = (|| -> Result<String, PeatError> {
+        if handle == 0 || expires_at_ms <= 0 {
+            return Err(PeatError::InvalidInput {
+                msg: "application relay handle or expiry is invalid".to_string(),
+            });
+        }
+        let target_node_id: String = env
+            .get_string(&target_node_id)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay target is invalid".to_string(),
+            })?
+            .into();
+        let operation_id: String = env
+            .get_string(&operation_id)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay operation ID is invalid".to_string(),
+            })?
+            .into();
+        let document_id: String = env
+            .get_string(&document_id)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay document ID is invalid".to_string(),
+            })?
+            .into();
+        let body: String = env
+            .get_string(&body_json)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay body is invalid".to_string(),
+            })?
+            .into();
+        let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+        let result = node.application_delivery_submit(ApplicationDeliverySubmitRequest {
+            client_operation_id: operation_id,
+            audience: ApplicationDeliveryAudience::Direct,
+            target_node_ids: vec![target_node_id],
+            priority: ApplicationDeliveryPriority::Metadata,
+            collection: "application-relay".to_string(),
+            type_id: "peat.application.relay.v1".to_string(),
+            document_id,
+            body: body.into_bytes(),
+            expires_at_ms: expires_at_ms as u64,
+        });
+        std::mem::forget(node);
+        result
+    })()
+    .unwrap_or_default();
+
+    env.new_string(result)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// JNI: Get the global node handle (survives APK replacement)
 ///
 /// Kotlin signature: external fun getGlobalNodeHandleJni(): Long
@@ -11597,6 +11810,28 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
                 .into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *mut c_void,
         },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "createNodeWithIpBindingsJni".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
+                .into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "notifyNetworkChangeJni".into(),
+            sig: "(J)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "submitApplicationRelayJni".into(),
+            sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;"
+                .into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni
+                as *mut c_void,
+        },
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         NativeMethod {
             name: "subscribeOutboundFramesJni".into(),
@@ -12241,6 +12476,29 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
                         .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "createNodeWithIpBindingsJni".into(),
+                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
+                        .into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "notifyNetworkChangeJni".into(),
+                    sig: "(J)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "submitApplicationRelayJni".into(),
+                    sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;"
+                        .into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni
                         as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth"))]

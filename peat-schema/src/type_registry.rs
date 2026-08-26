@@ -417,6 +417,7 @@ impl BuiltinRegistry {
         r.register(descriptors::geochat());
         r.register(descriptors::overlay_revision());
         r.register(descriptors::attachment_offer());
+        r.register(descriptors::application_relay());
         r
     }
 }
@@ -448,6 +449,8 @@ mod descriptors {
     const MAX_RECIPIENTS: usize = 64;
     const MAX_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
     const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+    const MAX_RELAY_PAYLOAD_BASE64_BYTES: usize = 384 * 1024;
+    const MAX_RELAY_HOPS: u64 = 8;
 
     fn object<'a>(
         value: &'a Value,
@@ -719,6 +722,101 @@ mod descriptors {
             )));
         }
         Ok(())
+    }
+
+    /// Bounded, application-owned payload forwarded between authenticated
+    /// PEAT endpoints. The payload kind is consumer-defined; the core schema
+    /// constrains routing metadata and bytes without knowing the application.
+    pub fn application_relay() -> TypeDescriptor {
+        fn validate(value: &Value) -> ValidationResult<()> {
+            let obj = object(value, "application relay document")?;
+            exact_keys(
+                obj,
+                &[
+                    "message_id",
+                    "origin_node_id",
+                    "destination_node_id",
+                    "created_at_ms",
+                    "expires_at_ms",
+                    "max_hops",
+                    "hop_count",
+                    "route",
+                    "payload_kind",
+                    "payload_sha256",
+                    "payload_base64",
+                ],
+                &[],
+            )?;
+            for field in ["message_id", "origin_node_id", "destination_node_id"] {
+                bounded_string(obj, field, MAX_ID_LEN)?;
+            }
+            bounded_window(obj, "created_at_ms", "expires_at_ms")?;
+            let max_hops = unsigned(obj, "max_hops")?;
+            let hop_count = unsigned(obj, "hop_count")?;
+            if max_hops == 0 || max_hops > MAX_RELAY_HOPS || hop_count == 0 || hop_count > max_hops
+            {
+                return Err(ValidationError::ConstraintViolation(format!(
+                    "relay hop_count must be between 1 and max_hops; max_hops is capped at {MAX_RELAY_HOPS}"
+                )));
+            }
+            let route = obj["route"].as_array().ok_or_else(|| {
+                ValidationError::InvalidValue("route must be an array".to_string())
+            })?;
+            if route.len() != hop_count as usize {
+                return Err(ValidationError::ConstraintViolation(
+                    "route length must equal hop_count".to_string(),
+                ));
+            }
+            let mut unique = std::collections::BTreeSet::new();
+            for node in route {
+                let node = node.as_str().ok_or_else(|| {
+                    ValidationError::InvalidValue("route entries must be strings".to_string())
+                })?;
+                if node.is_empty() || node.len() > MAX_ID_LEN || !unique.insert(node) {
+                    return Err(ValidationError::ConstraintViolation(
+                        "route identities must be unique and bounded".to_string(),
+                    ));
+                }
+            }
+            let payload_kind = bounded_string(obj, "payload_kind", 127)?;
+            if !payload_kind.contains('/')
+                || payload_kind
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+            {
+                return Err(ValidationError::InvalidValue(
+                    "payload_kind must be a bounded type/subtype token".to_string(),
+                ));
+            }
+            sha256(&obj["payload_sha256"], "payload_sha256")?;
+            let payload = bounded_string(obj, "payload_base64", MAX_RELAY_PAYLOAD_BASE64_BYTES)?;
+            if !payload.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+            }) {
+                return Err(ValidationError::InvalidValue(
+                    "payload_base64 contains invalid characters".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        TypeDescriptor {
+            id: TypeId::new("peat.application.relay.v1"),
+            name: "Application Relay".to_string(),
+            version: "v1".to_string(),
+            canonical_collection: Some("application-relay".to_string()),
+            validate_json: validate,
+            proto3_zero_fn: default_proto3_zero,
+            fields: vec![
+                FieldDescriptor::new("message_id", "Message ID", FieldFormat::Text),
+                FieldDescriptor::new("origin_node_id", "Origin", FieldFormat::Text),
+                FieldDescriptor::new("destination_node_id", "Destination", FieldFormat::Text),
+                FieldDescriptor::new("created_at_ms", "Created", FieldFormat::Timestamp),
+                FieldDescriptor::new("expires_at_ms", "Expires", FieldFormat::Timestamp),
+                FieldDescriptor::new("hop_count", "Hop Count", FieldFormat::Number { unit: None }),
+                FieldDescriptor::new("payload_kind", "Payload Kind", FieldFormat::Text),
+                FieldDescriptor::new("payload_sha256", "Payload SHA-256", FieldFormat::Text),
+            ],
+        }
     }
 
     fn media_type(obj: &serde_json::Map<String, Value>) -> ValidationResult<()> {
@@ -1626,6 +1724,39 @@ mod tests {
     }
 
     #[test]
+    fn application_relay_enforces_hops_loops_and_payload_bounds() {
+        let registry = BuiltinRegistry::with_peat_schema_types();
+        let descriptor = registry
+            .for_collection("application-relay")
+            .expect("relay descriptor");
+        let valid = serde_json::json!({
+            "message_id": "relay-1",
+            "origin_node_id": "alpha",
+            "destination_node_id": "charlie",
+            "created_at_ms": 1_800_000_000_000u64,
+            "expires_at_ms": 1_800_000_300_000u64,
+            "max_hops": 2,
+            "hop_count": 1,
+            "route": ["bravo"],
+            "payload_kind": "application/example+json",
+            "payload_sha256": "01".repeat(32),
+            "payload_base64": "e30=",
+        });
+        assert!((descriptor.validate_json)(&valid).is_ok());
+
+        let mut looped = valid.clone();
+        looped["hop_count"] = serde_json::json!(2);
+        looped["route"] = serde_json::json!(["bravo", "bravo"]);
+        assert!((descriptor.validate_json)(&looped).is_err());
+
+        let mut exhausted = valid;
+        exhausted["max_hops"] = serde_json::json!(1);
+        exhausted["hop_count"] = serde_json::json!(2);
+        exhausted["route"] = serde_json::json!(["bravo", "charlie"]);
+        assert!((descriptor.validate_json)(&exhausted).is_err());
+    }
+
+    #[test]
     fn iter_lists_all_registered_types() {
         let r = BuiltinRegistry::with_peat_schema_types();
         let ids: Vec<&str> = r.iter().map(|d| d.id.as_str()).collect();
@@ -1639,7 +1770,8 @@ mod tests {
         assert!(ids.contains(&"peat.collaboration.geochat.v1"));
         assert!(ids.contains(&"peat.collaboration.overlay.revision.v1"));
         assert!(ids.contains(&"peat.collaboration.attachment.offer.v1"));
-        assert_eq!(ids.len(), 11);
+        assert!(ids.contains(&"peat.application.relay.v1"));
+        assert_eq!(ids.len(), 12);
     }
 
     /// Build a JSON object matching the Capability proto3 shape.
