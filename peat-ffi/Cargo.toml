@@ -103,6 +103,10 @@ version = "0.2.15"
 edition = "2021"
 description = "FFI bindings for Peat protocol (Kotlin/Swift via UniFFI)"
 license = "Apache-2.0"
+authors.workspace = true
+repository.workspace = true
+homepage = "https://github.com/defenseunicorns/peat"
+documentation = "https://docs.rs/peat-ffi"
 
 [lib]
 crate-type = ["staticlib", "cdylib", "lib"]
@@ -170,9 +174,9 @@ uniffi = { version = "0.31", features = ["cli", "tokio"] }
 jni = "0.21"
 
 # Peat crates - no ditto-backend for Android cross-compilation
-peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.33", default-features = false }
+peat-protocol = { path = "../peat-protocol", version = "=0.9.0-rc.34", default-features = false }
 # Proto-generated types (ADR-074: single source of truth for message schemas)
-peat-schema = { path = "../peat-schema", version = "=0.9.0-rc.33" }
+peat-schema = { path = "../peat-schema", version = "=0.9.0-rc.34" }
 # peat-mesh direct for blob storage (ADR-060). Pulls NetworkedIrohBlobStore
 # which we use behind the peat_mesh::storage::BlobStore trait.
 peat-mesh = { workspace = true, optional = true }

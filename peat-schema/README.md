@@ -271,7 +271,27 @@ protoc --proto_path=proto \
   --include_imports \
   --include_source_info \
   --descriptor_set_out=proto/peat-schema-descriptor.bin \
-  proto/*.proto
+  proto/common.proto \
+  proto/capability.proto \
+  proto/node.proto \
+  proto/cell.proto \
+  proto/beacon.proto \
+  proto/composition.proto \
+  proto/zone.proto \
+  proto/role.proto \
+  proto/hierarchy.proto \
+  proto/command.proto \
+  proto/security.proto \
+  proto/track.proto \
+  proto/model.proto \
+  proto/sensor.proto \
+  proto/actuator.proto \
+  proto/effector.proto \
+  proto/product.proto \
+  proto/tasking.proto \
+  proto/event.proto \
+  proto/registry.proto \
+  proto/history.proto
 ```
 
 ### Build
