@@ -1077,6 +1077,24 @@ pub struct PeatNode {
     crdt_kv: crdt_kv::CrdtKvDocs,
 }
 
+#[cfg(feature = "sync")]
+impl PeatNode {
+    /// Stop node-owned background work and gracefully close the shared Iroh
+    /// endpoint before an FFI owner releases its handle.
+    ///
+    /// `IrohTransport::close` is safe to call repeatedly. Keeping this helper
+    /// synchronous matches the node's existing dedicated-runtime ownership and
+    /// lets JNI complete shutdown before returning to its caller.
+    fn close_transport(&self) -> Result<(), PeatError> {
+        self.cleanup_running.store(false, Ordering::SeqCst);
+        self.runtime
+            .block_on(self.iroh_transport.close())
+            .map_err(|error| PeatError::ConnectionError {
+                msg: format!("Failed to close Iroh transport: {error}"),
+            })
+    }
+}
+
 /// Shared connect → formation-handshake → sync-trigger pipeline backing both
 /// [`PeatNode::connect_peer`] (blocking) and [`PeatNode::connect_peer_nowait`]
 /// (fire-and-forget).
@@ -4127,6 +4145,27 @@ mod tests {
 
         let _local = make("off", false);
         let _relayed = make("on", true);
+    }
+
+    #[cfg(feature = "sync")]
+    #[test]
+    fn graceful_transport_shutdown_is_idempotent() {
+        let storage = tempfile::tempdir().expect("temporary node storage");
+        let node = create_node(NodeConfig {
+            app_id: "graceful-shutdown-test".to_string(),
+            shared_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+            bind_address: Some("127.0.0.1:0".to_string()),
+            storage_path: storage.path().to_string_lossy().into_owned(),
+            transport: None,
+        })
+        .expect("create node");
+
+        node.close_transport().expect("first graceful close");
+        node.close_transport().expect("repeated graceful close");
+        assert!(
+            !node.cleanup_running.load(Ordering::SeqCst),
+            "graceful close must signal node-owned background work to stop"
+        );
     }
 
     /// Wrapper-tier coverage for the `connect_peer_nowait` UniFFI export added
@@ -8873,14 +8912,22 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(
         // Reconstruct the Arc to drop it
         let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
 
-        // Signal the cleanup task to stop
-        node.cleanup_running.store(false, Ordering::SeqCst);
-
-        #[cfg(target_os = "android")]
-        android_log("freeNodeJni: Signaled cleanup task to stop");
-
-        // Give the background task a moment to exit
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Close the shared endpoint before releasing this owner. Merely
+        // dropping it makes Iroh abort the endpoint and active connections.
+        match node.close_transport() {
+            Ok(()) => {
+                #[cfg(target_os = "android")]
+                android_log("freeNodeJni: Graceful transport close completed");
+            }
+            Err(error) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!(
+                    "freeNodeJni: Graceful transport close failed: {error}"
+                ));
+                #[cfg(not(target_os = "android"))]
+                eprintln!("[Peat] freeNodeJni: graceful transport close failed: {error}");
+            }
+        }
 
         // Clear Android BLE transport global to prevent dangling refs
         #[cfg(all(feature = "bluetooth", target_os = "android"))]
