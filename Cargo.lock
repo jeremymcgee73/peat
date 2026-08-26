@@ -4052,7 +4052,7 @@ dependencies = [
 [[package]]
 name = "peat-mesh"
 version = "0.9.0-rc.65"
-source = "git+https://github.com/defenseunicorns/peat-mesh?rev=c440973905b7039ff6b65cecd519da0a8e1ffe6f#c440973905b7039ff6b65cecd519da0a8e1ffe6f"
+source = "git+https://github.com/defenseunicorns/peat-mesh?rev=d895ddeeec145e59b824c18e89b527bf50adcd01#d895ddeeec145e59b824c18e89b527bf50adcd01"
 dependencies = [
  "aes-gcm",
  "anyhow",
