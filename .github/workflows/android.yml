@@ -101,6 +101,9 @@ jobs:
 
           LIBRARY="target/${{ matrix.target }}/release/libpeat_ffi.so"
           for symbol in \
+            Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni \
+            Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni \
+            Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni \
             Java_com_defenseunicorns_peat_PeatJni_ingestInboundFrameJni \
             Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFrameJni \
             Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni \
