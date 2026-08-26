@@ -24,9 +24,9 @@ import androidx.annotation.VisibleForTesting
  * methods on the singleton, and `RegisterNatives` aborts with
  * "jclass has wrong type" SIGABRT at library load.
  *
- * The outbound-frame subscription and its listener are canonical AAR
- * surfaces as of peat#1082. Document-change subscription remains outside
- * this class until its listener contract is packaged the same way.
+ * The outbound-frame and document-change subscriptions and their listeners
+ * are canonical AAR surfaces as of peat#1082 and the follow-up Android receive
+ * integration.
  */
 object PeatJni {
     init {
@@ -209,6 +209,18 @@ object PeatJni {
         collection: String,
         docId: String,
     ): String?
+
+    /**
+     * Subscribe to committed document keys. A second subscription replaces
+     * the first. Callbacks run on PEAT's Rust runtime thread.
+     */
+    @JvmStatic external fun subscribeDocumentChangesJni(
+        handle: Long,
+        listener: DocumentChangeListener,
+    ): Boolean
+
+    /** Stop document-change delivery. Safe to call repeatedly. */
+    @JvmStatic external fun unsubscribeDocumentChangesJni()
 
     // -- Typed collection accessors (CoT-style schema; ADR-049) ------------
 
