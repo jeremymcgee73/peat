@@ -11491,44 +11491,22 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
                 .into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *mut c_void,
         },
-        // peat#925: the four subscription methods
-        // (subscribe/unsubscribeDocumentChangesJni,
-        // subscribe/unsubscribeOutboundFramesJni) are intentionally NOT
-        // registered via nativeInit because their signatures reference
-        // consumer-supplied listener interfaces
-        // (`com/defenseunicorns/peat/DocumentChangeListener`,
-        // `com/defenseunicorns/peat/OutboundFrameListener`) that don't
-        // exist in peat-ffi's own `PeatJni.kt` — see the comment block at
-        // peat-ffi/android/src/main/kotlin/.../PeatJni.kt:27-34 which
-        // documents the "consumers declare these externs locally" pattern.
-        //
-        // The Rust extern fns `Java_com_defenseunicorns_peat_PeatJni_*`
-        // are still exported and reachable via JNI's auto-lookup-by-name
-        // convention: any consumer (peat-atak-plugin, downstream apps)
-        // that declares `external fun subscribeDocumentChangesJni(...)`
-        // alongside its `DocumentChangeListener` interface gets the
-        // function resolved via dlsym at first call.
-        //
-        // Why these were here: ADR-059 Slice 1.b's outbound-frame
-        // wiring was developed against a peat-atak-plugin build that
-        // DID declare the listener interfaces; the `NativeMethod`
-        // entries were copy-pasted from that build's lockstep
-        // registration table without re-checking peat-ffi's own
-        // PeatJni.kt surface.
-        //
-        // What went wrong: `JNI_OnLoad → nativeInit → RegisterNatives`
-        // tries to bind every entry to a corresponding member on
-        // `com.defenseunicorns.peat.PeatJni`. The DocumentChangeListener
-        // / OutboundFrameListener signatures reference Kotlin classes
-        // that don't exist. CheckJNI (active on debug-instrumented
-        // builds, which is the AndroidJUnit harness configuration on
-        // the Galaxy Tab A9+ CI runner) aborts the process on
-        // registration mismatch — `Fatal signal 6 (SIGABRT), code -1
-        // (SI_QUEUE)` in tid == JUnit-runner-tid, ~12ms after
-        // `System.loadLibrary("peat_ffi")` returns. The post-
-        // IrohTransport timing of the abort in earlier logcats was
-        // misleading — the actual fault is during `System.loadLibrary`
-        // which the test harness only logs after the abort propagates.
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "subscribeOutboundFramesJni".into(),
+            sig: "(JLcom/defenseunicorns/peat/OutboundFrameListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni
+                as *mut c_void,
+        },
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "unsubscribeOutboundFramesJni".into(),
+            sig: "(J)V".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
+                as *mut c_void,
+        },
+        // Document-change subscribe/unsubscribe remain intentionally omitted:
+        // their listener is not yet a canonical class in the Android AAR.
         // Blob transfer (ADR-060)
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -12145,6 +12123,20 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
                         .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth"))]
+                NativeMethod {
+                    name: "subscribeOutboundFramesJni".into(),
+                    sig: "(JLcom/defenseunicorns/peat/OutboundFrameListener;)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth"))]
+                NativeMethod {
+                    name: "unsubscribeOutboundFramesJni".into(),
+                    sig: "(J)V".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
                         as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]

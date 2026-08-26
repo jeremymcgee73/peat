@@ -24,13 +24,9 @@ import androidx.annotation.VisibleForTesting
  * methods on the singleton, and `RegisterNatives` aborts with
  * "jclass has wrong type" SIGABRT at library load.
  *
- * Subscription methods (subscribeDocumentChangesJni,
- * subscribeOutboundFramesJni, and their unsubscribe pairs) are NOT
- * declared here because they take consumer-supplied listener
- * interfaces (`DocumentChangeListener`, `OutboundFrameListener`).
- * Consumers that use them declare those externs locally alongside
- * their listener implementations — same as the pre-0.1.2 pattern
- * for those specific methods.
+ * The outbound-frame subscription and its listener are canonical AAR
+ * surfaces as of peat#1082. Document-change subscription remains outside
+ * this class until its listener contract is packaged the same way.
  */
 object PeatJni {
     init {
@@ -249,6 +245,20 @@ object PeatJni {
         collection: String,
         envelopeBytes: ByteArray,
     ): String?
+
+    /**
+     * Subscribe to Rust-encoded outbound frames. A second subscription swaps
+     * the listener without rebuilding the underlying fan-out.
+     *
+     * Call [unsubscribeOutboundFramesJni] before releasing the node handle.
+     */
+    @JvmStatic external fun subscribeOutboundFramesJni(
+        handle: Long,
+        listener: OutboundFrameListener,
+    ): Boolean
+
+    /** Stop outbound-frame delivery. Safe to call repeatedly. */
+    @JvmStatic external fun unsubscribeOutboundFramesJni(handle: Long)
 
     // -- Blob transfer -----------------------------------------------------
 
