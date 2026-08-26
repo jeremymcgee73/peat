@@ -103,27 +103,29 @@ fn install_hook(
             -> std::os::raw::c_int;
     }
 
-    netwatch::install_udp_socket_bind_hook(Arc::new(move |addr, socket: &socket2::Socket| {
-        let handle = handles.get(&addr.ip()).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "no selected Android network owns local address {}",
-                    addr.ip()
-                ),
-            )
-        })?;
-        // SAFETY: `socket` is live for the duration of the callback; Android's
-        // API neither takes ownership of the fd nor retains the pointer. The
-        // network handle came from `Network.getNetworkHandle()` and was
-        // validated as non-zero at the FFI boundary.
-        let result = unsafe { android_setsocknetwork(*handle, socket.as_raw_fd()) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::from_raw_os_error(-result))
-        }
-    }))
+    netwatch::install_udp_socket_bind_hook(Arc::new(
+        move |addr: SocketAddr, socket: &socket2::Socket| {
+            let handle = handles.get(&addr.ip()).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "no selected Android network owns local address {}",
+                        addr.ip()
+                    ),
+                )
+            })?;
+            // SAFETY: `socket` is live for the duration of the callback; Android's
+            // API neither takes ownership of the fd nor retains the pointer. The
+            // network handle came from `Network.getNetworkHandle()` and was
+            // validated as non-zero at the FFI boundary.
+            let result = unsafe { android_setsocknetwork(*handle, socket.as_raw_fd()) };
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::from_raw_os_error(-result))
+            }
+        },
+    ))
     .map_err(|error| PeatError::ConnectionError {
         msg: format!("failed to install selected-network socket hook: {error}"),
     })
