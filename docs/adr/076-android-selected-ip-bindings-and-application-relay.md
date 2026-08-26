@@ -2,6 +2,7 @@
 
 **Status**: Accepted
 **Date**: 2026-08-25
+**Authors**: Jeremy McGee
 **Relates to**: ADR-030, ADR-046, ADR-059, ADR-062
 
 ## Context
@@ -44,6 +45,24 @@ kind, SHA-256 digest, and base64 payload. The schema bounds route length, TTL,
 and encoded payload size. FFI submits the document through existing durable,
 formation-authenticated direct application delivery; core does not choose
 consumer destinations or payload policy.
+
+## Consequences
+
+- Consumers can keep local mesh traffic on one or more explicitly selected
+  Wi-Fi, Ethernet, or USB-backed Android networks without changing the host
+  process default or naming a particular radio product.
+- A consumer must stop, free, and recreate the node when its selected address,
+  prefix, or Android network handle changes. Reachability-only changes can use
+  the notification entrypoint without recreating the node.
+- Hosted relay remains unavailable on this selected-binding path until every
+  relay-owned TCP and DNS socket has an equivalent pre-connect network hook.
+  Direct local discovery and application delivery remain available.
+- Application relay is deliberately document-scoped and addressed to an
+  authenticated PEAT endpoint. Consumers retain destination, payload, metered
+  network, queue, loop, and operator-consent policy.
+- The small vendored `netwatch` hook remains an explicit maintenance and
+  license-notice obligation until the capability is available from a released
+  upstream dependency.
 
 ## Security and routing properties
 

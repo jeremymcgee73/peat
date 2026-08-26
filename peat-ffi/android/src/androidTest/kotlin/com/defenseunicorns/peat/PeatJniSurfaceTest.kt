@@ -1,12 +1,20 @@
 package com.defenseunicorns.peat
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import java.net.Inet4Address
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -69,6 +77,11 @@ class PeatJniSurfaceTest {
         } catch (t: Throwable) {
             // Best-effort cleanup; don't mask test failures.
         }
+        try {
+            PeatJni.clearGlobalNodeHandleJni()
+        } catch (t: Throwable) {
+            // Best-effort cleanup; don't mask test failures.
+        }
         handles.forEach { handle ->
             try {
                 PeatJni.freeNodeJni(handle)
@@ -97,6 +110,35 @@ class PeatJniSurfaceTest {
         handles.add(handle)
         return handle
     }
+
+    private fun selectedNetworkBindingJson(): String {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val connectivity =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivity.activeNetwork
+        assertNotNull("instrumented device must expose an active Android Network", network)
+        val linkProperties = connectivity.getLinkProperties(network!!)
+        assertNotNull("active Android Network must expose LinkProperties", linkProperties)
+        val address = linkProperties!!.linkAddresses.firstOrNull { it.address is Inet4Address }
+        assertNotNull("active Android Network must expose a concrete IPv4 address", address)
+        val hostAddress = address!!.address.hostAddress
+        assertNotNull("active Android Network IPv4 address must be numeric", hostAddress)
+
+        return JSONArray()
+            .put(
+                JSONObject()
+                    .put("address", hostAddress!!)
+                    .put("prefix_length", address.prefixLength)
+                    .put("network_handle", network.networkHandle)
+                    .put("is_default_route", true),
+            )
+            .toString()
+    }
+
+    private fun sha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
 
     /**
      * peat#887 regression gate: `System.loadLibrary("peat_ffi")`
@@ -235,6 +277,111 @@ class PeatJniSurfaceTest {
         assertTrue(
             "explicit nodeId must produce a non-empty formation endpoint identity",
             PeatJni.nodeIdJni(handle).isNotEmpty(),
+        )
+    }
+
+    /**
+     * Consumer-tier proof for the selected-network and application-relay JNI
+     * surface. The active Android Network supplies both the concrete local
+     * address and the platform handle, so successful creation exercises the
+     * Kotlin descriptor, JSON marshalling, native validation, UDP pre-bind
+     * hook, and Iroh endpoint bind on a real Android runtime.
+     *
+     * The same node then exercises network-change notification and submits a
+     * schema-valid bounded relay operation twice. Returning the caller's
+     * operation ID both times proves the JNI wrapper reaches the durable,
+     * idempotent application-delivery manager rather than stopping at method
+     * registration or argument marshalling.
+     */
+    @Test
+    fun c_selectedNetworkLifecycle_andRelaySubmission_roundTripThroughJni() {
+        assertFalse(
+            "notifyNetworkChangeJni(handle=0) must reject an invalid handle",
+            PeatJni.notifyNetworkChangeJni(0L),
+        )
+
+        val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        val storageDir =
+            File(cacheDir, "peat-ffi-surface-selected-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(storageDir)
+
+        val handle =
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-selected-network-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                selectedNetworkBindingJson(),
+            )
+        assertTrue(
+            "createNodeWithIpBindingsJni must bind through the active Android Network",
+            handle != 0L,
+        )
+        handles.add(handle)
+        assertTrue(
+            "notifyNetworkChangeJni must reach Iroh for a valid selected-network node",
+            PeatJni.notifyNetworkChangeJni(handle),
+        )
+
+        val nodeId = PeatJni.nodeIdJni(handle)
+        assertTrue("selected-network node must expose an endpoint identity", nodeId.isNotEmpty())
+        val nowMs = System.currentTimeMillis()
+        val expiresAtMs = nowMs + 60_000L
+        val payload = "{}"
+        val operationId = "surface-relay-${System.nanoTime()}"
+        val documentId = "surface-relay-document-${System.nanoTime()}"
+        val body =
+            JSONObject()
+                .put("message_id", documentId)
+                .put("origin_node_id", nodeId)
+                .put("destination_node_id", nodeId)
+                .put("created_at_ms", nowMs)
+                .put("expires_at_ms", expiresAtMs)
+                .put("max_hops", 1)
+                .put("hop_count", 1)
+                .put("route", JSONArray().put("surface-relay"))
+                .put("payload_kind", "application/json")
+                .put("payload_sha256", sha256Hex(payload))
+                .put(
+                    "payload_base64",
+                    Base64.encodeToString(
+                        payload.toByteArray(StandardCharsets.UTF_8),
+                        Base64.NO_WRAP,
+                    ),
+                )
+                .toString()
+
+        val first =
+            PeatJni.submitApplicationRelayJni(
+                handle,
+                nodeId,
+                operationId,
+                documentId,
+                body,
+                expiresAtMs,
+            )
+        assertEquals(
+            "relay submission must return the durable caller operation ID",
+            operationId,
+            first,
+        )
+        val duplicate =
+            PeatJni.submitApplicationRelayJni(
+                handle,
+                nodeId,
+                operationId,
+                documentId,
+                body,
+                expiresAtMs,
+            )
+        assertEquals(
+            "an identical relay submission must be durably idempotent",
+            operationId,
+            duplicate,
         )
     }
 
@@ -572,6 +719,9 @@ class PeatJniSurfaceTest {
             ::peatJniRefTestJni,
             ::peatJniRefCreateNode,
             ::peatJniRefCreateNodeWithConfig,
+            ::peatJniRefCreateNodeWithIpBindings,
+            ::peatJniRefNotifyNetworkChange,
+            ::peatJniRefSubmitApplicationRelay,
             ::peatJniRefGetGlobalNodeHandle,
             ::peatJniRefClearGlobalNodeHandle,
             ::peatJniRefFreeNode,
@@ -619,10 +769,10 @@ class PeatJniSurfaceTest {
             // Test-only fault injection
             ::peatJniRefForceStoreError,
         )
-        // 44 PeatJni methods total. If this number changes, the
+        // 47 PeatJni methods total. If this number changes, the
         // count below must change too — and the new method needs
         // its own peatJniRef* shim added above.
-        assertEquals(44, refs.size)
+        assertEquals(47, refs.size)
     }
 
     // -- Reference shims --------------------------------------------------
@@ -643,6 +793,15 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefCreateNodeWithConfig(): Long =
         PeatJni.createNodeWithConfigJni("a", "b", null, "c", false, null, null)
+    @Suppress("unused")
+    private fun peatJniRefCreateNodeWithIpBindings(): Long =
+        PeatJni.createNodeWithIpBindingsJni("a", "b", null, "c", false, null, "[]")
+    @Suppress("unused")
+    private fun peatJniRefNotifyNetworkChange(h: Long): Boolean =
+        PeatJni.notifyNetworkChangeJni(h)
+    @Suppress("unused")
+    private fun peatJniRefSubmitApplicationRelay(h: Long): String =
+        PeatJni.submitApplicationRelayJni(h, "a", "b", "c", "{}", 1L)
     @Suppress("unused")
     private fun peatJniRefGetGlobalNodeHandle(): Long = PeatJni.getGlobalNodeHandleJni()
     @Suppress("unused")
