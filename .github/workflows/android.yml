@@ -92,8 +92,24 @@ jobs:
         env:
           CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}
           AR: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          LLVM_NM: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm
         run: |
-          cargo build -p peat-ffi --release --target ${{ matrix.target }}
+          set -euo pipefail
+          cargo build -p peat-ffi --release \
+            --features sync,bluetooth,lite-bridge \
+            --target ${{ matrix.target }}
+
+          LIBRARY="target/${{ matrix.target }}/release/libpeat_ffi.so"
+          for symbol in \
+            Java_com_defenseunicorns_peat_PeatJni_ingestInboundFrameJni \
+            Java_com_defenseunicorns_peat_PeatJni_ingestInboundLiteFrameJni \
+            Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni \
+            Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni; do
+            if ! "$LLVM_NM" --defined-only "$LIBRARY" | grep -F "$symbol" >/dev/null; then
+              echo "::error::Android library is missing required JNI symbol: $symbol"
+              exit 1
+            fi
+          done
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
@@ -111,7 +127,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          protobuf-compiler mold clang libdbus-1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -122,7 +140,9 @@ jobs:
           key: bindings
 
       - name: Build peat-ffi (host)
-        run: cargo build -p peat-ffi --release
+        run: >-
+          cargo build -p peat-ffi --release
+          --features sync,bluetooth,lite-bridge
 
       - name: Generate Kotlin bindings
         run: |
@@ -156,7 +176,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          protobuf-compiler mold clang libdbus-1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
