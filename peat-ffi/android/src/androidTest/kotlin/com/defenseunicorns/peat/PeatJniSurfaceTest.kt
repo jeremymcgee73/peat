@@ -5,9 +5,11 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -478,6 +480,68 @@ class PeatJniSurfaceTest {
         )
         assertNull("document-change callback reported an error", callbackError.get())
         assertEquals(collection to documentId, receivedKey.get())
+        PeatJni.unsubscribeDocumentChangesJni()
+    }
+
+    /** A replacement must own the sole observer task and callback target. */
+    @Test
+    fun documentChangeSubscription_replacementDoesNotDuplicateCallbacks() {
+        val handle = createNode("document-change-replacement")
+        assertTrue("startSyncJni must succeed", PeatJni.startSyncJni(handle))
+
+        val collection = "surface-replacement"
+        val documentId = "replacement-proof"
+        val firstCallbacks = AtomicInteger()
+        val secondCallbacks = AtomicInteger()
+        val delivered = CountDownLatch(1)
+        val duplicate = CountDownLatch(2)
+        val callbackError = AtomicReference<String>()
+
+        val firstListener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    if (collection == "surface-replacement" && docId == "replacement-proof") {
+                        firstCallbacks.incrementAndGet()
+                    }
+                }
+
+                override fun onError(message: String) {
+                    callbackError.compareAndSet(null, "first listener: $message")
+                    delivered.countDown()
+                }
+            }
+        val replacementListener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    if (collection == "surface-replacement" && docId == "replacement-proof") {
+                        secondCallbacks.incrementAndGet()
+                        delivered.countDown()
+                        duplicate.countDown()
+                    }
+                }
+
+                override fun onError(message: String) {
+                    callbackError.compareAndSet(null, "replacement listener: $message")
+                    delivered.countDown()
+                }
+            }
+
+        assertTrue(PeatJni.subscribeDocumentChangesJni(handle, firstListener))
+        assertTrue(PeatJni.subscribeDocumentChangesJni(handle, replacementListener))
+        assertEquals(
+            documentId,
+            PeatJni.publishDocumentJni(
+                handle,
+                collection,
+                """{"id":"$documentId","value":"replacement"}""",
+            ),
+        )
+
+        assertTrue("replacement listener did not receive the document", delivered.await(5, TimeUnit.SECONDS))
+        assertNull("document-change callback reported an error", callbackError.get())
+        assertFalse("replacement delivered the same document twice", duplicate.await(500, TimeUnit.MILLISECONDS))
+        assertEquals("replaced listener must not receive the document", 0, firstCallbacks.get())
+        assertEquals("replacement listener must receive exactly once", 1, secondCallbacks.get())
         PeatJni.unsubscribeDocumentChangesJni()
     }
 

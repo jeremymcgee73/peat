@@ -44,19 +44,86 @@ static PEER_EVENT_MANAGER_CLASS: LazyLock<Mutex<Option<GlobalRef>>> =
 
 // Global reference to the currently-registered DocumentChangeListener instance.
 // Only one subscription is supported at a time (mirrors UniFFI's
-// PeatNode::subscribe constraint). Held as a GlobalRef so it survives across
-// JNI thread attaches.
+// PeatNode::subscribe constraint). The generation ties the listener to its
+// observer task so a replaced task can never dispatch through the new listener
+// or clear it while exiting. Held as a GlobalRef so it survives across JNI
+// thread attaches.
 #[cfg(feature = "sync")]
-static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<GlobalRef>>> =
+static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<DocumentChangeRegistration>>> =
     LazyLock::new(|| Mutex::new(None));
 
-// Flag controlling the lifetime of the document-change subscription task.
-// Set to true by subscribeDocumentChangesJni, false by
-// unsubscribeDocumentChangesJni. The spawned tokio task polls this on each recv
-// to know whether to exit.
 #[cfg(feature = "sync")]
-static DOCUMENT_SUBSCRIPTION_ACTIVE: LazyLock<std::sync::atomic::AtomicBool> =
-    LazyLock::new(|| std::sync::atomic::AtomicBool::new(false));
+struct DocumentChangeRegistration {
+    generation: u64,
+    listener: GlobalRef,
+}
+
+// Generation-owned lifetime for the document-change observer task. A boolean
+// cannot safely implement replacement: false followed immediately by true can
+// be missed by the old task, leaving two receivers dispatching duplicate
+// callbacks. Every subscribe receives a distinct odd token; unsubscribe and a
+// naturally-finished task advance it to an even (inactive) state.
+#[cfg(feature = "sync")]
+static DOCUMENT_SUBSCRIPTION_GENERATION: SubscriptionGeneration = SubscriptionGeneration::new();
+
+#[cfg(feature = "sync")]
+struct SubscriptionGeneration {
+    state: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "sync")]
+impl SubscriptionGeneration {
+    const fn new() -> Self {
+        Self {
+            state: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn begin(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+
+        loop {
+            let current = self.state.load(Ordering::SeqCst);
+            let next = current.wrapping_add(1) | 1;
+            if self
+                .state
+                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return next;
+            }
+        }
+    }
+
+    fn is_active(&self, generation: u64) -> bool {
+        use std::sync::atomic::Ordering;
+
+        generation & 1 == 1 && self.state.load(Ordering::SeqCst) == generation
+    }
+
+    fn invalidate(&self) {
+        use std::sync::atomic::Ordering;
+
+        let _ = self
+            .state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.wrapping_add(1) & !1)
+            });
+    }
+
+    fn finish(&self, generation: u64) -> bool {
+        use std::sync::atomic::Ordering;
+
+        self.state
+            .compare_exchange(
+                generation,
+                generation.wrapping_add(1) & !1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+}
 
 // peat#885 fault-injection flag, test-only. When armed via
 // `forceStoreErrorForTestingJni`, the next `getDocumentJni` call
@@ -4340,6 +4407,33 @@ mod tests {
                 .expect("remote observer notification timeout")
                 .expect("remote observer channel closed");
             assert_eq!(key, "test:remote-doc");
+        }
+
+        #[test]
+        fn document_subscription_generation_replacement_is_owner_safe() {
+            let generations = SubscriptionGeneration::new();
+
+            let first = generations.begin();
+            assert!(generations.is_active(first));
+
+            let second = generations.begin();
+            assert_ne!(first, second);
+            assert!(!generations.is_active(first));
+            assert!(generations.is_active(second));
+
+            assert!(
+                !generations.finish(first),
+                "a replaced task must not deactivate its replacement"
+            );
+            assert!(generations.is_active(second));
+
+            generations.invalidate();
+            assert!(!generations.is_active(second));
+
+            let third = generations.begin();
+            assert!(generations.is_active(third));
+            assert!(generations.finish(third));
+            assert!(!generations.is_active(third));
         }
 
         /// Surface-tier round-trip for `roster_upsert`, which takes a
@@ -10095,8 +10189,6 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
     handle: i64,
     listener: jni::objects::JObject,
 ) -> jboolean {
-    use std::sync::atomic::Ordering;
-
     if handle == 0 {
         #[cfg(target_os = "android")]
         android_log("subscribeDocumentChangesJni: Invalid handle (0)");
@@ -10117,45 +10209,49 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
         }
     };
 
-    // Swap the listener in; drop any previous one.
-    {
-        let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
-        *slot = Some(listener_global);
-    }
-
-    // Signal the previous subscription task (if any) to exit before we start
-    // a new one, then mark the new subscription active.
-    DOCUMENT_SUBSCRIPTION_ACTIVE.store(false, Ordering::SeqCst);
-    DOCUMENT_SUBSCRIPTION_ACTIVE.store(true, Ordering::SeqCst);
-
     // Borrow the node without taking ownership of its Arc.
     let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
     let store = Arc::clone(&node.store);
     let runtime = Arc::clone(&node.runtime);
     std::mem::forget(node);
 
+    // Subscribe before returning to the caller so a document committed
+    // immediately after this function returns cannot beat receiver creation.
+    let mut rx = subscribe_document_changes_for_jni(&store);
+
+    // Beginning a new generation invalidates the previous observer task. Tie
+    // the replacement listener to that generation so a stale task can neither
+    // dispatch through it nor clear it on exit.
+    let generation = {
+        let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
+        let generation = DOCUMENT_SUBSCRIPTION_GENERATION.begin();
+        *slot = Some(DocumentChangeRegistration {
+            generation,
+            listener: listener_global,
+        });
+        generation
+    };
+
     runtime.spawn(async move {
-        // Consumer callbacks must observe both local writes and documents
-        // applied from peers. The legacy change channel is intentionally
-        // local-only to prevent sync echo; the observer channel is the
-        // persisted, all-origin notification surface.
-        let mut rx = subscribe_document_changes_for_jni(&store);
-        while DOCUMENT_SUBSCRIPTION_ACTIVE.load(Ordering::SeqCst) {
+        while DOCUMENT_SUBSCRIPTION_GENERATION.is_active(generation) {
             tokio::select! {
                 result = rx.recv() => {
+                    if !DOCUMENT_SUBSCRIPTION_GENERATION.is_active(generation) {
+                        break;
+                    }
                     match result {
                         Ok(doc_key) => {
                             let (collection, doc_id) = doc_key
                                 .split_once(':')
                                 .map(|(c, d)| (c.to_string(), d.to_string()))
                                 .unwrap_or_else(|| ("default".to_string(), doc_key.clone()));
-                            dispatch_document_change(&collection, &doc_id);
+                            dispatch_document_change(generation, &collection, &doc_id);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            dispatch_document_error(&format!("lagged {} messages", n));
+                            dispatch_document_error(generation, &format!("lagged {} messages", n));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            dispatch_document_error("change channel closed");
+                            dispatch_document_error(generation, "change channel closed");
                             break;
                         }
                     }
@@ -10167,10 +10263,10 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
             }
         }
 
-        // On exit, drop the listener ref if we were the owning subscription.
-        if !DOCUMENT_SUBSCRIPTION_ACTIVE.load(Ordering::SeqCst) {
-            let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
-            *slot = None;
+        // Only the currently-owning task may deactivate and clear its listener.
+        // A replaced task's generation no longer matches and is a no-op here.
+        if DOCUMENT_SUBSCRIPTION_GENERATION.finish(generation) {
+            clear_document_listener(generation);
         }
     });
 
@@ -10188,19 +10284,37 @@ fn subscribe_document_changes_for_jni(
 ///
 /// Kotlin signature: `external fun unsubscribeDocumentChangesJni()`
 ///
-/// Signals the background subscription task to exit on its next iteration.
-/// The listener GlobalRef is dropped by the task on exit (not here) to avoid
-/// a race between unsubscribe and an in-flight dispatch.
+/// Invalidates the background subscription task and removes its listener.
+/// A callback that already cloned the GlobalRef may complete concurrently.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    use std::sync::atomic::Ordering;
-    DOCUMENT_SUBSCRIPTION_ACTIVE.store(false, Ordering::SeqCst);
+    let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
+    DOCUMENT_SUBSCRIPTION_GENERATION.invalidate();
+    slot.take();
     #[cfg(target_os = "android")]
-    android_log("unsubscribeDocumentChangesJni: subscription marked inactive");
+    android_log("unsubscribeDocumentChangesJni: subscription invalidated");
+}
+
+#[cfg(feature = "sync")]
+fn clear_document_listener(generation: u64) {
+    let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
+    if slot
+        .as_ref()
+        .is_some_and(|registration| registration.generation == generation)
+    {
+        *slot = None;
+    }
+}
+
+#[cfg(feature = "sync")]
+fn clone_document_listener(generation: u64) -> Option<GlobalRef> {
+    let slot = DOCUMENT_CHANGE_LISTENER.lock().ok()?;
+    let registration = slot.as_ref()?;
+    (registration.generation == generation).then(|| registration.listener.clone())
 }
 
 /// Snapshot the listener `GlobalRef` from a static slot under its mutex,
@@ -10234,7 +10348,7 @@ fn clone_java_vm() -> Option<jni::JavaVM> {
 /// Dispatch a document-change event to the registered Kotlin listener.
 /// Attaches the current tokio worker thread to the JVM if needed.
 #[cfg(feature = "sync")]
-fn dispatch_document_change(collection: &str, doc_id: &str) {
+fn dispatch_document_change(generation: u64, collection: &str, doc_id: &str) {
     // Snapshot the listener and JavaVM pointer under their locks, then drop
     // the guards BEFORE the unbounded JNI `call_method` (QA #808 IDIOM).
     // Kotlin's `onChange` may re-enter Rust JNI; holding either lock across
@@ -10242,7 +10356,7 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
     // serialize every translator's dispatch through a single JVM call.
     // GlobalRef is Arc-shaped so cloning is cheap; JavaVM is process-stable
     // so reconstructing from the raw pointer is sound.
-    let Some(listener) = clone_listener(&DOCUMENT_CHANGE_LISTENER) else {
+    let Some(listener) = clone_document_listener(generation) else {
         return;
     };
     let Some(java_vm) = clone_java_vm() else {
@@ -10290,9 +10404,9 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
 
 /// Dispatch an error message to the registered Kotlin listener.
 #[cfg(feature = "sync")]
-fn dispatch_document_error(message: &str) {
+fn dispatch_document_error(generation: u64, message: &str) {
     // Snapshot then drop locks before JNI work — see dispatch_document_change.
-    let Some(listener) = clone_listener(&DOCUMENT_CHANGE_LISTENER) else {
+    let Some(listener) = clone_document_listener(generation) else {
         return;
     };
     let Some(java_vm) = clone_java_vm() else {
