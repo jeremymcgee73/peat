@@ -348,3 +348,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # when the hook is available in a released upstream netwatch crate.
 [patch.crates-io]
 netwatch = { path = "vendor/netwatch" }
+# peat-mesh upstream main consumes the collection-history API added to this
+# workspace's peat-schema after rc.33, while the published rc.33 crate does not
+# contain that API. Keep downstream git-pinned mesh builds on the matching
+# workspace schema until the next peat-schema release is published and mesh can
+# advance its declared version floor.
+peat-schema = { path = "peat-schema" }
