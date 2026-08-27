@@ -1346,6 +1346,20 @@ async fn run_peat_mdns_auto_dial(
 }
 
 #[cfg(feature = "sync")]
+impl PeatNode {
+    /// Stop sync and await release of the owned router before JNI drops its
+    /// final consumer handle. This is intentionally narrower than the public
+    /// FFI surface: managed bindings still own their normal object lifecycle,
+    /// while direct JNI consumers require deterministic same-process restart.
+    fn shutdown_and_release(&self) -> Result<(), PeatError> {
+        self.cleanup_running.store(false, Ordering::SeqCst);
+        self.runtime
+            .block_on(self.sync_backend.shutdown_and_release())
+            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
+    }
+}
+
+#[cfg(feature = "sync")]
 #[uniffi::export]
 impl PeatNode {
     // ── Shared water-supply Counter (CRDT-over-Automerge-over-BLE) ──────────
@@ -9208,14 +9222,23 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(
         // Reconstruct the Arc to drop it
         let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
 
-        // Signal the cleanup task to stop
-        node.cleanup_running.store(false, Ordering::SeqCst);
-
-        #[cfg(target_os = "android")]
-        android_log("freeNodeJni: Signaled cleanup task to stop");
-
-        // Give the background task a moment to exit
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Stop sync and await the router's bounded graceful shutdown before
+        // releasing either JNI-owned Arc. Dropping without this step leaves
+        // endpoint/discovery tasks alive briefly and makes immediate
+        // same-process replacement race stale sockets and advertisements.
+        match node.shutdown_and_release() {
+            Ok(()) => {
+                #[cfg(target_os = "android")]
+                android_log("freeNodeJni: Graceful backend shutdown completed");
+            }
+            Err(error) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!(
+                    "freeNodeJni: Graceful backend shutdown failed: {}",
+                    error
+                ));
+            }
+        }
 
         // Clear Android BLE transport global to prevent dangling refs
         #[cfg(all(feature = "bluetooth", target_os = "android"))]
