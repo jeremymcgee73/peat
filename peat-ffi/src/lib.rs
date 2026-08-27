@@ -8723,11 +8723,14 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
 
 /// JNI: create one node over explicit Android-selected IP networks.
 ///
-/// `ipBindingsJson` is a bounded array of numeric local addresses, CIDR
-/// prefixes, Android `Network.getNetworkHandle()` values, and default-route
-/// flags. The native socket owner marks each Iroh UDP socket before bind and
-/// on every rebind. Any missing/invalid mapping fails node creation; this path
-/// never falls back to the process default network.
+/// `ipBindingsJson` is a bounded array of numeric local addresses and CIDR
+/// prefixes. Each record declares either an Android
+/// `Network.getNetworkHandle()` value or one validated non-default local
+/// interface (including IPv6 scope when required). The native socket owner
+/// marks handle-backed Iroh UDP sockets before bind and permits only exact
+/// validated interface-owned sockets through the same hook. Any missing or
+/// invalid mapping fails node creation; this path never falls back to the
+/// process default network.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni(

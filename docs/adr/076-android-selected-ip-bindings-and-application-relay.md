@@ -20,18 +20,25 @@ PEAT peer. This must not become generic IP routing or an open proxy.
 
 ## Decision
 
-PEAT FFI accepts a bounded JSON list of concrete numeric IP addresses, CIDR
-prefixes, nonzero platform network handles, and one optional default route per
-address family. `peat-mesh` converts those into exact Iroh `BindOpts`; it does
-not enumerate or add host interfaces in this mode.
+PEAT FFI accepts a bounded JSON list of concrete numeric IP addresses and CIDR
+prefixes. Each entry identifies either a nonzero platform network handle or a
+concrete local interface. Handle-backed entries retain one optional default
+route per address family. A handle-less local-interface entry is always
+non-default, must name a live interface that currently owns the address, and
+must carry the matching nonzero scope for IPv6 link-local addresses.
+`peat-mesh` converts the validated declarations into exact Iroh `BindOpts`; it
+does not enumerate or add host interfaces in this mode.
 
 The Android FFI installs one exclusive, process-local `netwatch` UDP pre-bind
-hook for the exact native node lifetime. The hook maps the socket's concrete
-local address to the declared handle and calls `android_setsocknetwork` before
-initial bind and rebind. Missing mappings, duplicate ownership, invalid
-addresses/prefixes/defaults, competing hook owners, and non-Android use fail
-closed. Node free drops the hook guard. Network-change notification asks Iroh to
-re-evaluate paths; a changed declaration is handled by consumer stop/free/create.
+hook for the exact native node lifetime. The hook maps each socket's concrete
+local address and IPv6 scope to its declared owner. It calls
+`android_setsocknetwork` for a handle-backed owner and skips that call only for
+an exact local-interface declaration already validated against the live Android
+interface table. Missing mappings, stale interfaces, mismatched scopes,
+duplicate ownership, invalid addresses/prefixes/defaults, competing hook
+owners, and non-Android use fail closed. Node free drops the hook guard.
+Network-change notification asks Iroh to re-evaluate paths; a changed or lost
+declaration is handled by consumer stop/free/create.
 
 Selected-binding mode disables n0 hosted relay. Its TCP and DNS sockets are not
 inside this UDP hook and therefore cannot truthfully claim selected-network
@@ -51,9 +58,13 @@ consumer destinations or payload policy.
 - Consumers can keep local mesh traffic on one or more explicitly selected
   Wi-Fi, Ethernet, or USB-backed Android networks without changing the host
   process default or naming a particular radio product.
+- Local-only bearer owners that are not surfaced as Android `Network` objects
+  can contribute a concrete non-default interface binding without weakening
+  the ownership requirement for any other socket.
 - A consumer must stop, free, and recreate the node when its selected address,
-  prefix, or Android network handle changes. Reachability-only changes can use
-  the notification entrypoint without recreating the node.
+  prefix, Android network handle, local interface, or IPv6 scope changes.
+  Reachability-only changes can use the notification entrypoint without
+  recreating the node.
 - Hosted relay remains unavailable on this selected-binding path until every
   relay-owned TCP and DNS socket has an equivalent pre-connect network hook.
   Direct local discovery and application delivery remain available.

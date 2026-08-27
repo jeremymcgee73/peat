@@ -7,6 +7,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.NetworkInterface
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
@@ -115,6 +117,7 @@ class PeatJniSurfaceTest {
         val address: String,
         val prefixLength: Int,
         val networkHandle: Long,
+        val interfaceName: String,
     ) {
         fun toJson(): String =
             JSONArray()
@@ -124,6 +127,22 @@ class PeatJniSurfaceTest {
                         .put("prefix_length", prefixLength)
                         .put("network_handle", networkHandle)
                         .put("is_default_route", true),
+                )
+                .toString()
+
+        fun toLocalInterfaceJson(
+            declaredInterfaceName: String = interfaceName,
+            isDefaultRoute: Boolean = false,
+            scopeId: Int? = null,
+        ): String =
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("address", address)
+                        .put("prefix_length", prefixLength)
+                        .put("interface_name", declaredInterfaceName)
+                        .put("is_default_route", isDefaultRoute)
+                        .apply { scopeId?.let { put("scope_id", it) } },
                 )
                 .toString()
     }
@@ -138,10 +157,17 @@ class PeatJniSurfaceTest {
         assertNotNull("active Android Network must expose LinkProperties", linkProperties)
         val address = linkProperties!!.linkAddresses.firstOrNull { it.address is Inet4Address }
         assertNotNull("active Android Network must expose a concrete IPv4 address", address)
+        val interfaceName = linkProperties.interfaceName
+        assertNotNull("active Android Network must expose an interface name", interfaceName)
         val hostAddress = address!!.address.hostAddress
         assertNotNull("active Android Network IPv4 address must be numeric", hostAddress)
 
-        return SelectedNetworkBinding(hostAddress!!, address.prefixLength, network.networkHandle)
+        return SelectedNetworkBinding(
+            hostAddress!!,
+            address.prefixLength,
+            network.networkHandle,
+            interfaceName!!,
+        )
     }
 
     private fun sha256Hex(value: String): String =
@@ -436,6 +462,145 @@ class PeatJniSurfaceTest {
             "recipient JNI inbox must expose the authenticated relay body",
             body,
             receivedBody,
+        )
+    }
+
+    /**
+     * A concrete live interface can own a non-default PEAT socket even when no
+     * Android Network handle is supplied. Native validation must confirm the
+     * interface/address assignment before the pre-bind hook permits the exact
+     * socket through without calling android_setsocknetwork.
+     */
+    @Test
+    fun d_localInterfaceLifecycle_roundTripsThroughJni() {
+        val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        val storageDir =
+            File(cacheDir, "peat-ffi-surface-interface-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(storageDir)
+        val binding = selectedNetworkBinding()
+
+        assertEquals(
+            "a missing local interface must fail before endpoint construction",
+            0L,
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-missing-interface-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                binding.toLocalInterfaceJson(declaredInterfaceName = "peat-missing0"),
+            ),
+        )
+        assertEquals(
+            "a handle-less local interface must not become a default route",
+            0L,
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-default-interface-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                binding.toLocalInterfaceJson(isDefaultRoute = true),
+            ),
+        )
+        assertEquals(
+            "an IPv4 local interface must reject an IPv6-shaped scope",
+            0L,
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-ipv4-scope-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                binding.toLocalInterfaceJson(scopeId = 1),
+            ),
+        )
+
+        val handle =
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-local-interface-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                binding.toLocalInterfaceJson(),
+            )
+
+        assertTrue(
+            "createNodeWithIpBindingsJni must accept an exact live non-default interface",
+            handle != 0L,
+        )
+        handles.add(handle)
+        val endpointAddress = PeatJni.endpointSocketAddrJni(handle)
+        assertNotNull("local-interface node must expose its bound endpoint", endpointAddress)
+        assertTrue(
+            "local-interface endpoint must use the declared address; got $endpointAddress",
+            endpointAddress!!.startsWith("${binding.address}:"),
+        )
+        assertTrue(
+            "local-interface node must expose an endpoint identity",
+            PeatJni.nodeIdJni(handle).isNotEmpty(),
+        )
+    }
+
+    /** Link-local IPv6 ownership is meaningful only with the live interface scope. */
+    @Test
+    fun e_linkLocalInterfaceScope_roundTripsThroughJni() {
+        val selected = selectedNetworkBinding()
+        val networkInterface = NetworkInterface.getByName(selected.interfaceName)
+        assertNotNull("selected interface must remain available", networkInterface)
+        val interfaceAddress =
+            networkInterface!!.interfaceAddresses.firstOrNull {
+                it.address is Inet6Address && it.address.isLinkLocalAddress
+            }
+        assertNotNull("selected interface must expose an IPv6 link-local address", interfaceAddress)
+        val address = interfaceAddress!!.address as Inet6Address
+        assertTrue("link-local IPv6 address must expose a nonzero scope", address.scopeId > 0)
+        val json =
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("address", address.hostAddress!!.substringBefore('%'))
+                        .put("prefix_length", interfaceAddress.networkPrefixLength.toInt())
+                        .put("interface_name", selected.interfaceName)
+                        .put("scope_id", address.scopeId)
+                        .put("is_default_route", false),
+                )
+                .toString()
+        val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        val storageDir =
+            File(cacheDir, "peat-ffi-surface-link-local-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(storageDir)
+
+        val handle =
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-link-local-interface-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                json,
+            )
+
+        assertTrue(
+            "createNodeWithIpBindingsJni must preserve a validated IPv6 link-local scope",
+            handle != 0L,
+        )
+        handles.add(handle)
+        val endpointAddress = PeatJni.endpointSocketAddrJni(handle)
+        assertNotNull("link-local interface node must expose its bound endpoint", endpointAddress)
+        assertTrue(
+            "link-local endpoint must preserve scope ${address.scopeId}; got $endpointAddress",
+            endpointAddress!!.contains("%${address.scopeId}"),
         )
     }
 

@@ -4024,6 +4024,7 @@ dependencies = [
  "hex",
  "jni 0.21.1",
  "ndk-context",
+ "netdev",
  "netwatch",
  "peat-btle",
  "peat-mesh",

@@ -252,6 +252,12 @@ peat-btle = { workspace = true, features = ["ios"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 peat-btle = { workspace = true, features = ["android"], optional = true }
+# Read the live interface/address/scope assignment before accepting an explicit
+# local-interface socket whose owner is not surfaced as an Android Network.
+# netdev is already present through the vendored netwatch dependency; making it
+# direct here lets the FFI validate the platform declaration without widening
+# netwatch's public API.
+netdev = "0.45.0"
 # Android-only tracing bridge (see comment above the peat-btle target tables).
 # `tracing` (the facade) is in the general `[dependencies]`; only the
 # heavyweight subscriber is gated to Android here.
