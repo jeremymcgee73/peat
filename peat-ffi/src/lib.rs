@@ -1353,9 +1353,33 @@ impl PeatNode {
     /// while direct JNI consumers require deterministic same-process restart.
     fn shutdown_and_release(&self) -> Result<(), PeatError> {
         self.cleanup_running.store(false, Ordering::SeqCst);
-        self.runtime
-            .block_on(self.sync_backend.shutdown_and_release())
-            .map_err(|e| PeatError::SyncError { msg: e.to_string() })
+        self.runtime.block_on(async {
+            // The IrohTransport wrapper owns the Peat `_peat._udp` publisher
+            // and browser. Withdraw it before closing the shared endpoint so
+            // an immediate same-process replacement cannot rediscover the
+            // retired identity. Continue through router shutdown even if mDNS
+            // teardown reports an error so endpoint and redb resources are
+            // still deterministically released.
+            let discovery_error = self.iroh_transport.shutdown_discovery().await.err();
+            if let Some(error) = discovery_error.as_ref() {
+                tracing::warn!(
+                    error = %error,
+                    "shutdown_and_release: discovery teardown failed; continuing backend shutdown"
+                );
+            }
+
+            self.sync_backend
+                .shutdown_and_release()
+                .await
+                .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+
+            if let Some(error) = discovery_error {
+                return Err(PeatError::SyncError {
+                    msg: error.to_string(),
+                });
+            }
+            Ok(())
+        })
     }
 }
 

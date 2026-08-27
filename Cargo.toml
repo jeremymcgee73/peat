@@ -304,7 +304,7 @@ repository = "https://github.com/defenseunicorns/peat"
 # peat-mesh#392 upgrades lru to remediate RUSTSEC-2026-0253. This stacked
 # change temporarily pins the upstream PR commit containing explicit platform
 # IP bindings; return to crates.io after the peat-mesh change is released.
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "c440973905b7039ff6b65cecd519da0a8e1ffe6f", version = ">=0.9.0-rc.65, <0.9.1", default-features = false }
+peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "874099ba46720b0995ce70a8a8ea7df3f9cd32a0", version = ">=0.9.0-rc.65, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
