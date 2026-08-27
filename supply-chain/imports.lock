@@ -1072,7 +1072,7 @@ user-name = "Sean McArthur"
 version = "2.7.1"
 when = "2025-10-14"
 user-id = 3416
-user-login = "starkat99"
+user-login = "VoidStarKat"
 user-name = "Kathryn Long"
 
 [[publisher.hash32]]
@@ -3274,7 +3274,7 @@ user-login = "bendk"
 version = "1.2.1"
 when = "2025-10-09"
 user-id = 3416
-user-login = "starkat99"
+user-login = "VoidStarKat"
 user-name = "Kathryn Long"
 
 [[publisher.winapi]]

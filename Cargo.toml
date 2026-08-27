@@ -303,7 +303,8 @@ repository = "https://github.com/defenseunicorns/peat"
 # application delivery and bounded received-document queries, while
 # peat-mesh#392 upgrades lru to remediate RUSTSEC-2026-0253. This stacked
 # change temporarily pins the upstream PR commit containing explicit platform
-# IP bindings; return to crates.io after the peat-mesh change is released.
+# IP bindings and deterministic mDNS teardown; return to crates.io after the
+# peat-mesh change is released.
 peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "874099ba46720b0995ce70a8a8ea7df3f9cd32a0", version = ">=0.9.0-rc.65, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
