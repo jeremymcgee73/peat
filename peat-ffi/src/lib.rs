@@ -8901,6 +8901,53 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_submitApplicationRe
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Read one authenticated application-relay body from the recipient-local
+/// durable inbox. This is deliberately separate from getDocumentJni: targeted
+/// application delivery is not inserted into the generic replicated CRDT store.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getApplicationRelayJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    document_id: JString,
+) -> jstring {
+    if handle == 0 {
+        return std::ptr::null_mut();
+    }
+    let document_id: String = match env.get_string(&document_id) {
+        Ok(value) => value.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = node.application_delivery_get_received_document("application-relay", &document_id);
+    std::mem::forget(node);
+
+    match result {
+        Ok(Some(document)) => match String::from_utf8(document.body) {
+            Ok(body) => env
+                .new_string(body)
+                .map(|value| value.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            Err(error) => {
+                let _ = env.throw_new(
+                    "java/lang/RuntimeException",
+                    format!("getApplicationRelayJni: body is not UTF-8: {error}"),
+                );
+                std::ptr::null_mut()
+            }
+        },
+        Ok(None) => std::ptr::null_mut(),
+        Err(error) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                format!("getApplicationRelayJni: inbox read failed: {error}"),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// JNI: Get the global node handle (survives APK replacement)
 ///
 /// Kotlin signature: external fun getGlobalNodeHandleJni(): Long
@@ -11879,6 +11926,12 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni
                 as *mut c_void,
         },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "getApplicationRelayJni".into(),
+            sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getApplicationRelayJni as *mut c_void,
+        },
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         NativeMethod {
             name: "subscribeOutboundFramesJni".into(),
@@ -12546,6 +12599,13 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;"
                         .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "getApplicationRelayJni".into(),
+                    sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getApplicationRelayJni
                         as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth"))]

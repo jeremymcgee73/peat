@@ -287,11 +287,11 @@ class PeatJniSurfaceTest {
      * Kotlin descriptor, JSON marshalling, native validation, UDP pre-bind
      * hook, and Iroh endpoint bind on a real Android runtime.
      *
-     * The same node then exercises network-change notification and submits a
-     * schema-valid bounded relay operation twice. Returning the caller's
-     * operation ID both times proves the JNI wrapper reaches the durable,
-     * idempotent application-delivery manager rather than stopping at method
-     * registration or argument marshalling.
+     * The selected-network node then connects to a second JNI-visible node and
+     * submits a schema-valid bounded relay operation twice. The receiver reads
+     * the durably materialized body through the packaged relay inbox surface,
+     * proving the path crosses JNI, authenticated transport, and recipient
+     * storage rather than stopping at submission or argument marshalling.
      */
     @Test
     fun c_selectedNetworkLifecycle_andRelaySubmission_roundTripThroughJni() {
@@ -327,8 +327,37 @@ class PeatJniSurfaceTest {
             PeatJni.notifyNetworkChangeJni(handle),
         )
 
-        val nodeId = PeatJni.nodeIdJni(handle)
-        assertTrue("selected-network node must expose an endpoint identity", nodeId.isNotEmpty())
+        val receiverStorageDir =
+            File(cacheDir, "peat-ffi-surface-relay-receiver-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(receiverStorageDir)
+        val receiverHandle =
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-selected-network-relay-receiver",
+                receiverStorageDir.absolutePath,
+                false,
+                null,
+                selectedNetworkBindingJson(),
+            )
+        assertTrue("relay receiver must bind through the active Android Network", receiverHandle != 0L)
+        handles.add(receiverHandle)
+
+        val senderNodeId = PeatJni.nodeIdJni(handle)
+        val receiverNodeId = PeatJni.nodeIdJni(receiverHandle)
+        val receiverAddress = PeatJni.endpointSocketAddrJni(receiverHandle)
+        assertTrue("selected-network sender must expose an endpoint identity", senderNodeId.isNotEmpty())
+        assertTrue("selected-network receiver must expose an endpoint identity", receiverNodeId.isNotEmpty())
+        assertNotNull("relay receiver must expose its selected-network endpoint", receiverAddress)
+        assertTrue("sender sync must start", PeatJni.startSyncJni(handle))
+        assertTrue("receiver sync must start", PeatJni.startSyncJni(receiverHandle))
+        assertTrue(
+            "sender must connect to the JNI-visible relay receiver",
+            PeatJni.connectPeerJni(handle, receiverNodeId, receiverAddress!!),
+        )
+
         val nowMs = System.currentTimeMillis()
         val expiresAtMs = nowMs + 60_000L
         val payload = "{}"
@@ -337,8 +366,8 @@ class PeatJniSurfaceTest {
         val body =
             JSONObject()
                 .put("message_id", documentId)
-                .put("origin_node_id", nodeId)
-                .put("destination_node_id", nodeId)
+                .put("origin_node_id", senderNodeId)
+                .put("destination_node_id", receiverNodeId)
                 .put("created_at_ms", nowMs)
                 .put("expires_at_ms", expiresAtMs)
                 .put("max_hops", 1)
@@ -358,7 +387,7 @@ class PeatJniSurfaceTest {
         val first =
             PeatJni.submitApplicationRelayJni(
                 handle,
-                nodeId,
+                receiverNodeId,
                 operationId,
                 documentId,
                 body,
@@ -372,7 +401,7 @@ class PeatJniSurfaceTest {
         val duplicate =
             PeatJni.submitApplicationRelayJni(
                 handle,
-                nodeId,
+                receiverNodeId,
                 operationId,
                 documentId,
                 body,
@@ -382,6 +411,20 @@ class PeatJniSurfaceTest {
             "an identical relay submission must be durably idempotent",
             operationId,
             duplicate,
+        )
+
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        var receivedBody: String? = null
+        while (receivedBody == null && System.nanoTime() < deadline) {
+            receivedBody = PeatJni.getApplicationRelayJni(receiverHandle, documentId)
+            if (receivedBody == null) {
+                Thread.sleep(100)
+            }
+        }
+        assertEquals(
+            "recipient JNI inbox must expose the authenticated relay body",
+            body,
+            receivedBody,
         )
     }
 
@@ -802,6 +845,9 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefSubmitApplicationRelay(h: Long): String =
         PeatJni.submitApplicationRelayJni(h, "a", "b", "c", "{}", 1L)
+    @Suppress("unused")
+    private fun peatJniRefGetApplicationRelay(h: Long): String? =
+        PeatJni.getApplicationRelayJni(h, "a")
     @Suppress("unused")
     private fun peatJniRefGetGlobalNodeHandle(): Long = PeatJni.getGlobalNodeHandleJni()
     @Suppress("unused")

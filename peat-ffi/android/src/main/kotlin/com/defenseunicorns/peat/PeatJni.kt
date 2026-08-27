@@ -147,6 +147,15 @@ object PeatJni {
         expiresAtMs: Long,
     ): String
 
+    /**
+     * Return one relay body after authenticated recipient materialization, or
+     * null while the document is not present in this node's local inbox.
+     */
+    @JvmStatic external fun getApplicationRelayJni(
+        handle: Long,
+        documentId: String,
+    ): String?
+
     @JvmStatic external fun getGlobalNodeHandleJni(): Long
 
     /// Release the owning reference [createNodeJni]/`create_node` stashed in the
