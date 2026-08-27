@@ -111,7 +111,24 @@ class PeatJniSurfaceTest {
         return handle
     }
 
-    private fun selectedNetworkBindingJson(): String {
+    private data class SelectedNetworkBinding(
+        val address: String,
+        val prefixLength: Int,
+        val networkHandle: Long,
+    ) {
+        fun toJson(): String =
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("address", address)
+                        .put("prefix_length", prefixLength)
+                        .put("network_handle", networkHandle)
+                        .put("is_default_route", true),
+                )
+                .toString()
+    }
+
+    private fun selectedNetworkBinding(): SelectedNetworkBinding {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val connectivity =
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -124,15 +141,7 @@ class PeatJniSurfaceTest {
         val hostAddress = address!!.address.hostAddress
         assertNotNull("active Android Network IPv4 address must be numeric", hostAddress)
 
-        return JSONArray()
-            .put(
-                JSONObject()
-                    .put("address", hostAddress!!)
-                    .put("prefix_length", address.prefixLength)
-                    .put("network_handle", network.networkHandle)
-                    .put("is_default_route", true),
-            )
-            .toString()
+        return SelectedNetworkBinding(hostAddress!!, address.prefixLength, network.networkHandle)
     }
 
     private fun sha256Hex(value: String): String =
@@ -307,6 +316,7 @@ class PeatJniSurfaceTest {
             }
         storageDirs.add(storageDir)
 
+        val selectedNetwork = selectedNetworkBinding()
         val handle =
             PeatJni.createNodeWithIpBindingsJni(
                 APP_ID,
@@ -315,7 +325,7 @@ class PeatJniSurfaceTest {
                 storageDir.absolutePath,
                 false,
                 null,
-                selectedNetworkBindingJson(),
+                selectedNetwork.toJson(),
             )
         assertTrue(
             "createNodeWithIpBindingsJni must bind through the active Android Network",
@@ -332,15 +342,16 @@ class PeatJniSurfaceTest {
                 mkdirs()
             }
         storageDirs.add(receiverStorageDir)
+        // The netwatch bind hook is process-global and already owned by the
+        // selected-network sender. Binding the receiver to the same concrete
+        // IP reuses that hook instead of attempting an unsupported second
+        // installation.
         val receiverHandle =
-            PeatJni.createNodeWithIpBindingsJni(
+            PeatJni.createNodeJni(
                 APP_ID,
                 SHARED_KEY,
-                "android-selected-network-relay-receiver",
                 receiverStorageDir.absolutePath,
-                false,
-                null,
-                selectedNetworkBindingJson(),
+                selectedNetwork.address,
             )
         assertTrue("relay receiver must bind through the active Android Network", receiverHandle != 0L)
         handles.add(receiverHandle)
