@@ -4,20 +4,22 @@ This document describes how to cut a new release of the crates published from th
 
 ## What gets published
 
-Only two crates from this workspace go to crates.io:
+Four crates from this workspace go to crates.io:
 
 | Crate | Role |
 |-------|------|
 | `peat-schema` | Wire format (Protobuf) definitions |
 | `peat-protocol` | Public facade — re-exports `peat-schema` and `peat-mesh`; downstream consumers depend on this crate alone |
+| `peat-ffi` | Independently versioned Rust FFI crate; published after its protocol dependencies when the workspace tag contains a version not already indexed |
+| `peat` | Reserved-name placeholder facade; published last at the workspace version |
 
-All other workspace members (`peat-transport`, `peat-persistence`, `peat-ffi`, `examples/*`) share the workspace version but stay internal. They are not published.
+All other workspace members (`peat-transport`, `peat-persistence`, `examples/*`) share the workspace version but stay internal. They are not published.
 
-`peat-ffi` publishes to **Maven Central** on its own cadence via `.github/workflows/publish-maven.yml`; it is decoupled from the crates.io release flow. The workflow fires on push of a `peat-ffi-v*` tag (see "[Cutting a peat-ffi release](#cutting-a-peat-ffi-release)" below).
+The `peat-ffi` Android AAR publishes to **Maven Central** on its own cadence via `.github/workflows/publish-maven.yml`; it is decoupled from the Rust crate's crates.io publication. The Maven workflow fires on push of a `peat-ffi-v*` tag (see "[Cutting a peat-ffi release](#cutting-a-peat-ffi-release)" below).
 
 ## Versioning
 
-The workspace uses a single version (`[workspace.package].version`) for all published crates. The chosen version must track the `peat-mesh` release it pins against — that is the load-bearing dependency, and version drift between the two is a source of ecosystem confusion.
+`peat-schema`, `peat-protocol`, and `peat` use `[workspace.package].version`. The Rust `peat-ffi` crate and Maven AAR each have independent versions. The workspace version must track the compatible `peat-mesh` line it pins against; version drift between those protocol components is a source of ecosystem confusion.
 
 - **Minor / breaking** — increment when `peat-mesh` cuts a minor (e.g. `0.9.x`)
 - **Patch** — internal fixes that keep the same `peat-mesh` pin
@@ -32,6 +34,8 @@ The Peat workspace publishes to two separate ecosystems with their own version s
 | Channel | Artifact | Versioned by |
 |---------|----------|--------------|
 | crates.io | `peat-protocol`, `peat-schema` | `[workspace.package].version` in `/Cargo.toml` |
+| crates.io | `peat-ffi` | `peat-ffi/Cargo.toml` (independent; published by a workspace tag only when not already indexed) |
+| crates.io | `peat` | `[workspace.package].version` in `/Cargo.toml` |
 | Maven Central | `peat-ffi` AAR | `peat-ffi/android/build.gradle.kts` (independent of the workspace version) |
 
 These are deliberately decoupled. Rust SDK consumers and Android integrators usually do not overlap, and the FFI surface matures on a different cadence from the protocol. When in doubt, bump each channel only when its own artifact changes, and call out the relationship in CHANGELOG entries if a coordinated bump is needed.
@@ -70,19 +74,21 @@ One branch, one PR. Make the release changes on a branch named `chore/release-<v
    ```bash
    cargo check --workspace --all-features
    cargo test --workspace --exclude peat-ffi --features automerge-backend
-   (cd peat-schema && cargo publish --dry-run --allow-dirty)
-   (cd peat-protocol && cargo publish --dry-run --allow-dirty)
+    (cd peat-schema && cargo publish --dry-run --allow-dirty)
+    (cd peat-protocol && cargo publish --dry-run --allow-dirty)
+    (cd peat-ffi && cargo publish --dry-run --allow-dirty)
+    (cd peat && cargo publish --dry-run --allow-dirty)
    ```
 
-   Note that `cargo publish --dry-run` on `peat-protocol` will fail with `no matching package named peat-schema found` until `peat-schema` is actually on crates.io at the new version. That is expected and is the reason publish order matters (see below). The packaging step passing (the error appears on the `Updating crates.io index` step afterward) is sufficient evidence that `peat-protocol` is release-ready.
+   Note that `cargo publish --dry-run` on `peat-protocol` will fail with `no matching package named peat-schema found` until `peat-schema` is actually on crates.io at the new version. `peat-ffi` similarly waits for the new `peat-protocol`. Those index misses are expected and are the reason publish order matters (see below). Reaching dependency resolution after packaging is sufficient pre-publication evidence for those crates.
 
 5. **Open the PR**, let CI go green, get review, merge.
 
 ## Publish
 
-The release is driven by `.github/workflows/release.yml`. Push a tag matching `v*` and the workflow runs CI → tag validation → `peat-schema` publish → wait for index → `peat-protocol` publish → GitHub Release (CHANGELOG-extracted notes, auto-flagged as pre-release for `-rc.*` / `-alpha.*` / `-beta.*`).
+The release is driven by `.github/workflows/release.yml`. Push a tag matching `v*` and the workflow runs CI → tag validation → `peat-schema` publish → wait for index → `peat-protocol` publish → unpublished `peat-ffi` publish → `peat` publish → GitHub Release (CHANGELOG-extracted notes plus indexed checksums, auto-flagged as pre-release for `-rc.*` / `-alpha.*` / `-beta.*`).
 
-**Publish order is enforced by the workflow.** It is worth knowing why: `peat-protocol` depends on `peat-schema` by version, so `peat-schema` must be on crates.io before `peat-protocol` can be published. The workflow publishes schema first, polls the crates.io API until the new version is indexed (up to 5 minutes), then publishes protocol.
+**Publish order is enforced by the workflow.** `peat-protocol` depends on `peat-schema` by version, and `peat-ffi` depends on `peat-protocol`, so each must be indexed before the next can publish. The independent-version FFI crate is skipped when already indexed. The dependency-free `peat` placeholder publishes last.
 
 ### Prerequisites (one-time)
 
@@ -96,6 +102,10 @@ The release workflow is designed to be re-runnable. Each step that mutates crate
 - **GitHub Release step** uses `gh release edit` if a release for the tag already exists; otherwise `gh release create`.
 
 This means that if any step fails partway through (e.g. runner flake during index polling), re-running the failed job (or re-pushing the tag after a fix) resumes cleanly instead of tripping on "already published" errors.
+
+### Release evidence
+
+The GitHub Release is created only after all four expected crate versions are present and not yanked in the crates.io sparse index. The workflow downloads each `.crate` archive, verifies its SHA-256 against the sparse-index `cksum`, appends the crate identity, exact version, crates.io URL, checksum, and successful tag-workflow CI run to the CHANGELOG-derived notes, then reads the release back through `gh` to verify its title, tag, public/draft state, pre-release status, comparison link, and artifact evidence. A missing or yanked crate, changelog entry, checksum match, or release-body field fails the workflow rather than producing a partial success.
 
 ### How release.yml and ci.yml are coupled
 
@@ -121,9 +131,9 @@ Then watch the workflow at `gh run watch` or in the Actions tab. On success, the
 
 peat-ffi's Maven AAR is released independently of the crates.io workspace cadence, on its own tag stream. The flow:
 
-1. **Bump versions in a PR**:
-   - `peat-ffi/android/build.gradle.kts` — the Maven AAR version (e.g. `0.1.0` → `0.1.1`)
-   - `peat-ffi/Cargo.toml` — the crate version (e.g. `0.2.3` → `0.2.4`). Independent; only matters for path-dep consumers.
+1. **Bump the changed channel's version in a PR**:
+   - For an AAR change, update `peat-ffi/android/build.gradle.kts` (e.g. `0.1.0` → `0.1.1`).
+   - Update `peat-ffi/Cargo.toml` (e.g. `0.2.3` → `0.2.4`) only when the Rust crate changes. Its version is independent from the AAR; the next workspace `v*` tag publishes it to crates.io if it is not already indexed.
 
 2. **Merge the bump PR** to `main` via the normal squash-merge flow.
 
@@ -146,7 +156,7 @@ peat-ffi's Maven AAR is released independently of the crates.io workspace cadenc
 
 5. **Flesh out the GitHub Release notes** (the workflow leaves a placeholder body for the maintainer to fill in).
 
-The tag is the canonical version reference. No equivalent of the `[Unreleased]` → `[<version>]` CHANGELOG dance — peat-ffi changes aren't tracked in the workspace CHANGELOG.md.
+The Maven tag is the canonical AAR version reference. Document AAR-specific behavior in that GitHub Release. Any Rust `peat-ffi` changes that will publish on a workspace tag must also appear in the workspace CHANGELOG entry for that tag.
 
 #### Diagnosing a `Poll Sonatype Central deployment status` failure
 
@@ -161,30 +171,101 @@ If the deployment-status poll surfaces `FAILED`, the workflow log shows the resp
 If the automated release workflow is unavailable, the same steps can be run by hand. Requires a crates.io token on the local machine (`cargo login`).
 
 ```bash
-# 1. Tag the release and push
-git tag v0.9.0-rc.1 <merge-commit>
-git push origin v0.9.0-rc.1
+set -euo pipefail
+VERSION=0.9.0-rc.1
+SOURCE_COMMIT=$(git rev-parse HEAD)
+FFI_VERSION=$(cargo metadata --no-deps --format-version=1 | \
+  jq -r '.packages[] | select(.name == "peat-ffi") | .version')
 
-# 2. Publish peat-schema
-cd peat-schema && cargo publish && cd ..
+git diff --quiet
+git diff --cached --quiet
+PROTOC=/definitely/missing/protoc cargo check --workspace --all-features
+cargo test --workspace --exclude peat-ffi --features automerge-backend
+cargo clippy --all-targets --all-features --workspace --exclude peat-ffi -- -D warnings
+cargo fmt --all -- --check
+cargo vet
 
-# 3. Wait ~60 seconds, then verify
-curl -s https://crates.io/api/v1/crates/peat-schema | \
-  python3 -c "import sys,json;d=json.load(sys.stdin);print([v['num'] for v in d['versions'][:3]])"
+index_record() {
+  curl -sfL "https://index.crates.io/pe/at/$1" | \
+    jq -e --arg v "$2" 'select(.vers == $v and .yanked == false)'
+}
 
-# 4. Publish peat-protocol
-cd peat-protocol && cargo publish && cd ..
+publish_and_wait() {
+  crate=$1; path=$2; version=$3
+  if index_record "$crate" "$version" >/dev/null; then
+    printf '%s %s is already indexed\n' "$crate" "$version"
+    return
+  fi
+  (cd "$path" && cargo publish)
+  for _ in $(seq 1 60); do
+    index_record "$crate" "$version" >/dev/null && return
+    sleep 5
+  done
+  printf '%s %s was not indexed within 5 minutes\n' "$crate" "$version" >&2
+  return 1
+}
 
-# 5. Create the GitHub release
-gh release create v0.9.0-rc.1 --prerelease \
-  --notes-file <(awk '/^## \[0.9.0-rc.1\]/{found=1;next} /^## \[/{if(found)exit} found{print}' CHANGELOG.md)
+if TAG_COMMIT=$(git rev-parse -q --verify "refs/tags/v$VERSION"); then
+  test "$TAG_COMMIT" = "$SOURCE_COMMIT"
+else
+  git tag "v$VERSION" "$SOURCE_COMMIT"
+fi
+git push origin "refs/tags/v$VERSION"
+publish_and_wait peat-schema peat-schema "$VERSION"
+publish_and_wait peat-protocol peat-protocol "$VERSION"
+publish_and_wait peat-ffi peat-ffi "$FFI_VERSION"
+publish_and_wait peat peat "$VERSION"
+
+awk "/^## \[$VERSION\]/{found=1;next} /^## \[/{if(found)exit} found{print}" \
+  CHANGELOG.md > /tmp/release-notes.md
+printf '\n### Manual Release Evidence\n\n' >> /tmp/release-notes.md
+printf -- '- Source commit: `%s`\n' "$SOURCE_COMMIT" >> /tmp/release-notes.md
+printf -- '- Passed workspace check, tests, clippy, formatting, and cargo-vet before publication.\n' \
+  >> /tmp/release-notes.md
+printf '\n### Published Artifacts\n\n| Crate | Version | SHA-256 |\n|---|---|---|\n' \
+  >> /tmp/release-notes.md
+: > /tmp/release-artifacts.tsv
+for spec in "peat-schema:$VERSION" "peat-protocol:$VERSION" \
+  "peat-ffi:$FFI_VERSION" "peat:$VERSION"; do
+  crate=${spec%%:*}; version=${spec#*:}
+  checksum=$(index_record "$crate" "$version" | jq -r '.cksum')
+  curl -sfL "https://crates.io/api/v1/crates/$crate/$version/download" \
+    -o "/tmp/$crate-$version.crate"
+  actual=$(shasum -a 256 "/tmp/$crate-$version.crate" | cut -d ' ' -f 1)
+  test "$actual" = "$checksum"
+  printf '| [`%s %s`](https://crates.io/crates/%s/%s) | `%s` | `%s` |\n' \
+    "$crate" "$version" "$crate" "$version" "$version" "$actual" \
+    >> /tmp/release-notes.md
+  printf '%s\t%s\t%s\n' "$crate" "$version" "$actual" \
+    >> /tmp/release-artifacts.tsv
+done
+if gh release view "v$VERSION" >/dev/null 2>&1; then
+  gh release edit "v$VERSION" --title "v$VERSION" --draft=false \
+    --prerelease=true --notes-file /tmp/release-notes.md
+else
+  gh release create "v$VERSION" --title "v$VERSION" --prerelease \
+    --notes-file /tmp/release-notes.md
+fi
+RELEASE=$(gh release view "v$VERSION" \
+  --json name,tagName,isDraft,isPrerelease,body,url)
+jq -e --arg tag "v$VERSION" \
+  '.name == $tag and .tagName == $tag and .isDraft == false and .isPrerelease == true' \
+  <<< "$RELEASE" >/dev/null
+while IFS=$'\t' read -r crate version checksum; do
+  jq -e --arg crate "$crate $version" --arg checksum "$checksum" \
+    '.body | contains($crate) and contains($checksum)' <<< "$RELEASE" >/dev/null
+done < /tmp/release-artifacts.tsv
+BODY=$(jq -r '.body' <<< "$RELEASE")
+EXPECTED_BODY=$(</tmp/release-notes.md)
+test "$BODY" = "$EXPECTED_BODY"
+jq -r '.url' <<< "$RELEASE"
 ```
 
-Drop `--prerelease` for a stable cut.
+Use `--prerelease=false` and assert `isPrerelease == false` for a stable cut.
 
 ## After publish
 
-- [ ] Confirm both crates render correctly on crates.io (titles, descriptions, READMEs)
+- [ ] Confirm `peat-schema`, `peat-protocol`, `peat-ffi`, and `peat` render correctly on crates.io (titles, descriptions, READMEs)
 - [ ] For any crate being published for the **first time**, add two entries:
   - In `supply-chain/config.toml`: `[policy.<name>]` with `audit-as-crates-io = true` — declares the crate overlap (must come **after** first publish; declaring before publish causes `Cannot fetch crate information`).
   - In `supply-chain/audits.toml`: `[[trusted.<name>]]` with `user-id = 184815` (`kitplummer`), `criteria = "safe-to-deploy"`, `start` anchored to the crate's first crates.io publish date, and `end` matching the existing sibling-crate expiry (currently `"2027-03-26"`).
@@ -208,7 +289,7 @@ When a release candidate has soaked sufficiently and no regressions have surface
 5. **Re-audit the re-exported surface.** `peat-protocol` re-exports `peat_mesh` and `peat_schema`, so the full public API of both is part of `peat-protocol`'s own semver contract. Before relaxing the `peat-mesh` pin from exact (`=<version>-rc.N`) to caret (`"<major>.<minor>"`), scan the `peat-mesh` changelog for any breaking changes that would leak through the re-export and require a `peat-protocol` major bump. If in doubt, keep the exact pin.
 6. Also update `peat-protocol/src/lib.rs` — the docstring example should show the stable caret selector (`"0.9"`) instead of the exact rc pin, since Cargo resolves pre-release versions by default only under an exact requirement.
 7. Update `CHANGELOG.md` with a new `## [<version>]` heading
-8. Follow the Publish section above (tag, publish `peat-schema`, publish `peat-protocol`, GitHub release)
+8. Follow the Publish section above for all four crates and the verified GitHub Release
 
 Only promote to stable after:
 - All downstream repos have been on the rc for long enough to surface issues

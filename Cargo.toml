@@ -64,7 +64,7 @@ exclude = ["examples/m5stack-core2-peat", "vendor/netwatch"]
 # for the resolution train.
 
 [workspace.package]
-version = "0.9.0-rc.33"
+version = "0.9.0-rc.34"
 edition = "2021"
 authors = ["Kit Plummer <kitplummer@defenseunicorns.com>"]
 license = "Apache-2.0"
@@ -299,13 +299,12 @@ repository = "https://github.com/defenseunicorns/peat"
 # Automerge store, preserving endpoint discovery and authenticated connection
 # ownership for peat-ffi.
 #
-# Floor bumped to rc.65 (2026-08-24) — peat-mesh#383 and #389 add durable
-# application delivery and bounded received-document queries, while
-# peat-mesh#392 upgrades lru to remediate RUSTSEC-2026-0253. This stacked
-# change temporarily pins the upstream PR commit containing explicit platform
-# IP bindings and deterministic mDNS teardown; return to crates.io after the
-# peat-mesh change is released.
-peat-mesh = { git = "https://github.com/defenseunicorns/peat-mesh", rev = "874099ba46720b0995ce70a8a8ea7df3f9cd32a0", version = ">=0.9.0-rc.65, <0.9.1", default-features = false }
+# Floor bumped to rc.66 (2026-08-27) — peat-mesh#396 and #397 publish the
+# collection-history contract, explicit platform IP bindings, and deterministic
+# mDNS teardown reviewed by this PR. The upstream release consumes the matching
+# published peat-schema rc.34 contract, so the temporary git source and local
+# schema patch are no longer required.
+peat-mesh = { version = ">=0.9.0-rc.66, <0.9.1", default-features = false }
 
 # BLE mesh transport (ADR-039). `>=0.4.0, <0.4.1` matches peat-btle
 # 0.4.0 — the Slice-4.b release that deleted the `mesh-translator`
@@ -349,9 +348,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # when the hook is available in a released upstream netwatch crate.
 [patch.crates-io]
 netwatch = { path = "vendor/netwatch" }
-# peat-mesh upstream main consumes the collection-history API added to this
-# workspace's peat-schema after rc.33, while the published rc.33 crate does not
-# contain that API. Keep downstream git-pinned mesh builds on the matching
-# workspace schema until the next peat-schema release is published and mesh can
-# advance its declared version floor.
+# Keep peat-mesh's transitive peat-schema rc.34 dependency on this workspace's
+# local package. One source identity prevents duplicate schema types at the
+# peat-mesh / peat-protocol boundary while the workspace is under development.
 peat-schema = { path = "peat-schema" }

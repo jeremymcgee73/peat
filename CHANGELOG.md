@@ -9,17 +9,126 @@ This changelog covers the crates published to crates.io from this workspace:
 
 - `peat-protocol` — public facade; depends on `peat-schema` and `peat-mesh`
 - `peat-schema` — wire format (Protobuf) definitions
+- `peat-ffi` — independently versioned Rust FFI crate; published after its
+  protocol dependencies when a workspace tag contains an unpublished version
+- `peat` — reserved-name placeholder facade published at the workspace version
 
-Sub-crates that stay internal (`peat-transport`, `peat-persistence`, `peat-ffi`, `examples/*`) share the workspace version but are not published and are not documented here.
+Sub-crates that stay internal (`peat-transport`, `peat-persistence`,
+`examples/*`) share the workspace version but are not published.
 
 ## [Unreleased]
+
+## [0.9.0-rc.34] - 2026-08-26
+
+Pre-release candidate. Rust consumers should upgrade `peat-schema` and
+`peat-protocol` together using exact `=0.9.0-rc.34` requirements. This release
+does not claim physical-network qualification for reconstructible-history
+behavior; that evidence remains tracked by
+[peat-sim#77](https://github.com/defenseunicorns/peat-sim/issues/77).
+
+### Added
+
+- Define the transport- and CRDT-independent reconstructible collection-history
+  contract in ADR-076 and the protocol specification, including typed axes for
+  synchronization, causal retention, domain reconstructibility, segmentation,
+  durability, admission, stale-writer handling, and resurrection
+  ([#1084](https://github.com/defenseunicorns/peat/issues/1084),
+  [#1085](https://github.com/defenseunicorns/peat/issues/1085),
+  [#1086](https://github.com/defenseunicorns/peat/pull/1086)).
+- Add canonical `peat_schema::history::v1` policy, source, segment lifecycle,
+  durability progress, and effective-enforcement types with conservative
+  validation and migration from existing sync modes. These types are consumed
+  by the implementation merged in
+  [peat-mesh#396](https://github.com/defenseunicorns/peat-mesh/pull/396), with
+  release coordination remaining open in
+  [peat-mesh#390](https://github.com/defenseunicorns/peat-mesh/issues/390).
+- Expose authenticated durable targeted application delivery through
+  `peat-protocol`, including canonical application-content descriptors and
+  bounded sender status plus received-document cursor queries. Delivery is
+  recorded only after recipient materialization acknowledgement; there is no
+  READ state
+  ([#1066](https://github.com/defenseunicorns/peat/issues/1066),
+  [#1080](https://github.com/defenseunicorns/peat/issues/1080),
+  [#1078](https://github.com/defenseunicorns/peat/pull/1078)).
 
 ### Fixed
 
 - Upgrade `h2` to `0.4.16` and `lru` to `0.18.2` to remediate
   `RUSTSEC-2026-0258` and `RUSTSEC-2026-0253`, and return `peat-mesh` to the
   published `0.9.0-rc.65` crates.io release after its temporary Git pin
-  ([#1087](https://github.com/defenseunicorns/peat/issues/1087)).
+  ([#1087](https://github.com/defenseunicorns/peat/issues/1087),
+  [#1089](https://github.com/defenseunicorns/peat/pull/1089),
+  [peat-mesh#392](https://github.com/defenseunicorns/peat-mesh/pull/392)).
+- Build `peat-schema` from its checked-in protobuf descriptor set,
+  removing the release and consumer requirement for a system `protoc` compiler
+  ([#1090](https://github.com/defenseunicorns/peat/issues/1090),
+  [#1091](https://github.com/defenseunicorns/peat/pull/1091)).
+
+### Changed — `peat-ffi 0.2.15`
+
+- Publish the bounded UniFFI application-delivery operations and opaque,
+  collection-bound received-document pagination backed by peat-mesh's durable
+  owner implementation. Inputs and outputs remain bounded, and diagnostics do
+  not emit message bodies or audiences
+  ([#1078](https://github.com/defenseunicorns/peat/pull/1078)).
+- Route FFI sync through the canonical peat-mesh backend and align the Android
+  JNI node-creation contract, retaining one endpoint/store ownership graph for
+  discovery, authenticated connections, document CRUD, and synchronization
+  ([#1064](https://github.com/defenseunicorns/peat/pull/1064),
+  [#1065](https://github.com/defenseunicorns/peat/pull/1065)).
+- Decode canonical nested and sidecar-compatible Track position, motion,
+  attributes, and timestamps at the existing JSON boundary, and consume the
+  FFI-owned mDNS browse stream so asymmetrically discovered peers are dialed
+  through the authenticated canonical backend
+  ([#1067](https://github.com/defenseunicorns/peat/issues/1067),
+  [#1068](https://github.com/defenseunicorns/peat/pull/1068),
+  [#1081](https://github.com/defenseunicorns/peat/pull/1081)).
+
+The Maven AAR remains independently versioned at `peat-ffi-v0.1.7`, published
+from [#1070](https://github.com/defenseunicorns/peat/pull/1070) for
+[#1069](https://github.com/defenseunicorns/peat/issues/1069). This workspace
+tag does not republish Maven artifacts; it publishes the separate Rust
+`peat-ffi 0.2.15` crate to crates.io.
+
+### Pinned
+
+- Keep `peat-mesh` at `>=0.9.0-rc.65, <0.9.1`; default feature selection is
+  unchanged. The reconstructible-history implementation merged after rc.65 is
+  qualified and released independently before this workspace advances its
+  public facade dependency.
+
+### Upgrade Guidance
+
+- Upgrade `peat-schema` and `peat-protocol` to `=0.9.0-rc.34` together.
+- Consumers using the Rust FFI crate may upgrade to `peat-ffi = "=0.2.15"`
+  after `peat-protocol 0.9.0-rc.34` is indexed. Android AAR consumers remain on
+  the independent Maven `0.1.7` stream.
+- `peat-protocol` continues to resolve published `peat-mesh
+  >=0.9.0-rc.65, <0.9.1`; this release does not include the later mesh history
+  enforcement implementation through that facade.
+
+### Verification
+
+- `PROTOC=/definitely/missing/protoc cargo check --workspace --all-features`
+- `cargo clippy --all-targets --all-features --workspace --exclude peat-ffi -- -D warnings`
+- `cargo vet` — 661 fully audited, 48 exempted.
+- `peat-schema` publish dry-run packaged and verified 48 files without a
+  system `protoc`; `peat-protocol` and `peat-ffi` packaging reached their
+  expected pre-publication rc.34 dependency-index misses. The release workflow
+  retains Cargo's package-build verification for every crate.
+- Lite feature-tree gate contains none of `automerge`, `redb`, `iroh-blobs`,
+  or `negentropy`.
+- The local broad workspace run passed 1,024 tests before the existing
+  localhost/Iroh same-credentials handshake timed out, including on isolated
+  rerun. The automated tag path reruns the repository CI gates before
+  publication; this local environment result is not represented as a passing
+  network test.
+- After crates.io indexing, the release workflow appends package checksums for
+  every published crate and reads the GitHub Release back to verify its body,
+  pre-release flag, comparison, and artifact identities.
+
+Full comparison:
+[v0.9.0-rc.33...v0.9.0-rc.34](https://github.com/defenseunicorns/peat/compare/v0.9.0-rc.33...v0.9.0-rc.34)
 
 ## [0.9.0-rc.33] - 2026-08-04
 
