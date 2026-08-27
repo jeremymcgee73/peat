@@ -323,6 +323,7 @@ That's it. Capability advertisement, cell formation, leader election, hierarchic
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Development setup and build workflow |
 | [Architecture](docs/ARCHITECTURE.md) | Five-layer architecture overview |
 | [ADR Index](docs/adr/) | 53 Architecture Decision Records |
+| [Android selected bindings](docs/adr/076-android-selected-ip-bindings-and-application-relay.md) | Per-socket Android ownership and bounded relay semantics |
 | [Protocol Specs](spec/) | Protocol specification drafts and Protobuf schemas |
 | [Developer Guide](docs/guides/developer/DEVELOPER_GUIDE.md) | API reference, extending Peat |
 | [Operator Guide](docs/guides/operator/OPERATOR_GUIDE.md) | Deployment, configuration, monitoring |

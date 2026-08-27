@@ -24,13 +24,9 @@ import androidx.annotation.VisibleForTesting
  * methods on the singleton, and `RegisterNatives` aborts with
  * "jclass has wrong type" SIGABRT at library load.
  *
- * Subscription methods (subscribeDocumentChangesJni,
- * subscribeOutboundFramesJni, and their unsubscribe pairs) are NOT
- * declared here because they take consumer-supplied listener
- * interfaces (`DocumentChangeListener`, `OutboundFrameListener`).
- * Consumers that use them declare those externs locally alongside
- * their listener implementations — same as the pre-0.1.2 pattern
- * for those specific methods.
+ * The outbound-frame and document-change subscriptions and their listeners
+ * are canonical AAR surfaces as of peat#1082 and the follow-up Android receive
+ * integration.
  */
 object PeatJni {
     init {
@@ -125,6 +121,41 @@ object PeatJni {
         bindAddress: String?,
     ): Long
 
+    /**
+     * Create a node whose Iroh UDP sockets are bound to explicit Android
+     * Networks. The JSON is validated natively and has no process-default
+     * fallback. Hosted relay DNS/TCP remains disabled on this surface.
+     */
+    @JvmStatic external fun createNodeWithIpBindingsJni(
+        appId: String,
+        sharedKey: String,
+        nodeId: String?,
+        storagePath: String,
+        enableBle: Boolean,
+        blePowerProfile: String?,
+        ipBindingsJson: String,
+    ): Long
+
+    @JvmStatic external fun notifyNetworkChangeJni(handle: Long): Boolean
+
+    @JvmStatic external fun submitApplicationRelayJni(
+        handle: Long,
+        targetNodeId: String,
+        operationId: String,
+        documentId: String,
+        bodyJson: String,
+        expiresAtMs: Long,
+    ): String
+
+    /**
+     * Return one relay body after authenticated recipient materialization, or
+     * null while the document is not present in this node's local inbox.
+     */
+    @JvmStatic external fun getApplicationRelayJni(
+        handle: Long,
+        documentId: String,
+    ): String?
+
     @JvmStatic external fun getGlobalNodeHandleJni(): Long
 
     /// Release the owning reference [createNodeJni]/`create_node` stashed in the
@@ -214,6 +245,18 @@ object PeatJni {
         docId: String,
     ): String?
 
+    /**
+     * Subscribe to committed document keys. A second subscription replaces
+     * the first. Callbacks run on PEAT's Rust runtime thread.
+     */
+    @JvmStatic external fun subscribeDocumentChangesJni(
+        handle: Long,
+        listener: DocumentChangeListener,
+    ): Boolean
+
+    /** Stop document-change delivery. Safe to call repeatedly. */
+    @JvmStatic external fun unsubscribeDocumentChangesJni()
+
     // -- Typed collection accessors (CoT-style schema; ADR-049) ------------
 
     @JvmStatic external fun getCellsJni(handle: Long): String
@@ -249,6 +292,20 @@ object PeatJni {
         collection: String,
         envelopeBytes: ByteArray,
     ): String?
+
+    /**
+     * Subscribe to Rust-encoded outbound frames. A second subscription swaps
+     * the listener without rebuilding the underlying fan-out.
+     *
+     * Call [unsubscribeOutboundFramesJni] before releasing the node handle.
+     */
+    @JvmStatic external fun subscribeOutboundFramesJni(
+        handle: Long,
+        listener: OutboundFrameListener,
+    ): Boolean
+
+    /** Stop outbound-frame delivery. Safe to call repeatedly. */
+    @JvmStatic external fun unsubscribeOutboundFramesJni(handle: Long)
 
     // -- Blob transfer -----------------------------------------------------
 

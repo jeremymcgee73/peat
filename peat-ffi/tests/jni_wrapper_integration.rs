@@ -120,6 +120,7 @@ fn jni_wrapper_integration() {
     let raw = attach.get_raw();
 
     scenario_endpoint_socket_addr_null_handle(raw);
+    scenario_free_node_allows_immediate_same_process_reopen(raw);
     let (handle, _tempdir) = scenario_create_node_returns_handle(raw);
     scenario_endpoint_socket_addr_real_handle(raw, handle);
     let (bind_handle, _bind_tempdir) = scenario_create_node_with_bind_address(raw);
@@ -149,6 +150,50 @@ fn jni_wrapper_integration() {
         null_class(),
         new_config_handle,
     );
+}
+
+// ---------------------------------------------------------------------
+// Lifecycle regression: direct JNI consumers replace nodes in-process
+// when an owned network path changes. freeNodeJni must await router
+// shutdown so the same storage path can be reopened immediately rather
+// than racing background endpoint/discovery tasks from the prior node.
+// ---------------------------------------------------------------------
+fn scenario_free_node_allows_immediate_same_process_reopen(raw: *mut jni::sys::JNIEnv) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let create = || {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, SHARED_KEY);
+        let storage = new_jstring(&mut env, &storage_path);
+        let bind_address = new_jstring(&mut env, "127.0.0.1");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            storage,
+            bind_address,
+        )
+    };
+
+    let first = create();
+    assert_ne!(first, 0, "first lifecycle node creation failed");
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), first);
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_clearGlobalNodeHandleJni(env, null_class());
+
+    let replacement = create();
+    assert_ne!(
+        replacement, 0,
+        "replacement node could not reopen the same storage path after freeNodeJni",
+    );
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), replacement);
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_clearGlobalNodeHandleJni(env, null_class());
 }
 
 // ---------------------------------------------------------------------

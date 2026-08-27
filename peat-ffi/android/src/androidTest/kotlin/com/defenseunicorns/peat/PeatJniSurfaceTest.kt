@@ -1,10 +1,23 @@
 package com.defenseunicorns.peat
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import java.net.Inet4Address
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -59,6 +72,16 @@ class PeatJniSurfaceTest {
 
     @After
     fun teardown() {
+        try {
+            PeatJni.unsubscribeDocumentChangesJni()
+        } catch (t: Throwable) {
+            // Best-effort cleanup; don't mask test failures.
+        }
+        try {
+            PeatJni.clearGlobalNodeHandleJni()
+        } catch (t: Throwable) {
+            // Best-effort cleanup; don't mask test failures.
+        }
         handles.forEach { handle ->
             try {
                 PeatJni.freeNodeJni(handle)
@@ -87,6 +110,44 @@ class PeatJniSurfaceTest {
         handles.add(handle)
         return handle
     }
+
+    private data class SelectedNetworkBinding(
+        val address: String,
+        val prefixLength: Int,
+        val networkHandle: Long,
+    ) {
+        fun toJson(): String =
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("address", address)
+                        .put("prefix_length", prefixLength)
+                        .put("network_handle", networkHandle)
+                        .put("is_default_route", true),
+                )
+                .toString()
+    }
+
+    private fun selectedNetworkBinding(): SelectedNetworkBinding {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val connectivity =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivity.activeNetwork
+        assertNotNull("instrumented device must expose an active Android Network", network)
+        val linkProperties = connectivity.getLinkProperties(network!!)
+        assertNotNull("active Android Network must expose LinkProperties", linkProperties)
+        val address = linkProperties!!.linkAddresses.firstOrNull { it.address is Inet4Address }
+        assertNotNull("active Android Network must expose a concrete IPv4 address", address)
+        val hostAddress = address!!.address.hostAddress
+        assertNotNull("active Android Network IPv4 address must be numeric", hostAddress)
+
+        return SelectedNetworkBinding(hostAddress!!, address.prefixLength, network.networkHandle)
+    }
+
+    private fun sha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
 
     /**
      * peat#887 regression gate: `System.loadLibrary("peat_ffi")`
@@ -229,6 +290,156 @@ class PeatJniSurfaceTest {
     }
 
     /**
+     * Consumer-tier proof for the selected-network and application-relay JNI
+     * surface. The active Android Network supplies both the concrete local
+     * address and the platform handle, so successful creation exercises the
+     * Kotlin descriptor, JSON marshalling, native validation, UDP pre-bind
+     * hook, and Iroh endpoint bind on a real Android runtime.
+     *
+     * The selected-network node then connects to a second JNI-visible node and
+     * submits a schema-valid bounded relay operation twice. The receiver reads
+     * the durably materialized body through the packaged relay inbox surface,
+     * proving the path crosses JNI, authenticated transport, and recipient
+     * storage rather than stopping at submission or argument marshalling.
+     */
+    @Test
+    fun c_selectedNetworkLifecycle_andRelaySubmission_roundTripThroughJni() {
+        assertFalse(
+            "notifyNetworkChangeJni(handle=0) must reject an invalid handle",
+            PeatJni.notifyNetworkChangeJni(0L),
+        )
+
+        val cacheDir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        val storageDir =
+            File(cacheDir, "peat-ffi-surface-selected-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(storageDir)
+
+        val selectedNetwork = selectedNetworkBinding()
+        val handle =
+            PeatJni.createNodeWithIpBindingsJni(
+                APP_ID,
+                SHARED_KEY,
+                "android-selected-network-surface",
+                storageDir.absolutePath,
+                false,
+                null,
+                selectedNetwork.toJson(),
+            )
+        assertTrue(
+            "createNodeWithIpBindingsJni must bind through the active Android Network",
+            handle != 0L,
+        )
+        handles.add(handle)
+        assertTrue(
+            "notifyNetworkChangeJni must reach Iroh for a valid selected-network node",
+            PeatJni.notifyNetworkChangeJni(handle),
+        )
+
+        val receiverStorageDir =
+            File(cacheDir, "peat-ffi-surface-relay-receiver-${System.nanoTime()}").apply {
+                mkdirs()
+            }
+        storageDirs.add(receiverStorageDir)
+        // The netwatch bind hook is process-global and already owned by the
+        // selected-network sender. Binding the receiver to the same concrete
+        // IP reuses that hook instead of attempting an unsupported second
+        // installation.
+        val receiverHandle =
+            PeatJni.createNodeJni(
+                APP_ID,
+                SHARED_KEY,
+                receiverStorageDir.absolutePath,
+                selectedNetwork.address,
+            )
+        assertTrue("relay receiver must bind through the active Android Network", receiverHandle != 0L)
+        handles.add(receiverHandle)
+
+        val senderNodeId = PeatJni.nodeIdJni(handle)
+        val receiverNodeId = PeatJni.nodeIdJni(receiverHandle)
+        val receiverAddress = PeatJni.endpointSocketAddrJni(receiverHandle)
+        assertTrue("selected-network sender must expose an endpoint identity", senderNodeId.isNotEmpty())
+        assertTrue("selected-network receiver must expose an endpoint identity", receiverNodeId.isNotEmpty())
+        assertNotNull("relay receiver must expose its selected-network endpoint", receiverAddress)
+        assertTrue("sender sync must start", PeatJni.startSyncJni(handle))
+        assertTrue("receiver sync must start", PeatJni.startSyncJni(receiverHandle))
+        assertTrue(
+            "sender must connect to the JNI-visible relay receiver",
+            PeatJni.connectPeerJni(handle, receiverNodeId, receiverAddress!!),
+        )
+
+        val nowMs = System.currentTimeMillis()
+        val expiresAtMs = nowMs + 60_000L
+        val payload = "{}"
+        val operationId = "surface-relay-${System.nanoTime()}"
+        val documentId = "surface-relay-document-${System.nanoTime()}"
+        val body =
+            JSONObject()
+                .put("message_id", documentId)
+                .put("origin_node_id", senderNodeId)
+                .put("destination_node_id", receiverNodeId)
+                .put("created_at_ms", nowMs)
+                .put("expires_at_ms", expiresAtMs)
+                .put("max_hops", 1)
+                .put("hop_count", 1)
+                .put("route", JSONArray().put("surface-relay"))
+                .put("payload_kind", "application/json")
+                .put("payload_sha256", sha256Hex(payload))
+                .put(
+                    "payload_base64",
+                    Base64.encodeToString(
+                        payload.toByteArray(StandardCharsets.UTF_8),
+                        Base64.NO_WRAP,
+                    ),
+                )
+                .toString()
+
+        val first =
+            PeatJni.submitApplicationRelayJni(
+                handle,
+                receiverNodeId,
+                operationId,
+                documentId,
+                body,
+                expiresAtMs,
+            )
+        assertEquals(
+            "relay submission must return the durable caller operation ID",
+            operationId,
+            first,
+        )
+        val duplicate =
+            PeatJni.submitApplicationRelayJni(
+                handle,
+                receiverNodeId,
+                operationId,
+                documentId,
+                body,
+                expiresAtMs,
+            )
+        assertEquals(
+            "an identical relay submission must be durably idempotent",
+            operationId,
+            duplicate,
+        )
+
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        var receivedBody: String? = null
+        while (receivedBody == null && System.nanoTime() < deadline) {
+            receivedBody = PeatJni.getApplicationRelayJni(receiverHandle, documentId)
+            if (receivedBody == null) {
+                Thread.sleep(100)
+            }
+        }
+        assertEquals(
+            "recipient JNI inbox must expose the authenticated relay body",
+            body,
+            receivedBody,
+        )
+    }
+
+    /**
      * peat#924 QA WARNING-2 round 2: the `IROH_STARTED` runtime
      * guard rejects `setAndroidContextJni` calls after the first
      * successful `createNodeJni`. By the time this test runs
@@ -366,9 +577,10 @@ class PeatJniSurfaceTest {
     }
 
     /**
-     * peat#978 surface gate: the three JNI entry points added for the
+     * peat#978 / peat#1082 surface gate: the JNI entry points added for the
      * BLE doc-sync fix — `clearGlobalNodeHandleJni`, `ingestInboundFrameJni`,
-     * `ingestInboundLiteFrameJni` — must be REGISTERED (RegisterNatives) so
+     * `ingestInboundLiteFrameJni`, and the outbound-frame subscription — must
+     * be REGISTERED (RegisterNatives) so
      * the AAR's matching `external fun` declarations resolve. A missing
      * registration surfaces here as `UnsatisfiedLinkError` at AAR-test time,
      * not as a downstream consumer link failure.
@@ -378,6 +590,8 @@ class PeatJniSurfaceTest {
      *  - `ingestInbound{,Lite}FrameJni(0, ..)` returns null via the handle-0
      *    guard — confirming String/ByteArray marshalling + the early return
      *    (a null `Arc::from_raw(0)` would otherwise be UB).
+     *  - `subscribeOutboundFramesJni(0, ..)` returns false and unsubscribe is
+     *    an idempotent no-op, proving the canonical listener descriptor links.
      */
     @Test
     fun bleIngestAndClearGlobalHandle_registered_andGuardHandleZero() {
@@ -393,6 +607,143 @@ class PeatJniSurfaceTest {
             "ingestInboundLiteFrameJni(handle=0) must return null via the handle-0 guard",
             PeatJni.ingestInboundLiteFrameJni(0L, "demo", frame),
         )
+
+        val listener = OutboundFrameListener { _, _, _ ->
+            throw AssertionError("handle-0 subscription must never invoke the listener")
+        }
+        assertEquals(
+            "subscribeOutboundFramesJni(handle=0) must return false",
+            false,
+            PeatJni.subscribeOutboundFramesJni(0L, listener),
+        )
+        PeatJni.unsubscribeOutboundFramesJni(0L)
+    }
+
+    /**
+     * Locks the direct-JNI document notification contract into the AAR. This
+     * proves both RegisterNatives descriptors resolve and that a committed
+     * local document reaches the packaged listener on Rust's runtime thread.
+     */
+    @Test
+    fun documentChangeSubscription_registered_andDeliversCommittedKey() {
+        val invalidListener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    fail("handle-0 subscription must not deliver document changes")
+                }
+
+                override fun onError(message: String) {
+                    fail("handle-0 subscription must not deliver errors: $message")
+                }
+            }
+        assertEquals(
+            "subscribeDocumentChangesJni(handle=0) must return false",
+            false,
+            PeatJni.subscribeDocumentChangesJni(0L, invalidListener),
+        )
+        PeatJni.unsubscribeDocumentChangesJni()
+
+        val handle = createNode("document-change")
+        assertTrue("startSyncJni must succeed", PeatJni.startSyncJni(handle))
+        val delivered = CountDownLatch(1)
+        val receivedKey = AtomicReference<Pair<String, String>>()
+        val callbackError = AtomicReference<String>()
+        val listener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    receivedKey.set(collection to docId)
+                    delivered.countDown()
+                }
+
+                override fun onError(message: String) {
+                    callbackError.set(message)
+                    delivered.countDown()
+                }
+            }
+        assertTrue(
+            "valid node must accept document-change subscription",
+            PeatJni.subscribeDocumentChangesJni(handle, listener),
+        )
+
+        val collection = "surface-documents"
+        val documentId = "callback-proof"
+        assertEquals(
+            documentId,
+            PeatJni.publishDocumentJni(
+                handle,
+                collection,
+                """{"id":"$documentId","value":"proof"}""",
+            ),
+        )
+        assertTrue(
+            "document-change callback was not delivered within 5 seconds; error=${callbackError.get()}",
+            delivered.await(5, TimeUnit.SECONDS),
+        )
+        assertNull("document-change callback reported an error", callbackError.get())
+        assertEquals(collection to documentId, receivedKey.get())
+        PeatJni.unsubscribeDocumentChangesJni()
+    }
+
+    /** A replacement must own the sole observer task and callback target. */
+    @Test
+    fun documentChangeSubscription_replacementDoesNotDuplicateCallbacks() {
+        val handle = createNode("document-change-replacement")
+        assertTrue("startSyncJni must succeed", PeatJni.startSyncJni(handle))
+
+        val collection = "surface-replacement"
+        val documentId = "replacement-proof"
+        val firstCallbacks = AtomicInteger()
+        val secondCallbacks = AtomicInteger()
+        val delivered = CountDownLatch(1)
+        val duplicate = CountDownLatch(2)
+        val callbackError = AtomicReference<String>()
+
+        val firstListener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    if (collection == "surface-replacement" && docId == "replacement-proof") {
+                        firstCallbacks.incrementAndGet()
+                    }
+                }
+
+                override fun onError(message: String) {
+                    callbackError.compareAndSet(null, "first listener: $message")
+                    delivered.countDown()
+                }
+            }
+        val replacementListener =
+            object : DocumentChangeListener {
+                override fun onChange(collection: String, docId: String) {
+                    if (collection == "surface-replacement" && docId == "replacement-proof") {
+                        secondCallbacks.incrementAndGet()
+                        delivered.countDown()
+                        duplicate.countDown()
+                    }
+                }
+
+                override fun onError(message: String) {
+                    callbackError.compareAndSet(null, "replacement listener: $message")
+                    delivered.countDown()
+                }
+            }
+
+        assertTrue(PeatJni.subscribeDocumentChangesJni(handle, firstListener))
+        assertTrue(PeatJni.subscribeDocumentChangesJni(handle, replacementListener))
+        assertEquals(
+            documentId,
+            PeatJni.publishDocumentJni(
+                handle,
+                collection,
+                """{"id":"$documentId","value":"replacement"}""",
+            ),
+        )
+
+        assertTrue("replacement listener did not receive the document", delivered.await(5, TimeUnit.SECONDS))
+        assertNull("document-change callback reported an error", callbackError.get())
+        assertFalse("replacement delivered the same document twice", duplicate.await(500, TimeUnit.MILLISECONDS))
+        assertEquals("replaced listener must not receive the document", 0, firstCallbacks.get())
+        assertEquals("replacement listener must receive exactly once", 1, secondCallbacks.get())
+        PeatJni.unsubscribeDocumentChangesJni()
     }
 
     /**
@@ -405,10 +756,8 @@ class PeatJniSurfaceTest {
      * Coverage spans the entire PeatJni surface (lifecycle, peer
      * state, sync, generic doc I/O, typed-collection accessors,
      * blob transfer, BLE state, and the test-only fault injector).
-     * Methods that take consumer-supplied listener interfaces
-     * (subscribeDocumentChangesJni / subscribeOutboundFramesJni
-     * and their unsubscribe pairs) are declared outside this object
-     * per the doc-comment in PeatJni.kt and don't appear here.
+     * Both document-change and outbound-frame subscriptions are canonical and
+     * therefore appear here.
      *
      * The test body is a no-op; the value is in the references.
      */
@@ -424,6 +773,9 @@ class PeatJniSurfaceTest {
             ::peatJniRefTestJni,
             ::peatJniRefCreateNode,
             ::peatJniRefCreateNodeWithConfig,
+            ::peatJniRefCreateNodeWithIpBindings,
+            ::peatJniRefNotifyNetworkChange,
+            ::peatJniRefSubmitApplicationRelay,
             ::peatJniRefGetGlobalNodeHandle,
             ::peatJniRefClearGlobalNodeHandle,
             ::peatJniRefFreeNode,
@@ -440,6 +792,8 @@ class PeatJniSurfaceTest {
             ::peatJniRefPublishDocument,
             ::peatJniRefPublishDocumentWithOrigin,
             ::peatJniRefGetDocument,
+            ::peatJniRefSubscribeDocumentChanges,
+            ::peatJniRefUnsubscribeDocumentChanges,
             // Typed collection accessors
             ::peatJniRefGetCells,
             ::peatJniRefGetTracks,
@@ -451,6 +805,8 @@ class PeatJniSurfaceTest {
             ::peatJniRefIngestPosition,
             ::peatJniRefIngestInboundFrame,
             ::peatJniRefIngestInboundLiteFrame,
+            ::peatJniRefSubscribeOutboundFrames,
+            ::peatJniRefUnsubscribeOutboundFrames,
             // Blob transfer
             ::peatJniRefEnableBlobTransfer,
             ::peatJniRefBlobAddPeer,
@@ -467,10 +823,10 @@ class PeatJniSurfaceTest {
             // Test-only fault injection
             ::peatJniRefForceStoreError,
         )
-        // 40 PeatJni methods total. If this number changes, the
+        // 47 PeatJni methods total. If this number changes, the
         // count below must change too — and the new method needs
         // its own peatJniRef* shim added above.
-        assertEquals(40, refs.size)
+        assertEquals(47, refs.size)
     }
 
     // -- Reference shims --------------------------------------------------
@@ -491,6 +847,18 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefCreateNodeWithConfig(): Long =
         PeatJni.createNodeWithConfigJni("a", "b", null, "c", false, null, null)
+    @Suppress("unused")
+    private fun peatJniRefCreateNodeWithIpBindings(): Long =
+        PeatJni.createNodeWithIpBindingsJni("a", "b", null, "c", false, null, "[]")
+    @Suppress("unused")
+    private fun peatJniRefNotifyNetworkChange(h: Long): Boolean =
+        PeatJni.notifyNetworkChangeJni(h)
+    @Suppress("unused")
+    private fun peatJniRefSubmitApplicationRelay(h: Long): String =
+        PeatJni.submitApplicationRelayJni(h, "a", "b", "c", "{}", 1L)
+    @Suppress("unused")
+    private fun peatJniRefGetApplicationRelay(h: Long): String? =
+        PeatJni.getApplicationRelayJni(h, "a")
     @Suppress("unused")
     private fun peatJniRefGetGlobalNodeHandle(): Long = PeatJni.getGlobalNodeHandleJni()
     @Suppress("unused")
@@ -527,6 +895,12 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefGetDocument(h: Long, c: String, d: String): String? =
         PeatJni.getDocumentJni(h, c, d)
+    @Suppress("unused")
+    private fun peatJniRefSubscribeDocumentChanges(h: Long, l: DocumentChangeListener): Boolean =
+        PeatJni.subscribeDocumentChangesJni(h, l)
+    @Suppress("unused")
+    private fun peatJniRefUnsubscribeDocumentChanges() =
+        PeatJni.unsubscribeDocumentChangesJni()
 
     // Typed collection accessors
     @Suppress("unused")
@@ -554,6 +928,12 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefIngestInboundLiteFrame(h: Long, c: String, b: ByteArray): String? =
         PeatJni.ingestInboundLiteFrameJni(h, c, b)
+    @Suppress("unused")
+    private fun peatJniRefSubscribeOutboundFrames(h: Long, l: OutboundFrameListener): Boolean =
+        PeatJni.subscribeOutboundFramesJni(h, l)
+    @Suppress("unused")
+    private fun peatJniRefUnsubscribeOutboundFrames(h: Long) =
+        PeatJni.unsubscribeOutboundFramesJni(h)
 
     // Blob transfer
     @Suppress("unused")

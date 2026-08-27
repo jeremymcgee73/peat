@@ -44,19 +44,86 @@ static PEER_EVENT_MANAGER_CLASS: LazyLock<Mutex<Option<GlobalRef>>> =
 
 // Global reference to the currently-registered DocumentChangeListener instance.
 // Only one subscription is supported at a time (mirrors UniFFI's
-// PeatNode::subscribe constraint). Held as a GlobalRef so it survives across
-// JNI thread attaches.
+// PeatNode::subscribe constraint). The generation ties the listener to its
+// observer task so a replaced task can never dispatch through the new listener
+// or clear it while exiting. Held as a GlobalRef so it survives across JNI
+// thread attaches.
 #[cfg(feature = "sync")]
-static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<GlobalRef>>> =
+static DOCUMENT_CHANGE_LISTENER: LazyLock<Mutex<Option<DocumentChangeRegistration>>> =
     LazyLock::new(|| Mutex::new(None));
 
-// Flag controlling the lifetime of the document-change subscription task.
-// Set to true by subscribeDocumentChangesJni, false by
-// unsubscribeDocumentChangesJni. The spawned tokio task polls this on each recv
-// to know whether to exit.
 #[cfg(feature = "sync")]
-static DOCUMENT_SUBSCRIPTION_ACTIVE: LazyLock<std::sync::atomic::AtomicBool> =
-    LazyLock::new(|| std::sync::atomic::AtomicBool::new(false));
+struct DocumentChangeRegistration {
+    generation: u64,
+    listener: GlobalRef,
+}
+
+// Generation-owned lifetime for the document-change observer task. A boolean
+// cannot safely implement replacement: false followed immediately by true can
+// be missed by the old task, leaving two receivers dispatching duplicate
+// callbacks. Every subscribe receives a distinct odd token; unsubscribe and a
+// naturally-finished task advance it to an even (inactive) state.
+#[cfg(feature = "sync")]
+static DOCUMENT_SUBSCRIPTION_GENERATION: SubscriptionGeneration = SubscriptionGeneration::new();
+
+#[cfg(feature = "sync")]
+struct SubscriptionGeneration {
+    state: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "sync")]
+impl SubscriptionGeneration {
+    const fn new() -> Self {
+        Self {
+            state: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn begin(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+
+        loop {
+            let current = self.state.load(Ordering::SeqCst);
+            let next = current.wrapping_add(1) | 1;
+            if self
+                .state
+                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return next;
+            }
+        }
+    }
+
+    fn is_active(&self, generation: u64) -> bool {
+        use std::sync::atomic::Ordering;
+
+        generation & 1 == 1 && self.state.load(Ordering::SeqCst) == generation
+    }
+
+    fn invalidate(&self) {
+        use std::sync::atomic::Ordering;
+
+        let _ = self
+            .state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.wrapping_add(1) & !1)
+            });
+    }
+
+    fn finish(&self, generation: u64) -> bool {
+        use std::sync::atomic::Ordering;
+
+        self.state
+            .compare_exchange(
+                generation,
+                generation.wrapping_add(1) & !1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+}
 
 // peat#885 fault-injection flag, test-only. When armed via
 // `forceStoreErrorForTestingJni`, the next `getDocumentJni` call
@@ -228,6 +295,9 @@ mod roster;
 // See supervisor.rs.
 #[cfg(feature = "sync")]
 mod supervisor;
+
+#[cfg(feature = "sync")]
+mod ip_bindings;
 
 #[cfg(feature = "sync")]
 mod application_delivery;
@@ -1075,6 +1145,10 @@ pub struct PeatNode {
     /// lite-bridge.
     #[cfg(feature = "sync")]
     crdt_kv: crdt_kv::CrdtKvDocs,
+    /// Keeps the exclusive per-socket platform binding policy installed for
+    /// exactly this node's lifetime. `None` for ordinary host routing.
+    #[allow(dead_code)]
+    selected_ip_bind_hook: Option<netwatch::UdpSocketBindHookGuard>,
 }
 
 /// Shared connect → formation-handshake → sync-trigger pipeline backing both
@@ -1268,6 +1342,44 @@ async fn run_peat_mdns_auto_dial(
                 }
             }
         }
+    }
+}
+
+#[cfg(feature = "sync")]
+impl PeatNode {
+    /// Stop sync and await release of the owned router before JNI drops its
+    /// final consumer handle. This is intentionally narrower than the public
+    /// FFI surface: managed bindings still own their normal object lifecycle,
+    /// while direct JNI consumers require deterministic same-process restart.
+    fn shutdown_and_release(&self) -> Result<(), PeatError> {
+        self.cleanup_running.store(false, Ordering::SeqCst);
+        self.runtime.block_on(async {
+            // The IrohTransport wrapper owns the Peat `_peat._udp` publisher
+            // and browser. Withdraw it before closing the shared endpoint so
+            // an immediate same-process replacement cannot rediscover the
+            // retired identity. Continue through router shutdown even if mDNS
+            // teardown reports an error so endpoint and redb resources are
+            // still deterministically released.
+            let discovery_error = self.iroh_transport.shutdown_discovery().await.err();
+            if let Some(error) = discovery_error.as_ref() {
+                tracing::warn!(
+                    error = %error,
+                    "shutdown_and_release: discovery teardown failed; continuing backend shutdown"
+                );
+            }
+
+            self.sync_backend
+                .shutdown_and_release()
+                .await
+                .map_err(|e| PeatError::SyncError { msg: e.to_string() })?;
+
+            if let Some(error) = discovery_error {
+                return Err(PeatError::SyncError {
+                    msg: error.to_string(),
+                });
+            }
+            Ok(())
+        })
     }
 }
 
@@ -1946,6 +2058,15 @@ pub(crate) fn create_node_with_identity(
     config: NodeConfig,
     node_id_override: Option<String>,
 ) -> Result<Arc<PeatNode>, PeatError> {
+    create_node_with_identity_and_ip_bindings(config, node_id_override, None)
+}
+
+#[cfg(feature = "sync")]
+fn create_node_with_identity_and_ip_bindings(
+    config: NodeConfig,
+    node_id_override: Option<String>,
+    selected_ip_bindings: Option<ip_bindings::PreparedIpBindings>,
+) -> Result<Arc<PeatNode>, PeatError> {
     use std::time::Instant;
     let total_start = Instant::now();
 
@@ -2083,6 +2204,9 @@ pub(crate) fn create_node_with_identity(
         .map(|t| t.enable_n0_relay)
         .unwrap_or(false);
 
+    let explicit_ip_bindings = selected_ip_bindings
+        .as_ref()
+        .map(|prepared| prepared.specs.clone());
     let (store, transport, store_ms, transport_ms) = runtime.block_on(async {
         let store_start = Instant::now();
         let transport_start = Instant::now();
@@ -2114,8 +2238,18 @@ pub(crate) fn create_node_with_identity(
         // on `_peat` with a concrete address (works on Android). Otherwise fall
         // back to the legacy per-device seed identity.
         let transport_future = async {
-            let result = match formation_secret.as_deref() {
-                Some(secret) => {
+            let result = match (formation_secret.as_deref(), explicit_ip_bindings.as_deref()) {
+                (Some(secret), Some(bindings)) => {
+                    IrohTransport::from_formation_with_discovery_at_ip_bindings(
+                        secret,
+                        &iroh_node_id,
+                        &config.app_id,
+                        bindings,
+                        enable_n0_relay,
+                    )
+                    .await
+                }
+                (Some(secret), None) => {
                     IrohTransport::from_formation_with_discovery_at_addr(
                         secret,
                         &iroh_node_id,
@@ -2125,7 +2259,7 @@ pub(crate) fn create_node_with_identity(
                     )
                     .await
                 }
-                None => {
+                (None, None) => {
                     IrohTransport::from_seed_with_discovery_at_addr(
                         &seed,
                         bind_addr,
@@ -2133,6 +2267,9 @@ pub(crate) fn create_node_with_identity(
                     )
                     .await
                 }
+                (None, Some(_)) => Err(anyhow::anyhow!(
+                    "explicit IP bindings require a valid base64 formation key"
+                )),
             };
             (result, transport_start.elapsed().as_millis())
         };
@@ -2585,6 +2722,7 @@ pub(crate) fn create_node_with_identity(
         outbound_fanout: std::sync::Mutex::new(None),
         #[cfg(all(feature = "sync", feature = "bluetooth"))]
         relay_seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+        selected_ip_bind_hook: selected_ip_bindings.map(|prepared| prepared.hook_guard),
     });
 
     // Publish an OWNING reference to the JNI-visible global so a Kotlin bridge
@@ -4312,6 +4450,61 @@ mod tests {
                     panic!("expected ChangeOrigin::Remote {{ peer_id: peerhex }}, got {other:?}")
                 }
             }
+        }
+
+        /// The direct-JNI callback is an application-observer surface, not a
+        /// sync-out trigger. It must therefore receive remote-origin writes;
+        /// subscribing to the legacy local-only channel would silently drop
+        /// every document delivered by a peer.
+        #[test]
+        fn jni_document_change_receiver_includes_remote_writes() {
+            let tmp = tempfile::tempdir().unwrap();
+            let node = create_node(test_cfg(tmp.path().to_str().unwrap())).expect("create_node");
+            let mut receiver = subscribe_document_changes_for_jni(&node.store);
+
+            node.store
+                .put_with_origin(
+                    "test:remote-doc",
+                    &automerge::Automerge::new(),
+                    _PeatMeshChangeOrigin::Remote("peerhex".to_string()),
+                )
+                .expect("put remote-origin document");
+
+            let key = node
+                .runtime
+                .block_on(async {
+                    tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv()).await
+                })
+                .expect("remote observer notification timeout")
+                .expect("remote observer channel closed");
+            assert_eq!(key, "test:remote-doc");
+        }
+
+        #[test]
+        fn document_subscription_generation_replacement_is_owner_safe() {
+            let generations = SubscriptionGeneration::new();
+
+            let first = generations.begin();
+            assert!(generations.is_active(first));
+
+            let second = generations.begin();
+            assert_ne!(first, second);
+            assert!(!generations.is_active(first));
+            assert!(generations.is_active(second));
+
+            assert!(
+                !generations.finish(first),
+                "a replaced task must not deactivate its replacement"
+            );
+            assert!(generations.is_active(second));
+
+            generations.invalidate();
+            assert!(!generations.is_active(second));
+
+            let third = generations.begin();
+            assert!(generations.is_active(third));
+            assert!(generations.finish(third));
+            assert!(!generations.is_active(third));
         }
 
         /// Surface-tier round-trip for `roster_upsert`, which takes a
@@ -8528,6 +8721,233 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfi
     }
 }
 
+/// JNI: create one node over explicit Android-selected IP networks.
+///
+/// `ipBindingsJson` is a bounded array of numeric local addresses, CIDR
+/// prefixes, Android `Network.getNetworkHandle()` values, and default-route
+/// flags. The native socket owner marks each Iroh UDP socket before bind and
+/// on every rebind. Any missing/invalid mapping fails node creation; this path
+/// never falls back to the process default network.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    app_id: JString,
+    shared_key: JString,
+    node_id: JString,
+    storage_path: JString,
+    enable_ble: jboolean,
+    ble_power_profile: JString,
+    ip_bindings_json: JString,
+) -> i64 {
+    let app_id: String = match env.get_string(&app_id) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let shared_key: String = match env.get_string(&shared_key) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let storage_path: String = match env.get_string(&storage_path) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let ip_bindings_json: String = match env.get_string(&ip_bindings_json) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let node_id = env.get_string(&node_id).ok().and_then(|value| {
+        let value: String = value.into();
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    });
+    let power_profile = env.get_string(&ble_power_profile).ok().and_then(|value| {
+        let value: String = value.into();
+        (!value.is_empty()).then_some(value)
+    });
+
+    let selected_ip_bindings = match ip_bindings::prepare(&ip_bindings_json) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!(
+                "createNodeWithIpBindingsJni rejected bindings: {error:?}"
+            ));
+            return 0;
+        }
+    };
+
+    let transport = if enable_ble != 0 {
+        Some(TransportConfigFFI {
+            enable_ble: true,
+            ble_mesh_id: None,
+            ble_power_profile: power_profile,
+            transport_preference: None,
+            collection_routes_json: None,
+            // Hosted relay TCP/DNS is not covered by the selected-network UDP
+            // seam. Keep it disabled rather than leaking onto another path.
+            enable_n0_relay: false,
+        })
+    } else {
+        None
+    };
+    let config = NodeConfig {
+        app_id,
+        shared_key,
+        bind_address: None,
+        storage_path,
+        transport,
+    };
+
+    match create_node_with_identity_and_ip_bindings(config, node_id, Some(selected_ip_bindings)) {
+        Ok(node) => {
+            #[cfg(target_os = "android")]
+            IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
+            set_global_node_handle(&node);
+            Arc::into_raw(node) as i64
+        }
+        Err(error) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("createNodeWithIpBindingsJni failed: {error:?}"));
+            0
+        }
+    }
+}
+
+/// Notify Iroh that capabilities or reachability changed without changing any
+/// process-wide Android route.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    node.notify_network_change();
+    std::mem::forget(node);
+    1
+}
+
+/// Submit one strictly bounded generic application-relay document to a single
+/// authenticated PEAT endpoint. Payload semantics remain with the consumer;
+/// the built-in relay schema validates routing, expiry, hop, digest, and size
+/// fields before the durable delivery manager accepts it.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    target_node_id: JString,
+    operation_id: JString,
+    document_id: JString,
+    body_json: JString,
+    expires_at_ms: i64,
+) -> jstring {
+    let result = (|| -> Result<String, PeatError> {
+        if handle == 0 || expires_at_ms <= 0 {
+            return Err(PeatError::InvalidInput {
+                msg: "application relay handle or expiry is invalid".to_string(),
+            });
+        }
+        let target_node_id: String = env
+            .get_string(&target_node_id)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay target is invalid".to_string(),
+            })?
+            .into();
+        let operation_id: String = env
+            .get_string(&operation_id)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay operation ID is invalid".to_string(),
+            })?
+            .into();
+        let document_id: String = env
+            .get_string(&document_id)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay document ID is invalid".to_string(),
+            })?
+            .into();
+        let body: String = env
+            .get_string(&body_json)
+            .map_err(|_| PeatError::InvalidInput {
+                msg: "application relay body is invalid".to_string(),
+            })?
+            .into();
+        let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+        let result = node.application_delivery_submit(ApplicationDeliverySubmitRequest {
+            client_operation_id: operation_id,
+            audience: ApplicationDeliveryAudience::Direct,
+            target_node_ids: vec![target_node_id],
+            priority: ApplicationDeliveryPriority::Metadata,
+            collection: "application-relay".to_string(),
+            type_id: "peat.application.relay.v1".to_string(),
+            document_id,
+            body: body.into_bytes(),
+            expires_at_ms: expires_at_ms as u64,
+        });
+        std::mem::forget(node);
+        result
+    })()
+    .unwrap_or_default();
+
+    env.new_string(result)
+        .map(|value| value.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Read one authenticated application-relay body from the recipient-local
+/// durable inbox. This is deliberately separate from getDocumentJni: targeted
+/// application delivery is not inserted into the generic replicated CRDT store.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_getApplicationRelayJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    document_id: JString,
+) -> jstring {
+    if handle == 0 {
+        return std::ptr::null_mut();
+    }
+    let document_id: String = match env.get_string(&document_id) {
+        Ok(value) => value.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
+    let result = node.application_delivery_get_received_document("application-relay", &document_id);
+    std::mem::forget(node);
+
+    match result {
+        Ok(Some(document)) => match String::from_utf8(document.body) {
+            Ok(body) => env
+                .new_string(body)
+                .map(|value| value.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            Err(error) => {
+                let _ = env.throw_new(
+                    "java/lang/RuntimeException",
+                    format!("getApplicationRelayJni: body is not UTF-8: {error}"),
+                );
+                std::ptr::null_mut()
+            }
+        },
+        Ok(None) => std::ptr::null_mut(),
+        Err(error) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                format!("getApplicationRelayJni: inbox read failed: {error}"),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// JNI: Get the global node handle (survives APK replacement)
 ///
 /// Kotlin signature: external fun getGlobalNodeHandleJni(): Long
@@ -8873,14 +9293,23 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(
         // Reconstruct the Arc to drop it
         let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
 
-        // Signal the cleanup task to stop
-        node.cleanup_running.store(false, Ordering::SeqCst);
-
-        #[cfg(target_os = "android")]
-        android_log("freeNodeJni: Signaled cleanup task to stop");
-
-        // Give the background task a moment to exit
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Stop sync and await the router's bounded graceful shutdown before
+        // releasing either JNI-owned Arc. Dropping without this step leaves
+        // endpoint/discovery tasks alive briefly and makes immediate
+        // same-process replacement race stale sockets and advertisements.
+        match node.shutdown_and_release() {
+            Ok(()) => {
+                #[cfg(target_os = "android")]
+                android_log("freeNodeJni: Graceful backend shutdown completed");
+            }
+            Err(error) => {
+                #[cfg(target_os = "android")]
+                android_log(&format!(
+                    "freeNodeJni: Graceful backend shutdown failed: {}",
+                    error
+                ));
+            }
+        }
 
         // Clear Android BLE transport global to prevent dangling refs
         #[cfg(all(feature = "bluetooth", target_os = "android"))]
@@ -10067,8 +10496,6 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
     handle: i64,
     listener: jni::objects::JObject,
 ) -> jboolean {
-    use std::sync::atomic::Ordering;
-
     if handle == 0 {
         #[cfg(target_os = "android")]
         android_log("subscribeDocumentChangesJni: Invalid handle (0)");
@@ -10089,41 +10516,49 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
         }
     };
 
-    // Swap the listener in; drop any previous one.
-    {
-        let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
-        *slot = Some(listener_global);
-    }
-
-    // Signal the previous subscription task (if any) to exit before we start
-    // a new one, then mark the new subscription active.
-    DOCUMENT_SUBSCRIPTION_ACTIVE.store(false, Ordering::SeqCst);
-    DOCUMENT_SUBSCRIPTION_ACTIVE.store(true, Ordering::SeqCst);
-
     // Borrow the node without taking ownership of its Arc.
     let node = unsafe { Arc::from_raw(handle as *const PeatNode) };
     let store = Arc::clone(&node.store);
     let runtime = Arc::clone(&node.runtime);
     std::mem::forget(node);
 
+    // Subscribe before returning to the caller so a document committed
+    // immediately after this function returns cannot beat receiver creation.
+    let mut rx = subscribe_document_changes_for_jni(&store);
+
+    // Beginning a new generation invalidates the previous observer task. Tie
+    // the replacement listener to that generation so a stale task can neither
+    // dispatch through it nor clear it on exit.
+    let generation = {
+        let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
+        let generation = DOCUMENT_SUBSCRIPTION_GENERATION.begin();
+        *slot = Some(DocumentChangeRegistration {
+            generation,
+            listener: listener_global,
+        });
+        generation
+    };
+
     runtime.spawn(async move {
-        let mut rx = store.subscribe_to_changes();
-        while DOCUMENT_SUBSCRIPTION_ACTIVE.load(Ordering::SeqCst) {
+        while DOCUMENT_SUBSCRIPTION_GENERATION.is_active(generation) {
             tokio::select! {
                 result = rx.recv() => {
+                    if !DOCUMENT_SUBSCRIPTION_GENERATION.is_active(generation) {
+                        break;
+                    }
                     match result {
                         Ok(doc_key) => {
                             let (collection, doc_id) = doc_key
                                 .split_once(':')
                                 .map(|(c, d)| (c.to_string(), d.to_string()))
                                 .unwrap_or_else(|| ("default".to_string(), doc_key.clone()));
-                            dispatch_document_change(&collection, &doc_id);
+                            dispatch_document_change(generation, &collection, &doc_id);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            dispatch_document_error(&format!("lagged {} messages", n));
+                            dispatch_document_error(generation, &format!("lagged {} messages", n));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            dispatch_document_error("change channel closed");
+                            dispatch_document_error(generation, "change channel closed");
                             break;
                         }
                     }
@@ -10135,33 +10570,58 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentCh
             }
         }
 
-        // On exit, drop the listener ref if we were the owning subscription.
-        if !DOCUMENT_SUBSCRIPTION_ACTIVE.load(Ordering::SeqCst) {
-            let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
-            *slot = None;
+        // Only the currently-owning task may deactivate and clear its listener.
+        // A replaced task's generation no longer matches and is a no-op here.
+        if DOCUMENT_SUBSCRIPTION_GENERATION.finish(generation) {
+            clear_document_listener(generation);
         }
     });
 
     1 // JNI_TRUE
 }
 
+#[cfg(feature = "sync")]
+fn subscribe_document_changes_for_jni(
+    store: &AutomergeStore,
+) -> tokio::sync::broadcast::Receiver<String> {
+    store.subscribe_to_observer_changes()
+}
+
 /// JNI: Unsubscribe from document change notifications
 ///
 /// Kotlin signature: `external fun unsubscribeDocumentChangesJni()`
 ///
-/// Signals the background subscription task to exit on its next iteration.
-/// The listener GlobalRef is dropped by the task on exit (not here) to avoid
-/// a race between unsubscribe and an in-flight dispatch.
+/// Invalidates the background subscription task and removes its listener.
+/// A callback that already cloned the GlobalRef may complete concurrently.
 #[cfg(feature = "sync")]
 #[no_mangle]
 pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    use std::sync::atomic::Ordering;
-    DOCUMENT_SUBSCRIPTION_ACTIVE.store(false, Ordering::SeqCst);
+    let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
+    DOCUMENT_SUBSCRIPTION_GENERATION.invalidate();
+    slot.take();
     #[cfg(target_os = "android")]
-    android_log("unsubscribeDocumentChangesJni: subscription marked inactive");
+    android_log("unsubscribeDocumentChangesJni: subscription invalidated");
+}
+
+#[cfg(feature = "sync")]
+fn clear_document_listener(generation: u64) {
+    let mut slot = DOCUMENT_CHANGE_LISTENER.lock().unwrap();
+    if slot
+        .as_ref()
+        .is_some_and(|registration| registration.generation == generation)
+    {
+        *slot = None;
+    }
+}
+
+#[cfg(feature = "sync")]
+fn clone_document_listener(generation: u64) -> Option<GlobalRef> {
+    let slot = DOCUMENT_CHANGE_LISTENER.lock().ok()?;
+    let registration = slot.as_ref()?;
+    (registration.generation == generation).then(|| registration.listener.clone())
 }
 
 /// Snapshot the listener `GlobalRef` from a static slot under its mutex,
@@ -10195,7 +10655,7 @@ fn clone_java_vm() -> Option<jni::JavaVM> {
 /// Dispatch a document-change event to the registered Kotlin listener.
 /// Attaches the current tokio worker thread to the JVM if needed.
 #[cfg(feature = "sync")]
-fn dispatch_document_change(collection: &str, doc_id: &str) {
+fn dispatch_document_change(generation: u64, collection: &str, doc_id: &str) {
     // Snapshot the listener and JavaVM pointer under their locks, then drop
     // the guards BEFORE the unbounded JNI `call_method` (QA #808 IDIOM).
     // Kotlin's `onChange` may re-enter Rust JNI; holding either lock across
@@ -10203,7 +10663,7 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
     // serialize every translator's dispatch through a single JVM call.
     // GlobalRef is Arc-shaped so cloning is cheap; JavaVM is process-stable
     // so reconstructing from the raw pointer is sound.
-    let Some(listener) = clone_listener(&DOCUMENT_CHANGE_LISTENER) else {
+    let Some(listener) = clone_document_listener(generation) else {
         return;
     };
     let Some(java_vm) = clone_java_vm() else {
@@ -10251,9 +10711,9 @@ fn dispatch_document_change(collection: &str, doc_id: &str) {
 
 /// Dispatch an error message to the registered Kotlin listener.
 #[cfg(feature = "sync")]
-fn dispatch_document_error(message: &str) {
+fn dispatch_document_error(generation: u64, message: &str) {
     // Snapshot then drop locks before JNI work — see dispatch_document_change.
-    let Some(listener) = clone_listener(&DOCUMENT_CHANGE_LISTENER) else {
+    let Some(listener) = clone_document_listener(generation) else {
         return;
     };
     let Some(java_vm) = clone_java_vm() else {
@@ -11444,44 +11904,62 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
                 .into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *mut c_void,
         },
-        // peat#925: the four subscription methods
-        // (subscribe/unsubscribeDocumentChangesJni,
-        // subscribe/unsubscribeOutboundFramesJni) are intentionally NOT
-        // registered via nativeInit because their signatures reference
-        // consumer-supplied listener interfaces
-        // (`com/defenseunicorns/peat/DocumentChangeListener`,
-        // `com/defenseunicorns/peat/OutboundFrameListener`) that don't
-        // exist in peat-ffi's own `PeatJni.kt` — see the comment block at
-        // peat-ffi/android/src/main/kotlin/.../PeatJni.kt:27-34 which
-        // documents the "consumers declare these externs locally" pattern.
-        //
-        // The Rust extern fns `Java_com_defenseunicorns_peat_PeatJni_*`
-        // are still exported and reachable via JNI's auto-lookup-by-name
-        // convention: any consumer (peat-atak-plugin, downstream apps)
-        // that declares `external fun subscribeDocumentChangesJni(...)`
-        // alongside its `DocumentChangeListener` interface gets the
-        // function resolved via dlsym at first call.
-        //
-        // Why these were here: ADR-059 Slice 1.b's outbound-frame
-        // wiring was developed against a peat-atak-plugin build that
-        // DID declare the listener interfaces; the `NativeMethod`
-        // entries were copy-pasted from that build's lockstep
-        // registration table without re-checking peat-ffi's own
-        // PeatJni.kt surface.
-        //
-        // What went wrong: `JNI_OnLoad → nativeInit → RegisterNatives`
-        // tries to bind every entry to a corresponding member on
-        // `com.defenseunicorns.peat.PeatJni`. The DocumentChangeListener
-        // / OutboundFrameListener signatures reference Kotlin classes
-        // that don't exist. CheckJNI (active on debug-instrumented
-        // builds, which is the AndroidJUnit harness configuration on
-        // the Galaxy Tab A9+ CI runner) aborts the process on
-        // registration mismatch — `Fatal signal 6 (SIGABRT), code -1
-        // (SI_QUEUE)` in tid == JUnit-runner-tid, ~12ms after
-        // `System.loadLibrary("peat_ffi")` returns. The post-
-        // IrohTransport timing of the abort in earlier logcats was
-        // misleading — the actual fault is during `System.loadLibrary`
-        // which the test harness only logs after the abort propagates.
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "createNodeWithIpBindingsJni".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
+                .into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "notifyNetworkChangeJni".into(),
+            sig: "(J)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "submitApplicationRelayJni".into(),
+            sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;"
+                .into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "getApplicationRelayJni".into(),
+            sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getApplicationRelayJni as *mut c_void,
+        },
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "subscribeOutboundFramesJni".into(),
+            sig: "(JLcom/defenseunicorns/peat/OutboundFrameListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni
+                as *mut c_void,
+        },
+        #[cfg(all(feature = "sync", feature = "bluetooth"))]
+        NativeMethod {
+            name: "unsubscribeOutboundFramesJni".into(),
+            sig: "(J)V".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "subscribeDocumentChangesJni".into(),
+            sig: "(JLcom/defenseunicorns/peat/DocumentChangeListener;)Z".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
+            name: "unsubscribeDocumentChangesJni".into(),
+            sig: "()V".into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni
+                as *mut c_void,
+        },
         // Blob transfer (ADR-060)
         #[cfg(feature = "sync")]
         NativeMethod {
@@ -12098,6 +12576,64 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                     sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
                         .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "createNodeWithIpBindingsJni".into(),
+                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"
+                        .into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "notifyNetworkChangeJni".into(),
+                    sig: "(J)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "submitApplicationRelayJni".into(),
+                    sig: "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;"
+                        .into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_submitApplicationRelayJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "getApplicationRelayJni".into(),
+                    sig: "(JLjava/lang/String;)Ljava/lang/String;".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_getApplicationRelayJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth"))]
+                NativeMethod {
+                    name: "subscribeOutboundFramesJni".into(),
+                    sig: "(JLcom/defenseunicorns/peat/OutboundFrameListener;)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeOutboundFramesJni
+                        as *mut c_void,
+                },
+                #[cfg(all(feature = "sync", feature = "bluetooth"))]
+                NativeMethod {
+                    name: "unsubscribeOutboundFramesJni".into(),
+                    sig: "(J)V".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeOutboundFramesJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "subscribeDocumentChangesJni".into(),
+                    sig: "(JLcom/defenseunicorns/peat/DocumentChangeListener;)Z".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_subscribeDocumentChangesJni
+                        as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "unsubscribeDocumentChangesJni".into(),
+                    sig: "()V".into(),
+                    fn_ptr: Java_com_defenseunicorns_peat_PeatJni_unsubscribeDocumentChangesJni
                         as *mut c_void,
                 },
                 #[cfg(all(feature = "sync", feature = "bluetooth", target_os = "android"))]
