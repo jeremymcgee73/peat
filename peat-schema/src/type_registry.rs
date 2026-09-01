@@ -451,6 +451,7 @@ mod descriptors {
     const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
     const MAX_RELAY_PAYLOAD_BASE64_BYTES: usize = 384 * 1024;
     const MAX_RELAY_HOPS: u64 = 8;
+    const MAX_RELAY_DELIVERY_ATTEMPTS: u64 = 1_024;
 
     fn object<'a>(
         value: &'a Value,
@@ -745,7 +746,7 @@ mod descriptors {
                     "payload_sha256",
                     "payload_base64",
                 ],
-                &[],
+                &["delivery_attempt"],
             )?;
             for field in ["message_id", "origin_node_id", "destination_node_id"] {
                 bounded_string(obj, field, MAX_ID_LEN)?;
@@ -758,6 +759,14 @@ mod descriptors {
                 return Err(ValidationError::ConstraintViolation(format!(
                     "relay hop_count must be between 1 and max_hops; max_hops is capped at {MAX_RELAY_HOPS}"
                 )));
+            }
+            if obj.contains_key("delivery_attempt") {
+                let delivery_attempt = unsigned(obj, "delivery_attempt")?;
+                if !(1..=MAX_RELAY_DELIVERY_ATTEMPTS).contains(&delivery_attempt) {
+                    return Err(ValidationError::ConstraintViolation(format!(
+                        "delivery_attempt must be between 1 and {MAX_RELAY_DELIVERY_ATTEMPTS}"
+                    )));
+                }
             }
             let route = obj["route"].as_array().ok_or_else(|| {
                 ValidationError::InvalidValue("route must be an array".to_string())
@@ -1743,6 +1752,29 @@ mod tests {
             "payload_base64": "e30=",
         });
         assert!((descriptor.validate_json)(&valid).is_ok());
+
+        for delivery_attempt in [1, 1_024] {
+            let mut retried = valid.clone();
+            retried["delivery_attempt"] = serde_json::json!(delivery_attempt);
+            assert!((descriptor.validate_json)(&retried).is_ok());
+        }
+
+        for delivery_attempt in [
+            serde_json::json!(0),
+            serde_json::json!(1_025),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("1"),
+            serde_json::Value::Null,
+        ] {
+            let mut invalid_attempt = valid.clone();
+            invalid_attempt["delivery_attempt"] = delivery_attempt;
+            assert!((descriptor.validate_json)(&invalid_attempt).is_err());
+        }
+
+        let mut unknown_field = valid.clone();
+        unknown_field["retry_number"] = serde_json::json!(1);
+        assert!((descriptor.validate_json)(&unknown_field).is_err());
 
         let mut looped = valid.clone();
         looped["hop_count"] = serde_json::json!(2);
