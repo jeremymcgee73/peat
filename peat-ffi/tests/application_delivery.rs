@@ -45,6 +45,32 @@ fn chat_body(message_id: &str, sender_id: &str, recipient_id: &str) -> Vec<u8> {
     .unwrap()
 }
 
+fn relay_body(
+    message_id: &str,
+    sender_id: &str,
+    recipient_id: &str,
+    delivery_attempt: Option<u64>,
+) -> Vec<u8> {
+    let created_at_ms = now_ms();
+    let mut body = serde_json::json!({
+        "message_id": message_id,
+        "origin_node_id": sender_id,
+        "destination_node_id": recipient_id,
+        "created_at_ms": created_at_ms,
+        "expires_at_ms": created_at_ms + 60_000,
+        "max_hops": 1,
+        "hop_count": 1,
+        "route": [sender_id],
+        "payload_kind": "application/example+json",
+        "payload_sha256": "01".repeat(32),
+        "payload_base64": "e30=",
+    });
+    if let Some(delivery_attempt) = delivery_attempt {
+        body["delivery_attempt"] = serde_json::json!(delivery_attempt);
+    }
+    serde_json::to_vec(&body).unwrap()
+}
+
 fn request(
     node: &PeatNode,
     target: &PeatNode,
@@ -59,6 +85,30 @@ fn request(
         type_id: TYPE_ID.to_string(),
         document_id: format!("document-{operation_id}"),
         body: chat_body(operation_id, &node.node_id(), &target.node_id()),
+        expires_at_ms: now_ms() + 60_000,
+    }
+}
+
+fn relay_request(
+    node: &PeatNode,
+    target: &PeatNode,
+    operation_id: &str,
+    delivery_attempt: Option<u64>,
+) -> ApplicationDeliverySubmitRequest {
+    ApplicationDeliverySubmitRequest {
+        client_operation_id: operation_id.to_string(),
+        audience: ApplicationDeliveryAudience::Direct,
+        target_node_ids: vec![target.node_id()],
+        priority: ApplicationDeliveryPriority::Metadata,
+        collection: "application-relay".to_string(),
+        type_id: "peat.application.relay.v1".to_string(),
+        document_id: format!("document-{operation_id}"),
+        body: relay_body(
+            operation_id,
+            &node.node_id(),
+            &target.node_id(),
+            delivery_attempt,
+        ),
         expires_at_ms: now_ms() + 60_000,
     }
 }
@@ -166,6 +216,32 @@ fn malformed_requests_fail_before_durable_mutation() {
         .unwrap()
         .operations
         .is_empty());
+}
+
+#[test]
+fn application_relay_retry_generation_passes_delivery_admission() {
+    let sender_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let sender = create_node(config(sender_dir.path())).unwrap();
+    let receiver = create_node(config(receiver_dir.path())).unwrap();
+
+    for (operation_id, delivery_attempt) in [
+        ("relay-legacy", None),
+        ("relay-attempt-min", Some(1)),
+        ("relay-attempt-max", Some(1_024)),
+    ] {
+        assert_eq!(
+            sender
+                .application_delivery_submit(relay_request(
+                    &sender,
+                    &receiver,
+                    operation_id,
+                    delivery_attempt,
+                ))
+                .unwrap(),
+            operation_id
+        );
+    }
 }
 
 #[test]
