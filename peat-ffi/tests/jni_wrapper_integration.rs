@@ -134,6 +134,8 @@ fn jni_wrapper_integration() {
     // signature drift at test time.
     let (new_config_handle, _new_config_tempdir) =
         scenario_create_node_with_config_returns_handle(raw);
+    let (isolated_handle, _isolated_tempdir) =
+        scenario_create_node_without_external_ip_returns_handle(raw);
 
     scenario_native_method_table_audit();
 
@@ -150,6 +152,8 @@ fn jni_wrapper_integration() {
         null_class(),
         new_config_handle,
     );
+    let env = unsafe { fresh_env(raw) };
+    peat_ffi::Java_com_defenseunicorns_peat_PeatJni_freeNodeJni(env, null_class(), isolated_handle);
 }
 
 // ---------------------------------------------------------------------
@@ -308,6 +312,54 @@ fn scenario_create_node_with_config_returns_handle(raw: *mut jni::sys::JNIEnv) -
         "createNodeWithConfigJni with bindAddress='127.0.0.1' should \
          bind to loopback, got {:?}",
         addr,
+    );
+
+    (handle, tempdir)
+}
+
+fn scenario_create_node_without_external_ip_returns_handle(
+    raw: *mut jni::sys::JNIEnv,
+) -> (i64, TempDir) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let storage_path = tempdir.path().to_str().expect("utf-8 path").to_string();
+
+    let handle = {
+        let mut env = unsafe { fresh_env(raw) };
+        let app_id = new_jstring(&mut env, APP_ID);
+        let shared_key = new_jstring(&mut env, SHARED_KEY);
+        let node_id = new_jstring(&mut env, "isolated-jni-node");
+        let storage = new_jstring(&mut env, &storage_path);
+        let enable_ble: jboolean = 1;
+        let ble_power_profile = new_jstring(&mut env, "balanced");
+        peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeWithoutExternalIpJni(
+            env,
+            null_class(),
+            app_id,
+            shared_key,
+            node_id,
+            storage,
+            enable_ble,
+            ble_power_profile,
+        )
+    };
+    assert_ne!(
+        0, handle,
+        "createNodeWithoutExternalIpJni returned 0 for a valid formation"
+    );
+
+    let mut env = unsafe { fresh_env(raw) };
+    let result = peat_ffi::Java_com_defenseunicorns_peat_PeatJni_endpointSocketAddrJni(
+        unsafe { fresh_env(raw) },
+        null_class(),
+        handle,
+    );
+    let address = jstring_to_rust(&mut env, result)
+        .expect("isolated JNI node must report its loopback endpoint")
+        .parse::<std::net::SocketAddr>()
+        .expect("isolated JNI endpoint must remain numeric");
+    assert!(
+        address.ip().is_loopback(),
+        "isolated JNI node escaped loopback: {address}"
     );
 
     (handle, tempdir)
@@ -755,7 +807,7 @@ fn scenario_native_method_table_audit() {
 
     // The sync feature is on for this test target (Cargo.toml's
     // [dev-dependencies] inherits the workspace default features).
-    // 30 methods in this group; mirrors the #[cfg(feature = "sync")]
+    // 28 methods in this group; mirrors the #[cfg(feature = "sync")]
     // NativeMethod entries in lib.rs.
     #[cfg(feature = "sync")]
     table.extend_from_slice(&[
@@ -766,6 +818,11 @@ fn scenario_native_method_table_audit() {
         (
             "createNodeWithConfigJni",
             peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeWithConfigJni as *const (),
+        ),
+        (
+            "createNodeWithoutExternalIpJni",
+            peat_ffi::Java_com_defenseunicorns_peat_PeatJni_createNodeWithoutExternalIpJni
+                as *const (),
         ),
         (
             "getGlobalNodeHandleJni",
@@ -932,11 +989,11 @@ fn scenario_native_method_table_audit() {
     }
 
     // Count check: under `--features sync` on Linux we expect
-    // 2 (always-on) + 27 (sync-only) = 29 entries. If the bluetooth
+    // 2 (always-on) + 28 (sync-only) = 30 entries. If the bluetooth
     // feature flips on, +3. If both bluetooth and Android target,
     // +5. The expected total tracks the active cfg.
     let expected = 2
-        + if cfg!(feature = "sync") { 27 } else { 0 }
+        + if cfg!(feature = "sync") { 28 } else { 0 }
         + if cfg!(all(feature = "sync", feature = "bluetooth")) {
             3
         } else {

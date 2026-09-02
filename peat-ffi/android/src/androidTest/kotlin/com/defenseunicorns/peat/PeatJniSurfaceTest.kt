@@ -774,6 +774,7 @@ class PeatJniSurfaceTest {
             ::peatJniRefCreateNode,
             ::peatJniRefCreateNodeWithConfig,
             ::peatJniRefCreateNodeWithIpBindings,
+            ::peatJniRefCreateNodeWithoutExternalIp,
             ::peatJniRefNotifyNetworkChange,
             ::peatJniRefSubmitApplicationRelay,
             ::peatJniRefGetGlobalNodeHandle,
@@ -823,10 +824,10 @@ class PeatJniSurfaceTest {
             // Test-only fault injection
             ::peatJniRefForceStoreError,
         )
-        // 47 PeatJni methods total. If this number changes, the
+        // 48 PeatJni methods total. If this number changes, the
         // count below must change too — and the new method needs
         // its own peatJniRef* shim added above.
-        assertEquals(47, refs.size)
+        assertEquals(48, refs.size)
     }
 
     // -- Reference shims --------------------------------------------------
@@ -850,6 +851,9 @@ class PeatJniSurfaceTest {
     @Suppress("unused")
     private fun peatJniRefCreateNodeWithIpBindings(): Long =
         PeatJni.createNodeWithIpBindingsJni("a", "b", null, "c", false, null, "[]")
+    @Suppress("unused")
+    private fun peatJniRefCreateNodeWithoutExternalIp(): Long =
+        PeatJni.createNodeWithoutExternalIpJni("a", "b", null, "c", true, null)
     @Suppress("unused")
     private fun peatJniRefNotifyNetworkChange(h: Long): Boolean =
         PeatJni.notifyNetworkChangeJni(h)

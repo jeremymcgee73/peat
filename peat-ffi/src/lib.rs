@@ -2058,7 +2058,7 @@ pub(crate) fn create_node_with_identity(
     config: NodeConfig,
     node_id_override: Option<String>,
 ) -> Result<Arc<PeatNode>, PeatError> {
-    create_node_with_identity_and_ip_bindings(config, node_id_override, None)
+    create_node_with_identity_and_ip_bindings(config, node_id_override, None, false)
 }
 
 #[cfg(feature = "sync")]
@@ -2066,6 +2066,7 @@ fn create_node_with_identity_and_ip_bindings(
     config: NodeConfig,
     node_id_override: Option<String>,
     selected_ip_bindings: Option<ip_bindings::PreparedIpBindings>,
+    isolate_external_ip: bool,
 ) -> Result<Arc<PeatNode>, PeatError> {
     use std::time::Instant;
     let total_start = Instant::now();
@@ -2231,45 +2232,56 @@ fn create_node_with_identity_and_ip_bindings(
             (Err(last_err.unwrap()), store_start.elapsed().as_millis())
         });
 
-        // Create transport WITH mDNS discovery wired into the endpoint.
-        // With a formation secret present, derive the iroh identity the
-        // canonical way (HKDF(formation_secret, "iroh:" + node_id)) so the
-        // endpoint interops with peat-mesh-node / peat-node and is advertised
-        // on `_peat` with a concrete address (works on Android). Otherwise fall
-        // back to the legacy per-device seed identity.
+        // Create either an externally isolated transport or the existing IP
+        // transport with mDNS discovery wired into the endpoint. Both retain
+        // the canonical formation-derived identity when a formation secret is
+        // present. The non-isolated path keeps its legacy per-device seed
+        // fallback when no formation secret is available.
         let transport_future = async {
-            let result = match (formation_secret.as_deref(), explicit_ip_bindings.as_deref()) {
-                (Some(secret), Some(bindings)) => {
-                    IrohTransport::from_formation_with_discovery_at_ip_bindings(
-                        secret,
-                        &iroh_node_id,
-                        &config.app_id,
-                        bindings,
-                        enable_n0_relay,
-                    )
-                    .await
+            let result = if isolate_external_ip {
+                match formation_secret.as_deref() {
+                    Some(secret) => {
+                        IrohTransport::from_formation_without_external_ip(secret, &iroh_node_id)
+                            .await
+                    }
+                    None => Err(anyhow::anyhow!(
+                        "external-IP isolation requires a valid base64 formation key"
+                    )),
                 }
-                (Some(secret), None) => {
-                    IrohTransport::from_formation_with_discovery_at_addr(
-                        secret,
-                        &iroh_node_id,
-                        &config.app_id,
-                        bind_addr,
-                        enable_n0_relay,
-                    )
-                    .await
+            } else {
+                match (formation_secret.as_deref(), explicit_ip_bindings.as_deref()) {
+                    (Some(secret), Some(bindings)) => {
+                        IrohTransport::from_formation_with_discovery_at_ip_bindings(
+                            secret,
+                            &iroh_node_id,
+                            &config.app_id,
+                            bindings,
+                            enable_n0_relay,
+                        )
+                        .await
+                    }
+                    (Some(secret), None) => {
+                        IrohTransport::from_formation_with_discovery_at_addr(
+                            secret,
+                            &iroh_node_id,
+                            &config.app_id,
+                            bind_addr,
+                            enable_n0_relay,
+                        )
+                        .await
+                    }
+                    (None, None) => {
+                        IrohTransport::from_seed_with_discovery_at_addr(
+                            &seed,
+                            bind_addr,
+                            enable_n0_relay,
+                        )
+                        .await
+                    }
+                    (None, Some(_)) => Err(anyhow::anyhow!(
+                        "explicit IP bindings require a valid base64 formation key"
+                    )),
                 }
-                (None, None) => {
-                    IrohTransport::from_seed_with_discovery_at_addr(
-                        &seed,
-                        bind_addr,
-                        enable_n0_relay,
-                    )
-                    .await
-                }
-                (None, Some(_)) => Err(anyhow::anyhow!(
-                    "explicit IP bindings require a valid base64 formation key"
-                )),
             };
             (result, transport_start.elapsed().as_millis())
         };
@@ -2294,7 +2306,7 @@ fn create_node_with_identity_and_ip_bindings(
 
         let (transport_inner, transport_elapsed) = transport_result;
         let transport = transport_inner.map_err(|e| PeatError::ConnectionError {
-            msg: format!("Failed to create transport with mDNS: {}", e),
+            msg: format!("Failed to create transport: {}", e),
         })?;
 
         #[cfg(target_os = "android")]
@@ -2316,10 +2328,7 @@ fn create_node_with_identity_and_ip_bindings(
     #[cfg(target_os = "android")]
     {
         android_log(&format!("[TIMING] Store open: {}ms", store_ms));
-        android_log(&format!(
-            "[TIMING] Transport create (with mDNS): {}ms",
-            transport_ms
-        ));
+        android_log(&format!("[TIMING] Transport create: {}ms", transport_ms));
         android_log(&format!(
             "[TIMING] Parallel total (max of above): {}ms",
             parallel_total_ms
@@ -2328,10 +2337,7 @@ fn create_node_with_identity_and_ip_bindings(
     #[cfg(not(target_os = "android"))]
     {
         eprintln!("[Peat TIMING] Store open: {}ms", store_ms);
-        eprintln!(
-            "[Peat TIMING] Transport create (with mDNS): {}ms",
-            transport_ms
-        );
+        eprintln!("[Peat TIMING] Transport create: {}ms", transport_ms);
         eprintln!(
             "[Peat TIMING] Parallel total (max of above): {}ms",
             parallel_total_ms
@@ -4265,6 +4271,81 @@ mod tests {
 
         let _local = make("off", false);
         let _relayed = make("on", true);
+    }
+
+    #[cfg(feature = "sync")]
+    #[test]
+    fn isolated_node_uses_only_loopback_and_retains_formation_identity() {
+        let storage = tempfile::tempdir().expect("temporary storage");
+        let config = NodeConfig {
+            app_id: "isolated-ffi-test".to_string(),
+            shared_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+            bind_address: None,
+            storage_path: storage.path().to_string_lossy().into_owned(),
+            transport: None,
+        };
+
+        let node = create_node_with_identity_and_ip_bindings(
+            config,
+            Some("isolated-node".to_string()),
+            None,
+            true,
+        )
+        .expect("isolated node must initialize");
+
+        let endpoint_addr = node.iroh_transport.endpoint_addr();
+        let addresses = endpoint_addr.ip_addrs().collect::<Vec<_>>();
+        assert!(!addresses.is_empty());
+        assert!(addresses.iter().all(|address| address.ip().is_loopback()));
+        let bound = node
+            .endpoint_socket_addr()
+            .expect("isolated node must expose a loopback socket")
+            .parse::<SocketAddr>()
+            .expect("isolated socket must remain numeric");
+        assert!(bound.ip().is_loopback());
+
+        let isolated_node_id = node.node_id();
+        assert!(!isolated_node_id.is_empty());
+        drop(node);
+
+        let normal_storage = tempfile::tempdir().expect("temporary normal storage");
+        let normal = create_node_with_identity_and_ip_bindings(
+            NodeConfig {
+                app_id: "isolated-ffi-test".to_string(),
+                shared_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                bind_address: None,
+                storage_path: normal_storage.path().to_string_lossy().into_owned(),
+                transport: None,
+            },
+            Some("isolated-node".to_string()),
+            None,
+            false,
+        )
+        .expect("normal formation node must initialize");
+
+        assert_eq!(isolated_node_id, normal.node_id());
+    }
+
+    #[cfg(feature = "sync")]
+    #[test]
+    fn isolated_node_rejects_invalid_formation_key_without_ip_fallback() {
+        let storage = tempfile::tempdir().expect("temporary storage");
+        let config = NodeConfig {
+            app_id: "isolated-ffi-test".to_string(),
+            shared_key: "not-a-formation-key".to_string(),
+            bind_address: None,
+            storage_path: storage.path().to_string_lossy().into_owned(),
+            transport: None,
+        };
+
+        let result = create_node_with_identity_and_ip_bindings(
+            config,
+            Some("isolated-node".to_string()),
+            None,
+            true,
+        );
+
+        assert!(result.is_err());
     }
 
     /// Wrapper-tier coverage for the `connect_peer_nowait` UniFFI export added
@@ -8800,7 +8881,12 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBin
         transport,
     };
 
-    match create_node_with_identity_and_ip_bindings(config, node_id, Some(selected_ip_bindings)) {
+    match create_node_with_identity_and_ip_bindings(
+        config,
+        node_id,
+        Some(selected_ip_bindings),
+        false,
+    ) {
         Ok(node) => {
             #[cfg(target_os = "android")]
             IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
@@ -8810,6 +8896,77 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBin
         Err(error) => {
             #[cfg(target_os = "android")]
             android_log(&format!("createNodeWithIpBindingsJni failed: {error:?}"));
+            0
+        }
+    }
+}
+
+/// JNI: create one node with every externally reachable IP path disabled.
+///
+/// The canonical formation-derived endpoint is retained for identity and the
+/// shared document backend, but its only Iroh socket is isolated to loopback.
+/// This surface has no wildcard, host-interface, process-default, mDNS, DNS,
+/// or hosted-relay fallback. The caller is responsible for supplying the
+/// external non-IP data plane.
+#[cfg(feature = "sync")]
+#[no_mangle]
+pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_createNodeWithoutExternalIpJni(
+    mut env: JNIEnv,
+    _class: JClass,
+    app_id: JString,
+    shared_key: JString,
+    node_id: JString,
+    storage_path: JString,
+    enable_ble: jboolean,
+    ble_power_profile: JString,
+) -> i64 {
+    let app_id: String = match env.get_string(&app_id) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let shared_key: String = match env.get_string(&shared_key) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let storage_path: String = match env.get_string(&storage_path) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let node_id = env.get_string(&node_id).ok().and_then(|value| {
+        let value: String = value.into();
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    });
+    let power_profile = env.get_string(&ble_power_profile).ok().and_then(|value| {
+        let value: String = value.into();
+        (!value.is_empty()).then_some(value)
+    });
+    let transport = (enable_ble != 0).then_some(TransportConfigFFI {
+        enable_ble: true,
+        ble_mesh_id: None,
+        ble_power_profile: power_profile,
+        transport_preference: None,
+        collection_routes_json: None,
+        enable_n0_relay: false,
+    });
+    let config = NodeConfig {
+        app_id,
+        shared_key,
+        bind_address: None,
+        storage_path,
+        transport,
+    };
+
+    match create_node_with_identity_and_ip_bindings(config, node_id, None, true) {
+        Ok(node) => {
+            #[cfg(target_os = "android")]
+            IROH_STARTED.store(true, std::sync::atomic::Ordering::Release);
+            set_global_node_handle(&node);
+            Arc::into_raw(node) as i64
+        }
+        Err(error) => {
+            #[cfg(target_os = "android")]
+            android_log(&format!("createNodeWithoutExternalIpJni failed: {error:?}"));
             0
         }
     }
@@ -11914,6 +12071,14 @@ pub extern "system" fn Java_com_defenseunicorns_peat_PeatJni_nativeInit(
         },
         #[cfg(feature = "sync")]
         NativeMethod {
+            name: "createNodeWithoutExternalIpJni".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)J"
+                .into(),
+            fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithoutExternalIpJni
+                as *mut c_void,
+        },
+        #[cfg(feature = "sync")]
+        NativeMethod {
             name: "notifyNetworkChangeJni".into(),
             sig: "(J)Z".into(),
             fn_ptr: Java_com_defenseunicorns_peat_PeatJni_notifyNetworkChangeJni as *mut c_void,
@@ -12585,6 +12750,15 @@ pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
                         .into(),
                     fn_ptr: Java_com_defenseunicorns_peat_PeatJni_createNodeWithIpBindingsJni
                         as *mut c_void,
+                },
+                #[cfg(feature = "sync")]
+                NativeMethod {
+                    name: "createNodeWithoutExternalIpJni".into(),
+                    sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)J"
+                        .into(),
+                    fn_ptr:
+                        Java_com_defenseunicorns_peat_PeatJni_createNodeWithoutExternalIpJni
+                            as *mut c_void,
                 },
                 #[cfg(feature = "sync")]
                 NativeMethod {

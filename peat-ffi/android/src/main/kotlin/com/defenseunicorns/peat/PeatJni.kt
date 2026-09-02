@@ -136,6 +136,20 @@ object PeatJni {
         ipBindingsJson: String,
     ): Long
 
+    /**
+     * Create a node whose canonical endpoint is loopback-only. No wildcard,
+     * host-interface, process-default, mDNS, DNS, or hosted-relay IP path is
+     * available; the embedding layer supplies the external bearer.
+     */
+    @JvmStatic external fun createNodeWithoutExternalIpJni(
+        appId: String,
+        sharedKey: String,
+        nodeId: String?,
+        storagePath: String,
+        enableBle: Boolean,
+        blePowerProfile: String?,
+    ): Long
+
     @JvmStatic external fun notifyNetworkChangeJni(handle: Long): Boolean
 
     @JvmStatic external fun submitApplicationRelayJni(
